@@ -126,7 +126,11 @@ async fn main() {
     );
     let (_, me) = bridge_get(&controller, "/api/v1/me").await;
     assert_eq!(me["user"]["display_name"], "Morgan M. Member");
-    let stored = vault.load().await.expect("vault").expect("a stored session");
+    let stored = vault
+        .load()
+        .await
+        .expect("vault")
+        .expect("a stored session");
     assert_eq!(stored.profile.member.display_name, "Morgan M. Member");
     println!("REFRESHED");
 
