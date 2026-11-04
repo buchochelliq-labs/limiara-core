@@ -168,7 +168,12 @@ session when the member logs out; the next launch signs in again.
 
 - Sending push notifications through APNs and FCM, with no customer data
   (ADR 0024).
-- A device list and revoke action in the web app's settings.
+- A device list and revoke action in the web app's settings. (Built:
+  Settings → Devices.)
 - An end-to-end check of the browser leg against the Keycloak fixture.
+  (Built: `scripts/test-device-sign-in.sh` signs fixture people in through
+  Chromium on a loopback redirect, redeems the code, syncs, rotates the
+  refresh token, and checks a reused code, a wrong verifier, a person
+  outside the workspace and an unregistered redirect URI.)
 - Loopback redirect URIs with any port (RFC 8252 §7.3), if a desktop app
   needs them.
