@@ -130,7 +130,8 @@ required check with a warning or silently skip it.
 - Documentation contribution policy: [docs/contributing/documentation.md](docs/contributing/documentation.md)
 - Documentation inventory and ownership: [docs/inventory.json](docs/inventory.json) and [docs/owners.json](docs/owners.json)
 - Roadmap: [docs/roadmap/README.md](docs/roadmap/README.md)
-- Roadmap issue index: <https://github.com/buchochelliq-labs/limiara-core/issues/90>
+- Roadmap issue index: <https://github.com/buchochelliq-labs/limiara-core/issues/61>
+- Issue numbers written as `#N` in code comments, migrations and older docs refer to the project's earlier tracker; the open issues were carried over here with new numbers, each noting its earlier one.
 - Architecture decisions: [docs/adr/](docs/adr/)
 - Threat model: [docs/threat-model/phase-1.md](docs/threat-model/phase-1.md)
 - Open-core boundary: [docs/architecture/open-core.md](docs/architecture/open-core.md)
