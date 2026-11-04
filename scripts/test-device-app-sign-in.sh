@@ -16,7 +16,7 @@ cd "$repository_root"
 
 work_root="$repository_root/target/device-app-sign-in"
 api_base="http://localhost:8080"
-loopback_port="${PLATFORM_DEVICE_APP_LOOPBACK_PORT:-58096}"
+loopback_port="${PLATFORM_DEVICE_APP_LOOPBACK_PORT:-18096}"
 tenant="018f0000-0000-7000-8000-000000000001"
 member="018f0000-0000-7000-8000-000000000101"
 member_session="device-app-sign-in-member"
