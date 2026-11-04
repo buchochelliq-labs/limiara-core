@@ -13,7 +13,7 @@ set -Eeuo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 data_root="${PLATFORM_LOCAL_POSTGRES_ROOT:-$repository_root/target/local-postgres}"
-port="${PLATFORM_LOCAL_POSTGRES_PORT:-55432}"
+port="${PLATFORM_LOCAL_POSTGRES_PORT:-15432}"
 bin_dir="${PG_BIN_DIR:-$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1)}"
 [[ -x "$bin_dir/initdb" ]] || { echo "PostgreSQL server binaries not found; set PG_BIN_DIR" >&2; exit 1; }
 
