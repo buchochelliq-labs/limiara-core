@@ -14,7 +14,7 @@ cd "$repository_root"
 
 work_root="$repository_root/target/device-sign-in"
 api_base="http://localhost:8080"
-loopback_port="${PLATFORM_DEVICE_LOOPBACK_PORT:-58095}"
+loopback_port="${PLATFORM_DEVICE_LOOPBACK_PORT:-18095}"
 tenant="018f0000-0000-7000-8000-000000000001"
 project="limiara-device-sign-in-${RANDOM:-0}-$$"
 compose=(docker compose --project-name "$project")
