@@ -1,0 +1,68 @@
+{
+  "page_id": "platform.sample.record",
+  "definition_version": 3,
+  "selected_variant": null,
+  "source_versions": {
+    "customer.first": "1.0.0",
+    "customer.second": "1.0.0",
+    "platform.sample": "1.0.0"
+  },
+  "publication_versions": [],
+  "resource": null,
+  "data_sources": [],
+  "actions": [],
+  "root": {
+    "id": "page-root",
+    "component": "platform.ui.page",
+    "props": {},
+    "bindings": {},
+    "conditions": {},
+    "children": [
+      {
+        "id": "main",
+        "component": "platform.ui.slot",
+        "props": {},
+        "bindings": {},
+        "conditions": {},
+        "children": [
+          {
+            "id": "first-card",
+            "component": "platform.ui.card",
+            "props": {},
+            "bindings": {},
+            "conditions": {},
+            "children": [],
+            "permission": null,
+            "hosts": ["internal-web"]
+          }
+        ],
+        "permission": null,
+        "hosts": ["internal-web"]
+      },
+      {
+        "id": "sidebar",
+        "component": "platform.ui.slot",
+        "props": {},
+        "bindings": {},
+        "conditions": {},
+        "children": [
+          {
+            "id": "second-card",
+            "component": "platform.ui.card",
+            "props": {},
+            "bindings": {},
+            "conditions": {},
+            "children": [],
+            "permission": null,
+            "hosts": ["internal-web"]
+          }
+        ],
+        "permission": null,
+        "hosts": ["internal-web"]
+      }
+    ],
+    "permission": null,
+    "hosts": ["internal-web"]
+  },
+  "content_hash": ""
+}

@@ -1,0 +1,120 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.person-form",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "kind": "record-form",
+  "hosts": ["internal-web", "desktop"],
+  "resource": "platform.contacts.person",
+  "actions": [
+    {"id": "create-person", "kind": "resource-operation", "target": "platform.contacts.person.create", "permission": "contacts.people.write"},
+    {"id": "update-person", "kind": "resource-operation", "target": "platform.contacts.person.update", "permission": "contacts.people.write"},
+    {"id": "cancel-person", "kind": "navigate", "target": "form.cancel"}
+  ],
+  "root": {
+    "id": "person-page",
+    "component": "platform.ui.page",
+    "props": {"title_key": "person.page.title", "description_key": "person.page.description"},
+    "children": [
+      {
+        "id": "back-actions",
+        "component": "platform.ui.action-bar",
+        "props": {"label": "Page navigation"},
+        "children": [
+          {"id": "back-to-people", "component": "platform.ui.action", "props": {"action": "cancel-person", "label": "Back to people", "variant": "quiet"}}
+        ]
+      },
+      {
+        "id": "person-form",
+        "component": "platform.ui.form",
+        "props": {"label_key": "person.form.label"},
+        "children": [
+          {
+            "id": "form-layout",
+            "component": "platform.ui.split",
+            "children": [
+              {
+                "id": "form-sections",
+                "component": "platform.ui.stack",
+                "props": {"gap": "large"},
+                "children": [
+                  {
+                    "id": "identity-section",
+                    "component": "platform.ui.section",
+                    "props": {"title": "Identity", "description": "Use the name your team will search for."},
+                    "children": [
+                      {"id": "person-full-name", "component": "platform.ui.field.text", "props": {"field": "full_name"}, "bindings": {"value": {"source": "field", "field": "full_name"}}},
+                      {
+                        "id": "contact-fields",
+                        "component": "platform.ui.grid",
+                        "props": {"columns": 2},
+                        "children": [
+                          {"id": "person-email", "component": "platform.ui.field.text", "props": {"field": "email"}, "bindings": {"value": {"source": "field", "field": "email"}}},
+                          {"id": "person-telephone", "component": "platform.ui.field.text", "props": {"field": "telephone"}, "bindings": {"value": {"source": "field", "field": "telephone"}}}
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "workspace-section",
+                    "component": "platform.ui.section",
+                    "props": {"title": "Workspace context", "description": "Help colleagues understand the relationship at a glance."},
+                    "children": [
+                      {
+                        "id": "workspace-fields",
+                        "component": "platform.ui.grid",
+                        "props": {"columns": 2},
+                        "children": [
+                          {"id": "person-organisation", "component": "platform.ui.field.select", "props": {"field": "organisation_id"}, "bindings": {"value": {"source": "field", "field": "organisation_id"}}},
+                          {"id": "person-relationship", "component": "platform.ui.field.select", "props": {"field": "relationship_type__c"}, "bindings": {"value": {"source": "field", "field": "relationship_type__c"}}, "permission": "contacts.people.custom-fields.read"}
+                        ]
+                      },
+                      {"id": "person-tags", "component": "platform.ui.field.text", "props": {"field": "tags"}, "bindings": {"value": {"source": "field", "field": "tags"}}}
+                    ]
+                  },
+                  {
+                    "id": "custom-fields-section",
+                    "component": "platform.ui.section",
+                    "props": {"title": "Workspace fields", "description": "Fields configured for this workspace use the same validated form contract."},
+                    "permission": "contacts.people.custom-fields.read",
+                    "children": [
+                      {"id": "person-service-tier", "component": "platform.ui.field.select", "props": {"field": "service_tier__c"}, "bindings": {"value": {"source": "field", "field": "service_tier__c"}}}
+                    ]
+                  },
+                  {
+                    "id": "additional-section",
+                    "component": "platform.ui.section",
+                    "props": {"title": "Additional details"},
+                    "children": [
+                      {"id": "additional-fields", "component": "platform.ui.grid", "props": {"columns": 2}, "children": []}
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "form-guidance",
+                "component": "platform.ui.card",
+                "props": {"title": "Before you save"},
+                "children": [
+                  {"id": "guidance-name", "component": "platform.ui.text", "props": {"text": "Use a recognisable full name."}},
+                  {"id": "guidance-privacy", "component": "platform.ui.text", "props": {"text": "Add only contact details your team is permitted to store."}},
+                  {"id": "guidance-version", "component": "platform.ui.text", "props": {"text_key": "person.guidance.version", "tone": "muted"}}
+                ]
+              }
+            ]
+          },
+          {
+            "id": "form-actions",
+            "component": "platform.ui.action-bar",
+            "props": {"label": "Person form actions"},
+            "children": [
+              {"id": "cancel-person-button", "component": "platform.ui.action", "props": {"action": "cancel-person", "label": "Cancel", "variant": "quiet"}},
+              {"id": "create-person-button", "component": "platform.ui.action", "props": {"action": "create-person", "label": "Save person", "variant": "primary", "submit": true}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "mode"}, "right": {"source": "literal", "value": "create"}}}},
+              {"id": "update-person-button", "component": "platform.ui.action", "props": {"action": "update-person", "label": "Save changes", "variant": "primary", "submit": true}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "mode"}, "right": {"source": "literal", "value": "edit"}}}}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

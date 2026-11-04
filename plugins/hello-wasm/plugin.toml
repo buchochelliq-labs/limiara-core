@@ -1,0 +1,15 @@
+manifest_version = 1
+id = "platform.hello-wasm"
+name = "Hello Wasm"
+version = "0.1.0"
+description = "Sandbox health proof-of-concept"
+runtime = "wasm"
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+[capabilities]
+database = false
+audit = false
+event_publish = []
+outbound_http = []
+secrets = []
+object_storage = false

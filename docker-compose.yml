@@ -1,0 +1,173 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform_bootstrap
+      POSTGRES_PASSWORD: ${PLATFORM_BOOTSTRAP_PASSWORD:-platform_bootstrap}
+      PLATFORM_MIGRATOR_PASSWORD: ${PLATFORM_MIGRATOR_PASSWORD:-platform_migrator}
+      PLATFORM_APP_PASSWORD: ${PLATFORM_APP_PASSWORD:-platform_app}
+      PLATFORM_WORKER_PASSWORD: ${PLATFORM_WORKER_PASSWORD:-platform_worker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/healthcheck.sh:/opt/platform/healthcheck.sh:ro
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD", "bash", "/opt/platform/healthcheck.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  nats:
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports: ["${NATS_PORT:-4222}:4222"]
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null 'http://127.0.0.1:8222/healthz?js-enabled-only=true'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  provision-db-roles:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGPASSWORD: ${PLATFORM_BOOTSTRAP_PASSWORD:-platform_bootstrap}
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform_bootstrap
+      PLATFORM_MIGRATOR_PASSWORD: ${PLATFORM_MIGRATOR_PASSWORD:-platform_migrator}
+      PLATFORM_APP_PASSWORD: ${PLATFORM_APP_PASSWORD:-platform_app}
+      PLATFORM_WORKER_PASSWORD: ${PLATFORM_WORKER_PASSWORD:-platform_worker}
+    volumes:
+      - ./infra/postgres/init:/roles:ro
+    entrypoint: ["/bin/bash", "/roles/010_roles.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    restart: unless-stopped
+    mem_limit: 1g
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-local-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-local-admin}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_PORT: "8081"
+      KC_HOSTNAME: http://auth.localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    ports: ["${KEYCLOAK_PORT:-8081}:8081"]
+    networks:
+      default:
+        aliases: [auth.localhost]
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./infra/keycloak/realm-local.json:/opt/keycloak/data/import/realm-local.json:ro
+      - ./infra/keycloak/healthcheck.sh:/opt/keycloak/healthcheck.sh:ro
+    healthcheck:
+      test: ["CMD", "bash", "/opt/keycloak/healthcheck.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
+  migrate:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGDATABASE: platform
+      PGUSER: platform_migrator
+      PGPASSWORD: ${PLATFORM_MIGRATOR_PASSWORD:-platform_migrator}
+      PLATFORM_ENABLED_PLUGINS: ${PLATFORM_ENABLED_PLUGINS:-contacts}
+    volumes:
+      - ./:/workspace:ro
+    entrypoint: ["/bin/sh", "/workspace/infra/postgres/run-migrations.sh"]
+    depends_on:
+      provision-db-roles:
+        condition: service_completed_successfully
+  api:
+    restart: unless-stopped
+    image: limiara-api:local
+    build: { context: ., dockerfile: infra/docker/api.Dockerfile }
+    environment:
+      PLATFORM_DEFAULT_CONFIG_FILE: /config/default.yml
+      PLATFORM_CONFIG_FILE: ${PLATFORM_CONFIG_FILE:-}
+      PLATFORM__PLATFORM__DATABASE__URL: "postgres://platform_app:${PLATFORM_APP_PASSWORD:-platform_app}@postgres:5432/platform"
+      PLATFORM__PLATFORM__NATS__URL: nats://nats:4222
+      PLATFORM__PLATFORM__OIDC__ISSUER_URL: http://auth.localhost:8081/realms/local
+    volumes: ["./config:/config:ro"]
+    ports: ["${API_PORT:-8080}:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+  worker:
+    restart: unless-stopped
+    image: limiara-worker:local
+    build: { context: ., dockerfile: infra/docker/worker.Dockerfile }
+    environment:
+      PLATFORM_DEFAULT_CONFIG_FILE: /config/default.yml
+      PLATFORM_CONFIG_FILE: ${PLATFORM_CONFIG_FILE:-}
+      PLATFORM__PLATFORM__DATABASE__URL: "postgres://platform_worker:${PLATFORM_WORKER_PASSWORD:-platform_worker}@postgres:5432/platform"
+      # Plugin consumers and jobs run tenant work through the RLS-bound runtime
+      # role; the worker role above keeps only bounded cross-tenant routines.
+      PLATFORM__PLATFORM__WORKER__TENANT_DATABASE_URL: "postgres://platform_app:${PLATFORM_APP_PASSWORD:-platform_app}@postgres:5432/platform"
+      PLATFORM__PLATFORM__NATS__URL: nats://nats:4222
+      PLATFORM__PLATFORM__OIDC__ISSUER_URL: http://auth.localhost:8081/realms/local
+    volumes: ["./config:/config:ro"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+  plugin-runner:
+    restart: unless-stopped
+    image: limiara-plugin-runner:local
+    build: { context: ., dockerfile: infra/docker/plugin-runner.Dockerfile }
+    environment:
+      PLATFORM_DEFAULT_CONFIG_FILE: /config/default.yml
+      PLATFORM_CONFIG_FILE: ${PLATFORM_CONFIG_FILE:-}
+      PLATFORM__PLATFORM__DATABASE__URL: "postgres://platform_app:${PLATFORM_APP_PASSWORD:-platform_app}@postgres:5432/platform"
+      PLATFORM__PLATFORM__NATS__URL: nats://nats:4222
+      PLATFORM__PLATFORM__OIDC__ISSUER_URL: http://auth.localhost:8081/realms/local
+    volumes: ["./config:/config:ro"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  web:
+    restart: unless-stopped
+    image: limiara-web:local
+    build: { context: ., dockerfile: infra/docker/web.Dockerfile }
+    ports: ["${WEB_PORT:-3000}:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  keycloak_data:
+  nats_data:
+  postgres_data:

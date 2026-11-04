@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "id": "example.person-context.action",
+  "owner_plugin": "example.person-context",
+  "target_page": "platform.contacts.person-detail",
+  "target_version": 1,
+  "target_node": "person-actions-slot",
+  "operation": "inside",
+  "priority": 100,
+  "node": {
+    "id": "example-quick-edit-person",
+    "component": "platform.ui.action",
+    "props": {"action": "edit-person", "label": "Quick edit", "variant": "secondary"}
+  }
+}

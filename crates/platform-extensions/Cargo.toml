@@ -1,0 +1,16 @@
+[package]
+name = "platform-extensions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+plugin-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

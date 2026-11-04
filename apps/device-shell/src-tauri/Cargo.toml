@@ -1,0 +1,43 @@
+[package]
+name = "device-shell"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+publish = false
+description = "The Limiara app shell for desktop and mobile: the web shell over the local command bridge."
+
+# Its own workspace: it links the platform's GUI libraries (WebKitGTK on
+# Linux), which the server workspace must not need.
+[workspace]
+
+[lib]
+name = "device_shell"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "device-shell"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+http = "1.1"
+platform-device = { path = "../../../crates/platform-device" }
+platform-objects = { path = "../../../crates/platform-objects" }
+serde_json = "1.0"
+tauri = { version = "2", features = [] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Serve the embedded web build rather than a development server.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[lints.rust]
+unsafe_code = "forbid"

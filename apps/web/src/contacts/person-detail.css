@@ -1,0 +1,11 @@
+.person-detail-page { max-width: 90rem; }
+@media (min-width: 48.01rem) {
+  .person-detail-page .metadata-renderer:not(.metadata-renderer--compact) .meta-split { grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr); }
+}
+.person-detail-page [data-metadata-node="person-record-footer-actions"] { justify-content: flex-start; }
+.person-detail-page .meta-action-bar { align-items: center; flex-wrap: wrap; }
+.person-detail-page .meta-record-summary__values { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+@media (max-width: 48rem) {
+  .person-detail-page .meta-record-summary__values { grid-template-columns: 1fr; }
+}
+.person-detail-arrange { display: flex; justify-content: flex-end; margin-block-end: var(--space-2); }

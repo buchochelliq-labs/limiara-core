@@ -1,0 +1,123 @@
+[
+  {
+    "api_name": "id",
+    "label": "Record ID",
+    "description": "Stable identifier for this record",
+    "field_type": "text",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "name",
+    "label": "Name",
+    "description": "The name shown for this record",
+    "field_type": "text",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "created_at",
+    "label": "Created",
+    "description": "When the record was created",
+    "field_type": "date-time",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "created_by",
+    "label": "Created by",
+    "description": "Who created the record",
+    "field_type": "user",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "updated_at",
+    "label": "Last modified",
+    "description": "The last change a person made",
+    "field_type": "date-time",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "updated_by",
+    "label": "Last modified by",
+    "description": "Who made the last change",
+    "field_type": "user",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "touched_at",
+    "label": "Last touched",
+    "description": "The last change of any kind, including automation and system jobs",
+    "field_type": "date-time",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "version",
+    "label": "Version",
+    "description": "Saved record version",
+    "field_type": "number",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "archived_at",
+    "label": "Archived",
+    "description": "When the record was archived",
+    "field_type": "date-time",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "is_deleted",
+    "label": "Deleted",
+    "description": "Whether the record is in the recycle bin",
+    "field_type": "boolean",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  },
+  {
+    "api_name": "deleted_at",
+    "label": "Deleted on",
+    "description": "When the record was moved to the recycle bin",
+    "field_type": "date-time",
+    "source": "system",
+    "readable": true,
+    "writable": false,
+    "required": false,
+    "classification": "internal"
+  }
+]

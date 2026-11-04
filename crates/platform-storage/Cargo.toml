@@ -1,0 +1,37 @@
+[package]
+name = "platform-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# SQLCipher for workspace files on devices (ADR 0024, "Encryption at rest").
+encryption = ["dep:libsqlite3-sys"]
+
+[dependencies]
+async-trait.workspace = true
+libsqlite3-sys = { version = "=0.30.1", optional = true, features = ["bundled-sqlcipher-vendored-openssl"] }
+rand.workspace = true
+zeroize.workspace = true
+chrono.workspace = true
+platform-audit.workspace = true
+platform-events.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+platform-config.workspace = true
+plugin-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

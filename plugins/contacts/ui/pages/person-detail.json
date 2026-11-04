@@ -1,0 +1,704 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.person-detail",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "kind": "record",
+  "hosts": [
+    "internal-web",
+    "desktop"
+  ],
+  "resource": "platform.contacts.person",
+  "data_sources": [
+    {
+      "id": "person",
+      "resource": "platform.contacts.person",
+      "operation": "read",
+      "parameters": {
+        "id": {
+          "source": "context",
+          "path": "record_id"
+        }
+      },
+      "load": "eager"
+    }
+  ],
+  "actions": [
+    {
+      "id": "back-to-people",
+      "kind": "navigate",
+      "target": "contacts.people.list"
+    },
+    {
+      "id": "edit-person",
+      "kind": "navigate",
+      "target": "contacts.people.edit",
+      "parameters": {
+        "id": {
+          "source": "data-source",
+          "data_source": "person",
+          "path": "record.id"
+        }
+      },
+      "permission": "contacts.people.write"
+    },
+    {
+      "id": "archive-person",
+      "kind": "resource-operation",
+      "target": "platform.contacts.person.archive",
+      "permission": "contacts.people.write"
+    },
+    {
+      "id": "restore-person",
+      "kind": "resource-operation",
+      "target": "platform.contacts.person.restore",
+      "permission": "contacts.people.write"
+    },
+    {
+      "id": "delete-person",
+      "kind": "resource-operation",
+      "target": "platform.contacts.person.delete",
+      "permission": "contacts.people.write"
+    },
+    {
+      "id": "undelete-person",
+      "kind": "resource-operation",
+      "target": "platform.contacts.person.undelete",
+      "permission": "contacts.people.write"
+    }
+  ],
+  "root": {
+    "id": "person-detail-page",
+    "component": "platform.ui.page",
+    "props": {
+      "title": "Person",
+      "description": "Contact details, relationships, workspace fields, and activity.",
+      "icon": "people"
+    },
+    "bindings": {
+      "title": {
+        "source": "data-source",
+        "data_source": "person",
+        "path": "record.title"
+      }
+    },
+    "children": [
+      {
+        "id": "person-highlights",
+        "component": "platform.ui.highlights",
+        "props": {
+          "label": "Person highlights",
+          "resource": "platform.contacts.person",
+          "icon": "people",
+          "fields": [
+            {
+              "key": "organisation_id",
+              "label": "Organisation"
+            },
+            {
+              "key": "job_title",
+              "label": "Job title"
+            },
+            {
+              "key": "email",
+              "label": "Email",
+              "format": "email"
+            },
+            {
+              "key": "telephone",
+              "label": "Phone",
+              "format": "phone"
+            },
+            {
+              "key": "relationship_type__c",
+              "label": "Relationship"
+            }
+          ]
+        },
+        "bindings": {
+          "record": {
+            "source": "data-source",
+            "data_source": "person",
+            "path": "record"
+          }
+        },
+        "children": [
+          {
+            "id": "person-detail-actions",
+            "component": "platform.ui.action-bar",
+            "props": {
+              "label": "Person record actions"
+            },
+            "children": [
+              {
+                "id": "back-to-people-button",
+                "component": "platform.ui.action",
+                "props": {
+                  "action": "back-to-people",
+                  "label": "Back to people",
+                  "variant": "quiet"
+                }
+              },
+              {
+                "id": "edit-person-button",
+                "component": "platform.ui.action",
+                "props": {
+                  "action": "edit-person",
+                  "label": "Edit person",
+                  "variant": "primary"
+                },
+                "permission": "contacts.people.write",
+                "conditions": {
+                  "visible": {
+                    "op": "equal",
+                    "left": {
+                      "source": "context",
+                      "path": "archived"
+                    },
+                    "right": {
+                      "source": "literal",
+                      "value": false
+                    }
+                  }
+                }
+              },
+              {
+                "id": "person-actions-slot",
+                "component": "platform.ui.slot",
+                "props": {
+                  "label": "Plugin person actions",
+                  "kind": "action"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "person-detail-notice",
+        "component": "platform.ui.alert",
+        "props": {
+          "title": "Record update",
+          "variant": "info"
+        },
+        "conditions": {
+          "visible": {
+            "op": "exists",
+            "value": {
+              "source": "data-source",
+              "data_source": "person",
+              "path": "notice"
+            }
+          }
+        },
+        "children": [
+          {
+            "id": "person-detail-notice-text",
+            "component": "platform.ui.text",
+            "props": {
+              "text": "Record updated"
+            },
+            "bindings": {
+              "text": {
+                "source": "data-source",
+                "data_source": "person",
+                "path": "notice"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "person-version-changed",
+        "component": "platform.ui.state",
+        "props": {
+          "variant": "unavailable",
+          "title": "This person changed",
+          "description": "A newer saved version is available. Review the current values before editing."
+        },
+        "conditions": {
+          "visible": {
+            "op": "equal",
+            "left": {
+              "source": "context",
+              "path": "version_changed"
+            },
+            "right": {
+              "source": "literal",
+              "value": true
+            }
+          }
+        }
+      },
+      {
+        "id": "person-archived-state",
+        "component": "platform.ui.state",
+        "props": {
+          "variant": "archived",
+          "title": "Archived person",
+          "description": "This record is read-only until it is restored."
+        },
+        "conditions": {
+          "visible": {
+            "op": "equal",
+            "left": {
+              "source": "context",
+              "path": "archived"
+            },
+            "right": {
+              "source": "literal",
+              "value": true
+            }
+          }
+        }
+      },
+      {
+        "id": "person-stage",
+        "component": "platform.ui.path",
+        "props": {
+          "label": "Relationship stage",
+          "stages": [
+            "Prospect",
+            "Client",
+            "Partner"
+          ],
+          "empty_description": "No relationship recorded for this person."
+        },
+        "bindings": {
+          "current": {
+            "source": "data-source",
+            "data_source": "person",
+            "path": "stage"
+          }
+        },
+        "permission": "contacts.people.custom-fields.read"
+      },
+      {
+        "id": "person-detail-content",
+        "component": "platform.ui.split",
+        "children": [
+          {
+            "id": "person-tabs",
+            "component": "platform.ui.tabs",
+            "props": {
+              "label": "Person sections",
+              "tabs": [
+                "Details",
+                "Related",
+                "Activity"
+              ]
+            },
+            "children": [
+              {
+                "id": "person-details-panel",
+                "component": "platform.ui.stack",
+                "props": {
+                  "gap": "large"
+                },
+                "children": [
+                  {
+                    "id": "person-identity-section",
+                    "component": "platform.ui.section",
+                    "props": {
+                      "title": "Contact information"
+                    },
+                    "children": [
+                      {
+                        "id": "person-identity-summary",
+                        "component": "platform.ui.record-summary",
+                        "props": {
+                          "label": "Contact information",
+                          "resource": "platform.contacts.person",
+                          "show_identity": false,
+                          "fields": [
+                            {
+                              "key": "full_name",
+                              "label": "Full name"
+                            },
+                            {
+                              "key": "job_title",
+                              "label": "Job title"
+                            },
+                            {
+                              "key": "email",
+                              "label": "Email",
+                              "format": "email"
+                            },
+                            {
+                              "key": "telephone",
+                              "label": "Phone",
+                              "format": "phone"
+                            },
+                            {
+                              "key": "organisation_id",
+                              "label": "Organisation"
+                            }
+                          ]
+                        },
+                        "bindings": {
+                          "record": {
+                            "source": "data-source",
+                            "data_source": "person",
+                            "path": "record"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "person-workspace-fields-section",
+                    "component": "platform.ui.section",
+                    "props": {
+                      "title": "Workspace fields",
+                      "description": "Standard and configured custom values available to your role."
+                    },
+                    "children": [
+                      {
+                        "id": "person-workspace-fields",
+                        "component": "platform.ui.record-summary",
+                        "props": {
+                          "label": "Workspace fields",
+                          "resource": "platform.contacts.person",
+                          "show_identity": false,
+                          "fields": [
+                            {
+                              "key": "tags",
+                              "label": "Tags"
+                            },
+                            {
+                              "key": "service_tier__c",
+                              "label": "Service tier"
+                            }
+                          ]
+                        },
+                        "bindings": {
+                          "record": {
+                            "source": "data-source",
+                            "data_source": "person",
+                            "path": "record"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "person-record-metadata-section",
+                    "component": "platform.ui.section",
+                    "props": {
+                      "title": "Record metadata"
+                    },
+                    "children": [
+                      {
+                        "id": "person-record-metadata",
+                        "component": "platform.ui.record-summary",
+                        "props": {
+                          "label": "Record metadata",
+                          "resource": "platform.contacts.person",
+                          "show_identity": false,
+                          "fields": [
+                            {
+                              "key": "created_at",
+                              "label": "Created",
+                              "format": "text"
+                            },
+                            {
+                              "key": "created_by",
+                              "label": "Created by",
+                              "format": "user"
+                            },
+                            {
+                              "key": "updated_at",
+                              "label": "Last modified",
+                              "format": "text"
+                            },
+                            {
+                              "key": "updated_by",
+                              "label": "Last modified by",
+                              "format": "user"
+                            },
+                            {
+                              "key": "touched_at",
+                              "label": "Last touched",
+                              "format": "text"
+                            },
+                            {
+                              "key": "version",
+                              "label": "Version",
+                              "format": "number"
+                            }
+                          ]
+                        },
+                        "bindings": {
+                          "record": {
+                            "source": "data-source",
+                            "data_source": "person",
+                            "path": "record"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "person-record-footer-actions",
+                    "component": "platform.ui.action-bar",
+                    "props": {
+                      "label": "Record lifecycle actions"
+                    },
+                    "children": [
+                      {
+                        "id": "archive-person-button",
+                        "component": "platform.ui.action",
+                        "props": {
+                          "action": "archive-person",
+                          "label": "Archive person",
+                          "variant": "danger"
+                        },
+                        "permission": "contacts.people.write",
+                        "conditions": {
+                          "visible": {
+                            "op": "and",
+                            "args": [
+                              {
+                                "op": "equal",
+                                "left": {
+                                  "source": "context",
+                                  "path": "archived"
+                                },
+                                "right": {
+                                  "source": "literal",
+                                  "value": false
+                                }
+                              },
+                              {
+                                "op": "equal",
+                                "left": {
+                                  "source": "context",
+                                  "path": "deleted"
+                                },
+                                "right": {
+                                  "source": "literal",
+                                  "value": false
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "id": "restore-person-button",
+                        "component": "platform.ui.action",
+                        "props": {
+                          "action": "restore-person",
+                          "label": "Restore person",
+                          "variant": "secondary"
+                        },
+                        "permission": "contacts.people.write",
+                        "conditions": {
+                          "visible": {
+                            "op": "and",
+                            "args": [
+                              {
+                                "op": "equal",
+                                "left": {
+                                  "source": "context",
+                                  "path": "archived"
+                                },
+                                "right": {
+                                  "source": "literal",
+                                  "value": true
+                                }
+                              },
+                              {
+                                "op": "equal",
+                                "left": {
+                                  "source": "context",
+                                  "path": "deleted"
+                                },
+                                "right": {
+                                  "source": "literal",
+                                  "value": false
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "id": "delete-person-button",
+                        "component": "platform.ui.action",
+                        "props": {
+                          "action": "delete-person",
+                          "label": "Delete person",
+                          "variant": "danger"
+                        },
+                        "permission": "contacts.people.write",
+                        "conditions": {
+                          "visible": {
+                            "op": "equal",
+                            "left": {
+                              "source": "context",
+                              "path": "deleted"
+                            },
+                            "right": {
+                              "source": "literal",
+                              "value": false
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "id": "undelete-person-button",
+                        "component": "platform.ui.action",
+                        "props": {
+                          "action": "undelete-person",
+                          "label": "Undelete person",
+                          "variant": "secondary"
+                        },
+                        "permission": "contacts.people.write",
+                        "conditions": {
+                          "visible": {
+                            "op": "equal",
+                            "left": {
+                              "source": "context",
+                              "path": "deleted"
+                            },
+                            "right": {
+                              "source": "literal",
+                              "value": true
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "person-related-panel",
+                "component": "platform.ui.stack",
+                "props": {
+                  "gap": "large"
+                },
+                "children": [
+                  {
+                    "id": "person-organisation-section",
+                    "component": "platform.ui.section",
+                    "permission": "contacts.organisations.read",
+                    "props": {
+                      "title": "Organisation",
+                      "description": "The organisation relationship configured for this person."
+                    },
+                    "children": [
+                      {
+                        "id": "person-organisation-relationship",
+                        "component": "platform.ui.relationship-list",
+                        "props": {
+                          "label": "Related organisation",
+                          "empty_title": "No organisation",
+                          "empty_description": "This person is not linked to an organisation.",
+                          "presentation": "cards"
+                        },
+                        "bindings": {
+                          "items": {
+                            "source": "data-source",
+                            "data_source": "person",
+                            "path": "organisation"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "person-related-list-slot",
+                    "component": "platform.ui.slot",
+                    "props": {
+                      "label": "Person related lists",
+                      "kind": "related-list"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "person-activity-panel",
+                "component": "platform.ui.stack",
+                "props": {
+                  "gap": "large"
+                },
+                "children": [
+                  {
+                    "id": "person-activity",
+                    "component": "platform.ui.timeline",
+                    "props": {
+                      "label": "Person activity",
+                      "empty_title": "No activity yet",
+                      "empty_description": "Changes to this person will appear here."
+                    },
+                    "bindings": {
+                      "items": {
+                        "source": "data-source",
+                        "data_source": "person",
+                        "path": "activity"
+                      }
+                    }
+                  },
+                  {
+                    "id": "person-timeline-slot",
+                    "component": "platform.ui.slot",
+                    "props": {
+                      "label": "Person activity",
+                      "kind": "timeline"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "person-rail",
+            "component": "platform.ui.stack",
+            "props": {
+              "gap": "large"
+            },
+            "children": [
+              {
+                "id": "person-organisation-card",
+                "component": "platform.ui.section",
+                "permission": "contacts.organisations.read",
+                "props": {
+                  "title": "Organisation"
+                },
+                "children": [
+                  {
+                    "id": "person-organisation-card-list",
+                    "component": "platform.ui.relationship-list",
+                    "props": {
+                      "label": "Organisation",
+                      "empty_title": "No organisation",
+                      "empty_description": "This person is not linked to an organisation.",
+                      "presentation": "cards"
+                    },
+                    "bindings": {
+                      "items": {
+                        "source": "data-source",
+                        "data_source": "person",
+                        "path": "organisation"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "person-card-slot",
+                "component": "platform.ui.slot",
+                "props": {
+                  "label": "Person context cards",
+                  "kind": "card"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

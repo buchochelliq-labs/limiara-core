@@ -1,0 +1,24 @@
+{
+  "name": "docs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "node scripts/check-docs.mjs && vitepress build . && node scripts/prepare-deployment.mjs && node scripts/check-built-output.mjs",
+    "preview": "vitepress preview .",
+    "typecheck": "node scripts/check-docs.mjs",
+    "test": "node --test scripts/check-docs.test.mjs scripts/deployment.test.mjs scripts/external-link-checks.test.mjs && node scripts/check-docs.mjs",
+    "test:browser": "vitepress build . && playwright test",
+    "test:external-links": "node scripts/check-external-links.mjs",
+    "spellcheck": "cspell lint \"../../docs/**/*.md\" --config cspell.json --no-progress",
+    "quality": "node --test scripts/check-docs.test.mjs scripts/deployment.test.mjs scripts/external-link-checks.test.mjs && node scripts/check-docs.mjs && cspell lint \"../../docs/**/*.md\" --config cspell.json --no-progress && vitepress build . && node scripts/prepare-deployment.mjs && node scripts/check-built-output.mjs && node scripts/verify-portable-artifact.mjs && playwright test && node scripts/check-external-links.mjs",
+    "lint": "node scripts/check-docs.mjs && cspell lint \"../../docs/**/*.md\" --config cspell.json --no-progress"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "cspell": "10.0.1",
+    "vue": "3.5.40",
+    "vitepress": "1.6.4"
+  }
+}

@@ -1,0 +1,41 @@
+[package]
+name = "worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-nats.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+platform-config.workspace = true
+platform-db.workspace = true
+platform-storage.workspace = true
+platform-events.workspace = true
+platform-observability.workspace = true
+platform-outbox.workspace = true
+platform-inbox.workspace = true
+platform-jobs.workspace = true
+platform-objects.workspace = true
+platform-notify.workspace = true
+plugin-contract.workspace = true
+plugin-registry.workspace = true
+plugin-runtime-native.workspace = true
+contacts-plugin.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+platform-extensions.workspace = true
+platform-id.workspace = true

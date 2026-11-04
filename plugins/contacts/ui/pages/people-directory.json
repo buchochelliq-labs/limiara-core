@@ -1,0 +1,523 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.people-directory",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "kind": "collection",
+  "hosts": [
+    "internal-web",
+    "desktop"
+  ],
+  "resource": "platform.contacts.person",
+  "data_sources": [
+    {
+      "id": "directory",
+      "resource": "platform.contacts.person",
+      "operation": "list",
+      "load": "eager"
+    }
+  ],
+  "actions": [
+    {
+      "id": "add-person",
+      "kind": "navigate",
+      "target": "contacts.people.create",
+      "permission": "contacts.people.write"
+    },
+    {
+      "id": "show-people",
+      "kind": "navigate",
+      "target": "contacts.people.list"
+    },
+    {
+      "id": "show-organisations",
+      "kind": "navigate",
+      "target": "contacts.organisations.list"
+    },
+    {
+      "id": "open-person-row",
+      "kind": "navigate",
+      "target": "contacts.people.open",
+      "parameters": {
+        "id": {
+          "source": "literal",
+          "value": ""
+        }
+      }
+    },
+    {
+      "id": "search-people",
+      "kind": "navigate",
+      "target": "contacts.people.search",
+      "parameters": {
+        "query": {
+          "source": "literal",
+          "value": ""
+        }
+      }
+    },
+    {
+      "id": "filter-people",
+      "kind": "navigate",
+      "target": "contacts.people.filter",
+      "parameters": {
+        "label": {
+          "source": "literal",
+          "value": "All"
+        }
+      }
+    },
+    {
+      "id": "view-people",
+      "kind": "navigate",
+      "target": "contacts.people.view",
+      "parameters": {
+        "view": {
+          "source": "literal",
+          "value": "table"
+        }
+      }
+    },
+    {
+      "id": "sort-people",
+      "kind": "navigate",
+      "target": "contacts.people.sort",
+      "parameters": {
+        "sort": {
+          "source": "literal",
+          "value": "name"
+        }
+      }
+    },
+    {
+      "id": "clear-people-query",
+      "kind": "navigate",
+      "target": "contacts.people.clear"
+    },
+    {
+      "id": "select-person",
+      "kind": "navigate",
+      "target": "contacts.people.select",
+      "parameters": {
+        "id": {
+          "source": "literal",
+          "value": ""
+        }
+      }
+    },
+    {
+      "id": "previous-page",
+      "kind": "navigate",
+      "target": "contacts.people.cursor",
+      "parameters": {
+        "cursor": {
+          "source": "literal",
+          "value": ""
+        }
+      }
+    },
+    {
+      "id": "next-page",
+      "kind": "navigate",
+      "target": "contacts.people.cursor",
+      "parameters": {
+        "cursor": {
+          "source": "literal",
+          "value": ""
+        }
+      }
+    },
+    {
+      "id": "edit-person",
+      "kind": "navigate",
+      "target": "contacts.people.edit",
+      "permission": "contacts.people.write",
+      "parameters": {
+        "id": {
+          "source": "data-source",
+          "data_source": "directory",
+          "path": "selected.id"
+        }
+      }
+    },
+    {
+      "id": "open-person",
+      "kind": "navigate",
+      "target": "contacts.people.open",
+      "parameters": {
+        "id": {
+          "source": "data-source",
+          "data_source": "directory",
+          "path": "selected.id"
+        }
+      }
+    }
+  ],
+  "root": {
+    "id": "people-page",
+    "component": "platform.ui.page",
+    "props": {
+      "title": "People",
+      "description": "Find the people your team works with and keep their context close at hand.",
+      "icon": "people"
+    },
+    "children": [
+      {
+        "id": "people-page-actions",
+        "component": "platform.ui.action-bar",
+        "props": {
+          "label": "People page actions"
+        },
+        "children": [
+          {
+            "id": "add-person-button",
+            "component": "platform.ui.action",
+            "permission": "contacts.people.write",
+            "props": {
+              "action": "add-person",
+              "label": "Add person",
+              "variant": "primary"
+            }
+          }
+        ]
+      },
+      {
+        "id": "contacts-sections",
+        "component": "platform.ui.action-bar",
+        "props": {
+          "label": "Contacts sections"
+        },
+        "children": [
+          {
+            "id": "people-section-button",
+            "component": "platform.ui.action",
+            "props": {
+              "action": "show-people",
+              "label": "People",
+              "variant": "primary"
+            }
+          },
+          {
+            "id": "organisations-section-button",
+            "component": "platform.ui.action",
+            "props": {
+              "action": "show-organisations",
+              "label": "Organisations",
+              "variant": "quiet"
+            }
+          }
+        ]
+      },
+      {
+        "id": "directory-notice",
+        "component": "platform.ui.alert",
+        "props": {
+          "title": "Coming next",
+          "variant": "info"
+        },
+        "conditions": {
+          "visible": {
+            "op": "exists",
+            "value": {
+              "source": "data-source",
+              "data_source": "directory",
+              "path": "notice"
+            }
+          }
+        },
+        "children": [
+          {
+            "id": "directory-notice-text",
+            "component": "platform.ui.text",
+            "props": {
+              "text": "Notice"
+            },
+            "bindings": {
+              "text": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "notice"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "people-controls",
+        "component": "platform.ui.collection-controls",
+        "props": {
+          "label": "People search and filters"
+        },
+        "children": [
+          {
+            "id": "people-search",
+            "component": "platform.ui.query-input",
+            "props": {
+              "label": "Search people",
+              "placeholder": "Search by name or email address",
+              "action": "search-people",
+              "parameter": "query",
+              "submit_label": "Search"
+            },
+            "bindings": {
+              "value": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "query"
+              }
+            }
+          },
+          {
+            "id": "people-relationship-filter",
+            "component": "platform.ui.query-select",
+            "props": {
+              "label": "Filter by relationship",
+              "action": "filter-people",
+              "parameter": "label",
+              "options": [
+                {
+                  "value": "All",
+                  "label": "All relationships"
+                },
+                {
+                  "value": "Client",
+                  "label": "Client"
+                },
+                {
+                  "value": "Prospect",
+                  "label": "Prospect"
+                },
+                {
+                  "value": "Partner",
+                  "label": "Partner"
+                }
+              ]
+            },
+            "bindings": {
+              "value": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "label"
+              }
+            }
+          },
+          {
+            "id": "people-sort",
+            "component": "platform.ui.query-select",
+            "props": {
+              "label": "Sort people",
+              "action": "sort-people",
+              "parameter": "sort",
+              "options": [
+                {
+                  "value": "name",
+                  "label": "Name A-Z"
+                },
+                {
+                  "value": "recent",
+                  "label": "Recently updated"
+                }
+              ]
+            },
+            "bindings": {
+              "value": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "sort"
+              }
+            }
+          },
+          {
+            "id": "people-view",
+            "component": "platform.ui.query-select",
+            "props": {
+              "label": "View",
+              "action": "view-people",
+              "parameter": "view",
+              "options": [
+                {
+                  "value": "table",
+                  "label": "Table"
+                },
+                {
+                  "value": "cards",
+                  "label": "Cards"
+                }
+              ]
+            },
+            "bindings": {
+              "value": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "presentation"
+              }
+            }
+          },
+          {
+            "id": "clear-people-query-button",
+            "component": "platform.ui.action",
+            "props": {
+              "action": "clear-people-query",
+              "label": "Clear filters",
+              "variant": "quiet"
+            },
+            "conditions": {
+              "visible": {
+                "op": "equal",
+                "left": {
+                  "source": "data-source",
+                  "data_source": "directory",
+                  "path": "has_filters"
+                },
+                "right": {
+                  "source": "literal",
+                  "value": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "people-filter-chips",
+        "component": "platform.ui.filter-chips",
+        "props": {
+          "label": "Active filters",
+          "clear_action": "clear-people-query",
+          "clear_label": "Clear all"
+        },
+        "bindings": {
+          "chips": {
+            "source": "data-source",
+            "data_source": "directory",
+            "path": "chips"
+          }
+        }
+      },
+      {
+        "id": "people-content",
+        "component": "platform.ui.split",
+        "children": [
+          {
+            "id": "people-results",
+            "component": "platform.ui.section",
+            "props": {
+              "title": "People directory"
+            },
+            "bindings": {
+              "title": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "result_heading"
+              },
+              "description": {
+                "source": "data-source",
+                "data_source": "directory",
+                "path": "result_description"
+              }
+            },
+            "children": [
+              {
+                "id": "people-collection",
+                "component": "platform.ui.collection",
+                "props": {
+                  "label": "People",
+                  "resource": "platform.contacts.person",
+                  "select_action": "select-person",
+                  "selection_parameter": "id",
+                  "presentation": "auto",
+                  "fields": [
+                    {
+                      "key": "organisation_id",
+                      "label": "Organisation"
+                    },
+                    {
+                      "key": "email",
+                      "label": "Email",
+                      "format": "email"
+                    },
+                    {
+                      "key": "relationship_type__c",
+                      "label": "Relationship"
+                    },
+                    {
+                      "key": "updated_at",
+                      "label": "Updated",
+                      "format": "text",
+                      "sort": "recent"
+                    }
+                  ],
+                  "identity_label": "Name",
+                  "identity_sort": "name",
+                  "sort_action": "sort-people",
+                  "sort_parameter": "sort",
+                  "open_action": "open-person-row",
+                  "open_parameter": "id",
+                  "open_label": "Open"
+                },
+                "bindings": {
+                  "items": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "items"
+                  },
+                  "selected_id": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "selected_id"
+                  },
+                  "presentation": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "presentation"
+                  },
+                  "sort": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "sort"
+                  },
+                  "sort_direction": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "sort_direction"
+                  }
+                }
+              },
+              {
+                "id": "people-cursor",
+                "component": "platform.ui.cursor",
+                "props": {
+                  "label": "People result pages",
+                  "previous_action": "previous-page",
+                  "next_action": "next-page",
+                  "parameter": "cursor"
+                },
+                "bindings": {
+                  "previous_cursor": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "previous_cursor"
+                  },
+                  "next_cursor": {
+                    "source": "data-source",
+                    "data_source": "directory",
+                    "path": "next_cursor"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "id": "person-preview",
+            "component": "platform.ui.record-preview",
+            "props": {
+              "label": "Person preview",
+              "empty_title": "Select a person",
+              "empty_description": "Choose a person to keep key contact details visible while you scan the directory."
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

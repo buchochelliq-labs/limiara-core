@@ -1,0 +1,32 @@
+manifest_version = 1
+id = "example.person-context"
+name = "Person context fixture"
+version = "0.1.0"
+description = "Non-production fixture proving person detail card and action slots"
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "local-development"
+
+[dependencies."platform.contacts"]
+version = ">=0.1.0,<0.2.0"
+reasons = ["extension"]
+
+[[ui.extensions]]
+id = "example.person-context.card"
+path = "ui/extensions/person-card.json"
+
+[[ui.extensions]]
+id = "example.person-context.action"
+path = "ui/extensions/person-action.json"
+
+[[ui.extensions]]
+id = "example.person-context.related-list"
+path = "ui/extensions/person-related-list.json"
+
+[[ui.extensions]]
+id = "example.person-context.timeline"
+path = "ui/extensions/person-timeline.json"

@@ -1,0 +1,21 @@
+{
+  "attempts": 2,
+  "backoffMs": 500,
+  "concurrency": 6,
+  "timeoutMs": 10000,
+  "critical": [],
+  "ignored": [
+    {
+      "pattern": "^https://docs\\.limiara\\.org(?:/|$)",
+      "reason": "Production domain is intentionally pending issue #129."
+    },
+    {
+      "pattern": "^https://github\\.com/buchochelliq-labs/limiara-core/(?:issues|pull)/",
+      "reason": "The private repository returns 404 to the anonymous link-check client."
+    },
+    {
+      "pattern": "^https://www\\.reddit\\.com/",
+      "reason": "Reddit blocks the automated link-check client; these are bounded research citations."
+    }
+  ]
+}

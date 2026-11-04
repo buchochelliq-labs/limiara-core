@@ -1,0 +1,11 @@
+.git
+.gitignore
+**/node_modules
+**/dist
+**/.vitepress/cache
+**/.vitepress/dist
+**/playwright-report
+**/test-results
+target
+**/target
+config/local.yml

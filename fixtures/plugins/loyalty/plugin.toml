@@ -1,0 +1,74 @@
+manifest_version = 1
+id = "example.loyalty"
+name = "Loyalty"
+version = "0.1.0"
+description = "Non-production fixture proving one plugin can add fields to several records of another plugin (ADR 0012)"
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "local-development"
+artifact_path = "artifact/native.link"
+artifact_digest = "sha256:00d9562804c273ee50523bef536fbdc934b5086f07c7962b387e36b52b394171"
+
+# Loyalty stores nothing of its own; its values live with host records.
+[storage]
+backends = ["postgres", "sqlite"]
+
+[dependencies."platform.contacts"]
+version = ">=0.1.0,<0.2.0"
+reasons = ["extension"]
+description = "Adds loyalty fields to people and organisations"
+
+[[permissions]]
+id = "loyalty.fields.read"
+description = "See loyalty fields on records"
+[[permissions]]
+id = "loyalty.fields.write"
+description = "Change loyalty fields on records"
+
+[[extensions.fields]]
+host = "platform.contacts"
+target = "platform.contacts.person"
+key = "tier"
+label = "Loyalty tier"
+description = "Membership tier used for service priority"
+field_type = "choice"
+options = [
+  { value = "bronze", label = "Bronze" },
+  { value = "silver", label = "Silver" },
+  { value = "gold", label = "Gold" },
+]
+read_permission = "loyalty.fields.read"
+write_permission = "loyalty.fields.write"
+classification = "internal"
+
+[[extensions.fields]]
+host = "platform.contacts"
+target = "platform.contacts.person"
+key = "member_since"
+label = "Member since"
+field_type = "date"
+read_permission = "loyalty.fields.read"
+write_permission = "loyalty.fields.write"
+
+[[extensions.fields]]
+host = "platform.contacts"
+target = "platform.contacts.person"
+key = "points"
+label = "Points balance"
+field_type = "number"
+read_permission = "loyalty.fields.read"
+write_permission = "loyalty.fields.write"
+
+[[extensions.fields]]
+host = "platform.contacts"
+target = "platform.contacts.organisation"
+key = "account_code"
+label = "Loyalty account code"
+field_type = "text"
+max_length = 32
+read_permission = "loyalty.fields.read"
+write_permission = "loyalty.fields.write"

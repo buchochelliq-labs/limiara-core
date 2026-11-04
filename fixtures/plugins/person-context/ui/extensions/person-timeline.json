@@ -1,0 +1,19 @@
+{
+  "contract_version": 1,
+  "id": "example.person-context.timeline",
+  "owner_plugin": "example.person-context",
+  "target_page": "platform.contacts.person-detail",
+  "target_version": 1,
+  "target_node": "person-timeline-slot",
+  "operation": "inside",
+  "priority": 100,
+  "node": {
+    "id": "example-recent-activity",
+    "component": "platform.ui.card",
+    "hosts": ["internal-web", "desktop"],
+    "props": {"title": "Recent activity"},
+    "children": [
+      {"id": "example-recent-activity-copy", "component": "platform.ui.text", "props": {"text": "Fixture timeline contribution loaded without executing customer code.", "tone": "muted"}}
+    ]
+  }
+}

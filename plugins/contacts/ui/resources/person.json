@@ -1,0 +1,120 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.person",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "label": "Person",
+  "name_field": "full_name",
+  "fields": [
+    {
+      "api_name": "full_name",
+      "label": "Full name",
+      "description": "Required",
+      "field_type": "text",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "required": true,
+      "classification": "personal",
+      "validation_schema": {"type": "string", "minLength": 1}
+    },
+    {
+      "api_name": "email",
+      "label": "Email address",
+      "description": "Optional",
+      "field_type": "email",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "classification": "personal",
+      "validation_schema": {"type": "string", "format": "email"}
+    },
+    {
+      "api_name": "telephone",
+      "label": "Phone number",
+      "description": "Optional, include the country code when known",
+      "field_type": "phone",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "classification": "personal",
+      "validation_schema": {"type": "string", "minDigits": 7}
+    },
+    {
+      "api_name": "job_title",
+      "label": "Job title",
+      "description": "Role or position",
+      "field_type": "text",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "classification": "internal"
+    },
+    {
+      "api_name": "organisation_id",
+      "label": "Organisation",
+      "description": "Optional",
+      "field_type": "reference",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "classification": "internal"
+    },
+    {
+      "api_name": "tags",
+      "label": "Tags",
+      "description": "Optional, separate tags with commas",
+      "field_type": "text",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "classification": "internal"
+    },
+    {
+      "api_name": "relationship_type__c",
+      "label": "Relationship",
+      "description": "How this person relates to the workspace",
+      "field_type": "choice",
+      "source": "tenant-custom",
+      "readable": true,
+      "writable": true,
+      "permission": "contacts.people.custom-fields.read",
+      "classification": "internal",
+      "default_value": "Client",
+      "options": [
+        {"value": "Client", "label": "Client"},
+        {"value": "Prospect", "label": "Prospect"},
+        {"value": "Partner", "label": "Partner"}
+      ]
+    },
+    {
+      "api_name": "service_tier__c",
+      "label": "Service tier",
+      "description": "Tenant-defined service priority",
+      "field_type": "choice",
+      "source": "tenant-custom",
+      "readable": true,
+      "writable": true,
+      "permission": "contacts.people.custom-fields.read",
+      "classification": "internal",
+      "default_value": "standard",
+      "options": [
+        {"value": "standard", "label": "Standard"},
+        {"value": "priority", "label": "Priority"}
+      ]
+    }
+  ],
+  "relationships": [
+    {"id": "organisation", "target_resource": "platform.contacts.organisation", "cardinality": "one", "permission": "contacts.organisations.read"}
+  ],
+  "operations": [
+    {"id": "read", "kind": "read", "permission": "contacts.people.read", "hosts": ["internal-web", "desktop"]},
+    {"id": "list", "kind": "list", "permission": "contacts.people.read", "hosts": ["internal-web", "desktop"]},
+    {"id": "create", "kind": "create", "permission": "contacts.people.write", "hosts": ["internal-web", "desktop"]},
+    {"id": "update", "kind": "update", "permission": "contacts.people.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "archive", "kind": "archive", "permission": "contacts.people.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "restore", "kind": "command", "permission": "contacts.people.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "delete", "kind": "command", "permission": "contacts.people.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "undelete", "kind": "command", "permission": "contacts.people.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]}
+  ]
+}

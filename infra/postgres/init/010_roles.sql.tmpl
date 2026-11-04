@@ -1,0 +1,167 @@
+\set ON_ERROR_STOP on
+
+-- The image-created platform_bootstrap user is restricted to local database
+-- initialization. Services use one of the three least-privilege roles below.
+SELECT format(
+  'CREATE ROLE platform_migrator WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'migrator_password'
+)
+WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'platform_migrator')
+\gexec
+
+SELECT format(
+  'ALTER ROLE platform_migrator WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'migrator_password'
+)
+\gexec
+
+SELECT format(
+  'CREATE ROLE platform_app WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'app_password'
+)
+WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'platform_app')
+\gexec
+
+SELECT format(
+  'ALTER ROLE platform_app WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'app_password'
+)
+\gexec
+
+SELECT format(
+  'CREATE ROLE platform_worker WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'worker_password'
+)
+WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'platform_worker')
+\gexec
+
+SELECT format(
+  'ALTER ROLE platform_worker WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  :'worker_password'
+)
+\gexec
+
+ALTER DATABASE platform OWNER TO platform_migrator;
+REVOKE ALL ON DATABASE platform FROM PUBLIC;
+GRANT CONNECT ON DATABASE platform TO platform_app;
+GRANT CONNECT ON DATABASE platform TO platform_worker;
+
+\connect platform
+
+ALTER SCHEMA public OWNER TO platform_migrator;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+
+-- Keep default-privilege and explicit core-capability updates atomic. Existing
+-- plugin object ACLs are deliberately left untouched: a plugin migration may
+-- have made a table append-only or granted a bounded function capability.
+BEGIN;
+
+GRANT USAGE ON SCHEMA public TO platform_app;
+GRANT USAGE ON SCHEMA public TO platform_worker;
+
+-- Preserve table-specific least-privilege exceptions when this provisioning
+-- script is rerun for password rotation after migrations have completed.
+-- The inbox is an append-only processing ledger for the runtime role.
+SELECT 'REVOKE UPDATE, DELETE ON TABLE public.inbox FROM platform_app'
+WHERE to_regclass('public.inbox') IS NOT NULL
+\gexec
+
+SELECT 'REVOKE UPDATE, DELETE ON TABLE public.audit_log FROM platform_app'
+WHERE to_regclass('public.audit_log') IS NOT NULL
+\gexec
+
+SELECT 'REVOKE UPDATE, DELETE ON TABLE public.outbox FROM platform_app'
+WHERE to_regclass('public.outbox') IS NOT NULL
+\gexec
+
+-- Authorization assignments are read-only to the request role.
+SELECT format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.%I FROM platform_app', relname)
+FROM pg_catalog.pg_class
+WHERE relnamespace = 'public'::regnamespace
+  AND relname IN ('memberships', 'roles', 'role_permissions', 'user_roles')
+  AND relkind = 'r'
+  AND to_regprocedure('public.platform_session_workspace_access(uuid,uuid,uuid)') IS NOT NULL
+\gexec
+
+-- Plugin job schedules change only through lease-checked routines.
+SELECT 'REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.plugin_job_schedules FROM platform_app'
+WHERE to_regclass('public.plugin_job_schedules') IS NOT NULL
+\gexec
+
+SELECT 'GRANT SELECT ON TABLE public.plugin_migration_ledger TO platform_worker'
+WHERE to_regclass('public.plugin_migration_ledger') IS NOT NULL
+\gexec
+
+-- Regrant only the bounded runtime capabilities that migrations deliberately
+-- expose. Conditional grants let this script provision both new databases and
+-- existing volumes at any migration level.
+SELECT 'GRANT EXECUTE ON FUNCTION public.lookup_ui_external_publication(text) TO platform_app'
+WHERE to_regprocedure('public.lookup_ui_external_publication(text)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_append_global_plugin_audit(uuid,text,text,jsonb) TO platform_app'
+WHERE to_regprocedure('public.platform_append_global_plugin_audit(uuid,text,text,jsonb)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_recover_plugin_transitions() TO platform_worker'
+WHERE to_regprocedure('public.platform_recover_plugin_transitions()') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_claim_outbox_batch(bigint,uuid,bigint) TO platform_worker'
+WHERE to_regprocedure('public.platform_claim_outbox_batch(bigint,uuid,bigint)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_mark_outbox_published(uuid,uuid,uuid) TO platform_worker'
+WHERE to_regprocedure('public.platform_mark_outbox_published(uuid,uuid,uuid)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_mark_outbox_failed(uuid,uuid,uuid,bigint,text) TO platform_worker'
+WHERE to_regprocedure('public.platform_mark_outbox_failed(uuid,uuid,uuid,bigint,text)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_mark_outbox_quarantined(uuid,uuid,uuid,text) TO platform_worker'
+WHERE to_regprocedure('public.platform_mark_outbox_quarantined(uuid,uuid,uuid,text)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_outbox_backlog() TO platform_worker'
+WHERE to_regprocedure('public.platform_outbox_backlog()') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_complete_plugin_job(text,text,uuid,jsonb) TO platform_app'
+WHERE to_regprocedure('public.platform_complete_plugin_job(text,text,uuid,jsonb)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_ensure_plugin_job_schedules(text,text,integer) TO platform_worker'
+WHERE to_regprocedure('public.platform_ensure_plugin_job_schedules(text,text,integer)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_claim_plugin_jobs(text,text,bigint,uuid,bigint) TO platform_worker'
+WHERE to_regprocedure('public.platform_claim_plugin_jobs(text,text,bigint,uuid,bigint)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_fail_plugin_job(uuid,text,text,uuid,bigint,text) TO platform_worker'
+WHERE to_regprocedure('public.platform_fail_plugin_job(uuid,text,text,uuid,bigint,text)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_release_plugin_job(uuid,text,text,uuid,bigint) TO platform_worker'
+WHERE to_regprocedure('public.platform_release_plugin_job(uuid,text,text,uuid,bigint)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_session_workspace_access(uuid,uuid,uuid) TO platform_app'
+WHERE to_regprocedure('public.platform_session_workspace_access(uuid,uuid,uuid)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.platform_due_extension_purges(integer,integer) TO platform_worker'
+WHERE to_regprocedure('public.platform_due_extension_purges(integer,integer)') IS NOT NULL
+\gexec
+
+-- Objects created by future core or plugin migrations inherit runtime access
+-- without granting ownership or DDL rights to the application role.
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator GRANT USAGE ON SCHEMAS TO platform_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO platform_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator GRANT USAGE, SELECT ON SEQUENCES TO platform_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator REVOKE EXECUTE ON FUNCTIONS FROM platform_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE platform_migrator REVOKE EXECUTE ON FUNCTIONS FROM platform_worker;
+
+COMMIT;

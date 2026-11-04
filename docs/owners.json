@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "owners": {
+    "documentation": {
+      "name": "Documentation and developer experience",
+      "scope": "Site platform, authoring policy, navigation, contribution workflow, support and release-documentation process.",
+      "requiredReviews": ["documentation"]
+    },
+    "platform-architecture": {
+      "name": "Platform architecture",
+      "scope": "Kernel boundaries, persistence, tenancy, events, control/data planes, identifiers and cross-domain contracts.",
+      "requiredReviews": ["platform-architecture"]
+    },
+    "api-platform": {
+      "name": "API and event platform",
+      "scope": "Public API and event specifications, compatibility, authorization boundaries and generated reference content.",
+      "requiredReviews": ["api-platform", "security"]
+    },
+    "plugin-platform": {
+      "name": "Plugin platform",
+      "scope": "Plugin contracts, execution modes, lifecycle, metadata contributions, provenance and extension guidance.",
+      "requiredReviews": ["plugin-platform"]
+    },
+    "web-product": {
+      "name": "Web product and design system",
+      "scope": "Application shell, interaction benchmarks, UI foundations, accessibility and metadata-rendered experiences.",
+      "requiredReviews": ["web-product", "accessibility"]
+    },
+    "developer-experience": {
+      "name": "Developer experience",
+      "scope": "Local setup, dependency policy, reproducible builds and contributor tooling.",
+      "requiredReviews": ["developer-experience"]
+    },
+    "operations": {
+      "name": "Service operations",
+      "scope": "Migration, backup, restore, health, recovery and operator runbooks.",
+      "requiredReviews": ["operations", "security"]
+    },
+    "security": {
+      "name": "Security and privacy",
+      "scope": "Threat models, privacy, authorization, supply-chain controls and public security-design disclosures.",
+      "requiredReviews": ["security"]
+    }
+  },
+  "crossCuttingReview": {
+    "publicationChange": ["documentation"],
+    "securityDesign": ["security"],
+    "publicApiOrEvent": ["api-platform", "security"],
+    "commercialBoundary": ["platform-architecture"],
+    "accessibilityBehavior": ["accessibility"]
+  }
+}

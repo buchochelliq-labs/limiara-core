@@ -1,0 +1,275 @@
+manifest_version = 1
+id = "platform.contacts"
+name = "Contacts"
+version = "0.1.0"
+description = "People and organisations"
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "core-oob"
+source_repository = "https://github.com/buchochelliq-labs/limiara-core"
+source_revision = "b02ea1b4ea400ca69ea7d3f70a2c06a15e553afb"
+build_provenance = "https://github.com/buchochelliq-labs/limiara-core/attestations/platform.contacts.intoto.jsonl"
+artifact_digest = "sha256:8406662dc1ed4d4b13e054767c45ff8fed8740c9f032be0abf66c2672a178554"
+artifact_path = "artifact/native.link"
+signature = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.contacts-0.1.0/platform.contacts.sig"
+sbom = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.contacts-0.1.0/platform.contacts.spdx.json"
+
+# Store adapters linked into this build (ADR 0013). The Contacts store runs on
+# both; its worker contributions and extension host port follow the kernel
+# stores on SQLite (#282).
+[storage]
+backends = ["postgres", "sqlite"]
+
+[entrypoints]
+api = true
+worker = true
+web = "contacts"
+
+[[permissions]]
+id = "contacts.people.read"
+description = "Read people"
+[[permissions]]
+id = "contacts.people.write"
+description = "Create, update, and archive people"
+[[permissions]]
+id = "contacts.people.custom-fields.read"
+description = "Read and edit permitted person custom fields"
+[[permissions]]
+id = "contacts.organisations.read"
+description = "Read organisations"
+[[permissions]]
+id = "contacts.organisations.write"
+description = "Create, update, and archive organisations"
+[[permissions]]
+id = "contacts.organisations.custom-fields.read"
+description = "Read and edit permitted organisation custom fields"
+[[permissions]]
+id = "contacts.settings.manage"
+description = "Manage Contacts custom-field definitions and settings"
+
+[[events.publish]]
+type = "platform.contacts.person-created.v1"
+[[events.publish]]
+type = "platform.contacts.person-updated.v1"
+[[events.publish]]
+type = "platform.contacts.person-archived.v1"
+[[events.publish]]
+type = "platform.contacts.organisation-created.v1"
+[[events.publish]]
+type = "platform.contacts.organisation-updated.v1"
+[[events.publish]]
+type = "platform.contacts.organisation-archived.v1"
+[[events.publish]]
+type = "platform.contacts.person-deleted.v1"
+[[events.publish]]
+type = "platform.contacts.person-undeleted.v1"
+[[events.publish]]
+type = "platform.contacts.organisation-deleted.v1"
+[[events.publish]]
+type = "platform.contacts.organisation-undeleted.v1"
+[[events.publish]]
+type = "platform.contacts.custom-field-definition-created.v1"
+[[events.publish]]
+type = "platform.contacts.custom-field-definition-updated.v1"
+[[events.publish]]
+type = "platform.contacts.custom-field-definition-disabled.v1"
+[[events.publish]]
+type = "platform.contacts.custom-field-definition-archived.v1"
+
+[[events.consume]]
+type = "platform.contacts.person-created.v1"
+[[events.consume]]
+type = "platform.contacts.person-updated.v1"
+[[events.consume]]
+type = "platform.contacts.person-archived.v1"
+[[events.consume]]
+type = "platform.contacts.organisation-created.v1"
+[[events.consume]]
+type = "platform.contacts.organisation-updated.v1"
+[[events.consume]]
+type = "platform.contacts.organisation-archived.v1"
+[[events.consume]]
+type = "platform.contacts.person-deleted.v1"
+[[events.consume]]
+type = "platform.contacts.person-undeleted.v1"
+[[events.consume]]
+type = "platform.contacts.organisation-deleted.v1"
+[[events.consume]]
+type = "platform.contacts.organisation-undeleted.v1"
+
+[[worker.consumers]]
+id = "platform.contacts.activity-timeline-v1"
+events = [
+  "platform.contacts.person-created.v1",
+  "platform.contacts.person-updated.v1",
+  "platform.contacts.person-archived.v1",
+  "platform.contacts.organisation-created.v1",
+  "platform.contacts.organisation-updated.v1",
+  "platform.contacts.organisation-archived.v1",
+  "platform.contacts.person-deleted.v1",
+  "platform.contacts.person-undeleted.v1",
+  "platform.contacts.organisation-deleted.v1",
+  "platform.contacts.organisation-undeleted.v1",
+]
+
+[[worker.jobs]]
+id = "platform.contacts.list-cursor-cleanup-v1"
+interval_seconds = 3600
+
+[[worker.jobs]]
+id = "platform.contacts.recycle-bin-purge-v1"
+interval_seconds = 3600
+
+[[ui.navigation]]
+id = "contacts"
+label = "People"
+route = "/contacts"
+icon = "people"
+order = 100
+permission = "contacts.people.read"
+
+[[ui.navigation]]
+id = "contacts-organisations"
+label = "Organisations"
+route = "/contacts/organisations"
+icon = "organisations"
+order = 110
+permission = "contacts.organisations.read"
+
+[[ui.resources]]
+id = "platform.contacts.person"
+path = "ui/resources/person.json"
+
+[[ui.resources]]
+id = "platform.contacts.organisation"
+path = "ui/resources/organisation.json"
+
+[[ui.pages]]
+id = "platform.contacts.person-form"
+path = "ui/pages/person-form.json"
+
+[[ui.pages]]
+id = "platform.contacts.people-directory"
+path = "ui/pages/people-directory.json"
+
+[[ui.pages]]
+id = "platform.contacts.person-detail"
+path = "ui/pages/person-detail.json"
+
+[[ui.pages]]
+id = "platform.contacts.organisation-directory"
+path = "ui/pages/organisation-directory.json"
+
+[[ui.pages]]
+id = "platform.contacts.organisation-detail"
+path = "ui/pages/organisation-detail.json"
+
+[capabilities]
+database = true
+audit = true
+event_publish = [
+  "platform.contacts.person-created.v1",
+  "platform.contacts.person-updated.v1",
+  "platform.contacts.person-archived.v1",
+  "platform.contacts.organisation-created.v1",
+  "platform.contacts.organisation-updated.v1",
+  "platform.contacts.organisation-archived.v1",
+  "platform.contacts.person-deleted.v1",
+  "platform.contacts.person-undeleted.v1",
+  "platform.contacts.organisation-deleted.v1",
+  "platform.contacts.organisation-undeleted.v1",
+  "platform.contacts.custom-field-definition-created.v1",
+  "platform.contacts.custom-field-definition-updated.v1",
+  "platform.contacts.custom-field-definition-disabled.v1",
+  "platform.contacts.custom-field-definition-archived.v1",
+]
+event_consume = [
+  "platform.contacts.person-created.v1",
+  "platform.contacts.person-updated.v1",
+  "platform.contacts.person-archived.v1",
+  "platform.contacts.organisation-created.v1",
+  "platform.contacts.organisation-updated.v1",
+  "platform.contacts.organisation-archived.v1",
+  "platform.contacts.person-deleted.v1",
+  "platform.contacts.person-undeleted.v1",
+  "platform.contacts.organisation-deleted.v1",
+  "platform.contacts.organisation-undeleted.v1",
+]
+outbound_http = []
+secrets = []
+object_storage = false
+
+[entitlements]
+required = ["contacts.basic"]
+
+# Places where an administrator may put fields other plugins add to people
+# (ADR 0012). Unarranged fields appear in the default zone of each kind.
+[[ui.field_zones]]
+id = "highlights"
+resource = "platform.contacts.person"
+label = "Highlights"
+kind = "display"
+page = "platform.contacts.person-detail"
+node = "person-highlights"
+
+[[ui.field_zones]]
+id = "contact-information"
+resource = "platform.contacts.person"
+label = "Contact information"
+kind = "display"
+page = "platform.contacts.person-detail"
+node = "person-identity-summary"
+default = true
+
+[[ui.field_zones]]
+id = "workspace-fields"
+resource = "platform.contacts.person"
+label = "Workspace fields"
+kind = "display"
+page = "platform.contacts.person-detail"
+node = "person-workspace-fields"
+
+[[ui.field_zones]]
+id = "record-metadata"
+resource = "platform.contacts.person"
+label = "Record metadata"
+kind = "display"
+page = "platform.contacts.person-detail"
+node = "person-record-metadata"
+
+[[ui.field_zones]]
+id = "form-contact"
+resource = "platform.contacts.person"
+label = "Form: contact details"
+kind = "form"
+page = "platform.contacts.person-form"
+node = "contact-fields"
+
+[[ui.field_zones]]
+id = "form-workspace"
+resource = "platform.contacts.person"
+label = "Form: workspace"
+kind = "form"
+page = "platform.contacts.person-form"
+node = "workspace-fields"
+
+[[ui.field_zones]]
+id = "form-additional"
+resource = "platform.contacts.person"
+label = "Form: additional details"
+kind = "form"
+page = "platform.contacts.person-form"
+node = "additional-fields"
+default = true
+
+[[ui.field_zones]]
+id = "list-columns"
+resource = "platform.contacts.person"
+label = "People list columns"
+kind = "list"
+page = "platform.contacts.people-directory"
+node = "people-collection"

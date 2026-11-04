@@ -1,0 +1,46 @@
+name: ios
+# #386: the device crates and the app shell built for iOS, with the object
+# engine's conformance suite and the platform-device tests run inside an
+# iOS Simulator. It runs when the device code changes.
+on:
+  pull_request:
+    paths:
+      - crates/platform-objects/**
+      - crates/platform-storage/**
+      - crates/platform-sync/**
+      - crates/platform-device/**
+      - crates/platform-objects-http/**
+      - apps/device-shell/**
+      - apps/web/**
+      - Cargo.lock
+      - scripts/test-device-ios.sh
+      - .github/workflows/ios.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/platform-objects/**
+      - crates/platform-storage/**
+      - crates/platform-sync/**
+      - crates/platform-device/**
+      - crates/platform-objects-http/**
+      - apps/device-shell/**
+      - apps/web/**
+      - Cargo.lock
+      - scripts/test-device-ios.sh
+      - .github/workflows/ios.yml
+  workflow_dispatch:
+jobs:
+  ios-simulator:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "aarch64-apple-ios,aarch64-apple-ios-sim" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: cargo install tauri-cli --version "^2.9" --locked
+      - run: bash scripts/test-device-ios.sh

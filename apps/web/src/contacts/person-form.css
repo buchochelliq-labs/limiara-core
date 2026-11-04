@@ -1,0 +1,71 @@
+.person-form-page { width: min(100%, 78rem); }
+.person-metadata-page .meta-page { gap: var(--space-6); }
+.person-metadata-page [data-metadata-node="back-actions"] { justify-content: flex-start; padding: 0; border: 0; }
+.person-metadata-page [data-metadata-node="back-actions"] .ui-button { padding-inline: 0; color: var(--text-link); }
+.person-metadata-page [data-metadata-node="person-form"] { padding-bottom: var(--space-8); }
+.person-metadata-page [data-metadata-node="person-form"] { scroll-padding-bottom: calc(var(--target-min) + var(--space-8)); }
+.person-metadata-page [data-metadata-node="form-layout"] { grid-template-columns: minmax(0, 1fr) 18rem; gap: var(--space-8); }
+.person-metadata-page [data-metadata-node="form-sections"] > .meta-section {
+  padding: var(--space-6);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+}
+.person-metadata-page [data-metadata-node="form-sections"] > .meta-section > header {
+  padding-bottom: var(--space-4);
+  border-bottom: var(--border-width) solid var(--border-subtle);
+}
+.person-metadata-page [data-metadata-node="form-guidance"] { align-self: start; border-top: 4px solid var(--border-selected); background: var(--surface-subtle); }
+.person-metadata-page [data-metadata-node="form-guidance"] .meta-text + .meta-text { margin-top: var(--space-3); }
+.person-metadata-page [data-metadata-node="form-actions"] {
+  position: sticky;
+  z-index: 5;
+  bottom: 0;
+  bottom: env(safe-area-inset-bottom);
+  padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--surface-canvas) 94%, transparent);
+  box-shadow: 0 -4px 16px color-mix(in srgb, var(--text-primary) 7%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.person-form-success { min-height: calc(100vh - 4.5rem); min-height: calc(100dvh - 4.5rem); display: grid; place-content: center; justify-items: center; text-align: center; }
+.person-form-success > svg { width: 4rem; height: 4rem; margin-bottom: var(--space-4); color: var(--color-forest-700); }
+.person-form-success__actions { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: center; }
+.person-form-success h1 { margin: 0; font-family: var(--font-display); font-size: var(--text-2xl); line-height: var(--leading-tight); }
+.person-form-success > p:not(.app-eyebrow) { max-width: 30rem; margin: var(--space-3) 0 var(--space-6); color: var(--text-secondary); }
+.person-form-missing { display: grid; gap: var(--space-5); max-width: 42rem; }
+.person-form-missing .ui-button { justify-self: start; }
+
+@media (max-width: 68rem) {
+  .person-metadata-page [data-metadata-node="form-layout"] { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 48rem) {
+  .person-metadata-page { padding-bottom: var(--space-8); }
+  .person-metadata-page .meta-page { gap: var(--space-5); }
+  .person-metadata-page [data-metadata-node="form-layout"] { gap: var(--space-5); }
+  .person-metadata-page [data-metadata-node="form-sections"] > .meta-section { padding: var(--space-4); }
+  .person-metadata-page [data-metadata-node="form-actions"] { margin-inline: calc(var(--space-4) * -1); }
+  .person-metadata-page [data-metadata-node="form-actions"] > * { flex: 1 1 100%; }
+}
+
+@media (max-height: 36rem) {
+  .person-metadata-page [data-metadata-node="form-actions"] {
+    position: static;
+    bottom: auto;
+    margin-inline: 0;
+    padding-block: var(--space-2);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (max-width: 48rem) and (max-height: 36rem) {
+  .person-metadata-page [data-metadata-node="form-actions"] > * { min-width: 0; flex: 1 1 0; }
+}
+
+@media (forced-colors: active) {
+  .person-metadata-page [data-metadata-node="form-guidance"] { border-top-color: CanvasText; }
+  .person-metadata-page [data-metadata-node="form-actions"] { border: 1px solid CanvasText; backdrop-filter: none; }
+}

@@ -1,0 +1,93 @@
+[workspace]
+members = [
+  "apps/api", "apps/worker", "apps/plugin-runner",
+  "crates/platform-config", "crates/platform-observability", "crates/platform-db", "crates/platform-id",
+  "crates/platform-permissions", "crates/platform-audit", "crates/platform-events",
+  "crates/platform-outbox", "crates/platform-inbox", "crates/platform-jobs", "crates/platform-notify", "crates/platform-entitlements", "crates/platform-extensions", "crates/platform-objects", "crates/platform-objects-http", "crates/platform-device", "crates/platform-storage", "crates/platform-sync", "crates/plugin-contract",
+  "crates/plugin-registry", "crates/plugin-runtime-native", "crates/plugin-runtime-wasm",
+  "crates/ui-metadata-spike", "crates/ui-metadata", "crates/ui-metadata-delivery", "crates/ui-metadata-validator",
+  "crates/service-plugin-protocol", "plugins/contacts/backend"
+]
+resolver = "2"
+# The desktop and mobile shell builds against the platform's GUI libraries,
+# so it is its own workspace (apps/device-shell/README.md).
+exclude = ["apps/device-shell/src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+rust-version = "1.95"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-nats = { version = "0.50", default-features = false, features = ["jetstream", "ring", "server_2_10"] }
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+config = "0.14"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+http = "1.1"
+prost = "0.13"
+regex = "1.10"
+semver = { version = "1.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+serde_yaml = "0.9"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "uuid", "chrono", "json", "migrate"] }
+thiserror = "1.0"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
+toml = "0.8"
+tonic = "0.12"
+tonic-build = "0.12"
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "limit"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1.10", features = ["v7", "serde"] }
+utoipa = { version = "5.0", features = ["axum_extras", "chrono", "uuid"] }
+url = "2.5"
+wasmtime = "24.0"
+
+platform-config = { path = "crates/platform-config" }
+platform-observability = { path = "crates/platform-observability" }
+platform-db = { path = "crates/platform-db" }
+platform-id = { path = "crates/platform-id" }
+platform-permissions = { path = "crates/platform-permissions" }
+platform-audit = { path = "crates/platform-audit" }
+platform-events = { path = "crates/platform-events" }
+platform-outbox = { path = "crates/platform-outbox" }
+platform-inbox = { path = "crates/platform-inbox" }
+platform-jobs = { path = "crates/platform-jobs" }
+platform-notify = { path = "crates/platform-notify" }
+platform-entitlements = { path = "crates/platform-entitlements" }
+platform-extensions = { path = "crates/platform-extensions" }
+platform-objects = { path = "crates/platform-objects" }
+platform-objects-http = { path = "crates/platform-objects-http" }
+platform-device = { path = "crates/platform-device" }
+platform-sync = { path = "crates/platform-sync" }
+platform-storage = { path = "crates/platform-storage" }
+plugin-contract = { path = "crates/plugin-contract" }
+plugin-registry = { path = "crates/plugin-registry" }
+plugin-runtime-native = { path = "crates/plugin-runtime-native" }
+plugin-runtime-wasm = { path = "crates/plugin-runtime-wasm" }
+service-plugin-protocol = { path = "crates/service-plugin-protocol" }
+ui-metadata-spike = { path = "crates/ui-metadata-spike" }
+ui-metadata = { path = "crates/ui-metadata" }
+ui-metadata-delivery = { path = "crates/ui-metadata-delivery" }
+ui-metadata-validator = { path = "crates/ui-metadata-validator" }
+contacts-plugin = { path = "plugins/contacts/backend" }
+openidconnect = { version = "4.0", features = ["reqwest"] }
+# Push providers: APNs needs HTTP/2 and ES256 provider tokens, FCM needs
+# RS256 service-account assertions (ADR 0030). RSA signing uses ring, which
+# is constant-time; the rsa crate is not (RUSTSEC-2023-0071).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "http2"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+ring = "0.17"
+rand = "0.9"
+zeroize = "1.8"

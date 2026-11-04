@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://limiara.dev/schemas/plugin-manifest-v1.json",
+  "title": "Limiara plugin manifest v1",
+  "type": "object",
+  "required": ["manifest_version", "id", "name", "version", "runtime", "compatibility"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "id": {"$ref": "#/$defs/stableId"},
+    "name": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "runtime": {"enum": ["native", "wasm", "external-service"]},
+    "compatibility": {
+      "type": "object",
+      "required": ["platform"],
+      "properties": {"platform": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "permissions": {"type": "array"},
+    "capabilities": {"type": "object"},
+    "ui": {
+      "type": "object",
+      "properties": {
+        "navigation": {"type": "array", "items": {"type": "object"}},
+        "resources": {"$ref": "#/$defs/uiFiles"},
+        "pages": {"$ref": "#/$defs/uiFiles"},
+        "fragments": {"$ref": "#/$defs/uiFiles"},
+        "extensions": {"$ref": "#/$defs/uiFiles"},
+        "components": {"$ref": "#/$defs/uiFiles"}
+      },
+      "additionalProperties": false
+    },
+    "worker": {
+      "type": "object",
+      "description": "Background contributions. Each id must be namespaced by the plugin id; consumed events must also appear in events.consume and capabilities.event_consume; entrypoints.worker must be true.",
+      "properties": {
+        "consumers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "events"],
+            "properties": {
+              "id": {"$ref": "#/$defs/stableId", "maxLength": 100},
+              "events": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+            },
+            "additionalProperties": false
+          }
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "interval_seconds"],
+            "properties": {
+              "id": {"$ref": "#/$defs/stableId", "maxLength": 100},
+              "interval_seconds": {"type": "integer", "minimum": 60, "maximum": 604800}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "supply_chain": {
+      "type": "object",
+      "description": "Supply-chain metadata. Complete metadata is required by runtime validation for core OOB plugins.",
+      "properties": {
+        "distribution": {"enum": ["core-oob", "first-party", "third-party", "local-development"]},
+        "source_repository": {"type": "string"},
+        "source_revision": {"type": "string"},
+        "build_provenance": {"type": "string"},
+        "artifact_digest": {"type": "string", "pattern": "^sha256:[A-Fa-f0-9]{64}$"},
+        "artifact_path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\).+$"},
+        "signature": {"type": "string"},
+        "sbom": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "stableId": {"type": "string", "pattern": "^[a-z0-9]+([.-][a-z0-9-]+)+$"},
+    "uiFile": {
+      "type": "object",
+      "required": ["id", "path"],
+      "properties": {
+        "id": {"$ref": "#/$defs/stableId"},
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\).+\\.json$"}
+      },
+      "additionalProperties": false
+    },
+    "uiFiles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/uiFile"}
+    }
+  }
+}

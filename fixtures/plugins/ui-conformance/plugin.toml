@@ -1,0 +1,28 @@
+manifest_version = 1
+id = "example.conformance"
+name = "Metadata conformance fixture"
+version = "0.1.0"
+description = "Non-production plugin used by the metadata UI validation gate"
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "local-development"
+
+[[permissions]]
+id = "example.records.read"
+description = "Read example records"
+
+[[permissions]]
+id = "example.records.write"
+description = "Create and update example records"
+
+[[ui.resources]]
+id = "example.conformance.record"
+path = "record.resource.json"
+
+[[ui.pages]]
+id = "example.conformance.record-form"
+path = "record-form.page.json"

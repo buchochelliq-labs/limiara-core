@@ -1,0 +1,7 @@
+platform:
+  database:
+    url: postgres://platform_app:platform_app@postgres:5432/platform
+  oidc:
+    issuer_url: http://auth.localhost:8081/realms/local
+  nats:
+    url: nats://nats:4222

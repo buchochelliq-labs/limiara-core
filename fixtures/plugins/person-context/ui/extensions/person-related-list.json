@@ -1,0 +1,18 @@
+{
+  "contract_version": 1,
+  "id": "example.person-context.related-list",
+  "owner_plugin": "example.person-context",
+  "target_page": "platform.contacts.person-detail",
+  "target_version": 1,
+  "target_node": "person-related-list-slot",
+  "operation": "inside",
+  "priority": 100,
+  "node": {
+    "id": "example-organisation-context-list",
+    "component": "platform.ui.relationship-list",
+    "permission": "contacts.organisations.read",
+    "hosts": ["internal-web", "desktop"],
+    "props": {"label": "Organisation context", "resource": "platform.contacts.organisation", "empty_title": "No organisation context", "empty_description": "No organisation context is available.", "presentation": "cards"},
+    "bindings": {"items": {"source": "data-source", "data_source": "person", "path": "organisation"}}
+  }
+}

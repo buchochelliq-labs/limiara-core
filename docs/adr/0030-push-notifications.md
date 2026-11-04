@@ -1,0 +1,110 @@
+# 0030: Content-free push notifications
+
+## Status
+
+Accepted (2026-10-20). Builds on ADR 0024 ("Continual sync") and ADR 0029
+(device sign-in, which registers push tokens). Implemented in the
+`platform-notify` crate and the worker's `device_notifications` dispatcher.
+
+## Context
+
+Phones suspend apps, so the server cannot hold a connection open to a
+sleeping device (ADR 0024). A suspended app learns that its workspace
+changed only through the platform's push service: Apple Push Notification
+service (APNs) on iOS and macOS, Firebase Cloud Messaging (FCM) on Android.
+Both services carry the message through the provider's own servers.
+
+## Decision
+
+### 1. One message, with no customer data
+
+The only notification is "workspace changed". It carries the workspace's
+id and nothing else: no record names, values, counts, object names or
+member names. The app wakes, pulls the change stream and fetches records
+through the record API, which applies sharing. Apple and Google therefore
+learn which devices use which workspace and when it changes, and never its
+content.
+
+- **APNs:** a background push (`apns-push-type: background`, priority 5,
+  `content-available`), collapsed per workspace so a newer notification
+  replaces an undelivered one, and expiring after an hour.
+- **FCM:** a high-priority data message with the same collapse key and
+  time to live, and no notification text.
+
+### 2. A kernel port with one adapter per provider
+
+`platform-notify` defines `PushNotifier`, with an adapter for each
+provider:
+- `ApnsNotifier` sends over Apple's HTTP/2 API. Its ES256 provider token is
+  signed with the deployment's `.p8` key and reused for 50 minutes, inside
+  Apple's 20 to 60 minute window. A token Apple reports expired is signed
+  again once.
+- `FcmNotifier` sends over the FCM HTTP v1 API. Its access token comes from
+  the deployment's service account: an RS256 assertion exchanged at the
+  account's token endpoint (RFC 7523), reused until two minutes before it
+  expires and renewed once if refused. RSA signing uses `ring`, which is
+  constant-time, rather than the `rsa` crate (RUSTSEC-2023-0071).
+
+Each result is one of:
+- delivered;
+- `TokenInvalid`: the device is gone, so the caller forgets its token;
+- `Unavailable`: try again later;
+- `Rejected`: the deployment's credentials or configuration need fixing;
+- `NotConfigured`: no credentials for this provider.
+
+Credentials belong to the deployment, not to plugins. Plugins never see
+them, and no plugin can send a notification (ADR 0024 §6).
+
+### 3. The worker dispatches, at most once every few minutes per device
+
+The dispatcher runs in the worker:
+- The bounded `platform_claim_device_notifications` routine, the only
+  cross-tenant step, claims devices that:
+  - have a push token;
+  - are not revoked, and whose member still belongs to the workspace;
+  - are in a workspace whose change log position or metadata version moved
+    past what the device was last told;
+  - were not claimed within `platform.devices.push.quiet_seconds` (180 by
+    default).
+
+  Claiming stamps the device, so workers running side by side skip each
+  other's devices, and an unavailable provider is retried once per quiet
+  window rather than on every pass.
+- It sends one notification for each and, in the device's workspace under
+  forced RLS, records the position it told the device about. It forgets a
+  token the provider reports invalid, unless the app has registered a new
+  one since.
+- Registering a push token counts as being told about the workspace as it
+  is, since the app has just synced.
+
+A burst of changes therefore costs one notification per device, and the
+app's own catch-up schedule (`BGAppRefreshTask`, WorkManager) covers any
+notification the provider drops. A device's own pushes also move the
+change log, so it may be woken once to pull what it sent; the pull is
+small, and telling the device's edits apart from the same member's other
+devices would need the log to record devices.
+
+Provider keys live in files the worker reads at startup
+(`platform.devices.push.apns.key_file`, `fcm.service_account_file`). A key
+that cannot be read stops the worker, since retrying cannot fix it.
+
+## Alternatives considered
+
+- **Notifications that name the changed records**, so the app can fetch
+  only those. That puts customer data on Apple's and Google's servers. A
+  pull after waking costs one request and keeps sharing on the server.
+- **Visible notifications with text.** They need content, and a member's
+  phone would show workspace data on the lock screen.
+- **A third-party push service.** It adds another processor of device
+  identifiers and is not needed: both providers have direct APIs.
+- **The `a2` and `fcm` crates.** Each brings its own HTTP stack and token
+  handling. The adapters here are small, use the platform's `reqwest`, and
+  are tested against stand-in servers.
+
+## Consequences
+
+- A deployment that wants background sync needs an Apple developer key and
+  a Firebase service account, configured outside any plugin.
+- `reqwest` is built with HTTP/2, which APNs requires.
+- Delivery is best-effort. A notification is a hint to sync, never the
+  only path.

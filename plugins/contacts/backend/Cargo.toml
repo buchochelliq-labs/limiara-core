@@ -1,0 +1,37 @@
+[package]
+name = "contacts-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+platform-events.workspace = true
+platform-audit.workspace = true
+platform-outbox.workspace = true
+plugin-runtime-native.workspace = true
+plugin-contract.workspace = true
+platform-inbox.workspace = true
+platform-jobs.workspace = true
+async-trait.workspace = true
+platform-db.workspace = true
+platform-extensions.workspace = true
+platform-storage.workspace = true
+platform-id.workspace = true
+platform-permissions.workspace = true
+sqlx.workspace = true
+base64.workspace = true
+sha2.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tempfile = "3"

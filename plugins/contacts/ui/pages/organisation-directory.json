@@ -1,0 +1,51 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.organisation-directory",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "kind": "collection",
+  "hosts": ["internal-web", "desktop"],
+  "resource": "platform.contacts.organisation",
+  "data_sources": [{"id": "directory", "resource": "platform.contacts.organisation", "operation": "list", "load": "eager"}],
+  "actions": [
+    {"id": "add-organisation", "kind": "navigate", "target": "contacts.organisations.create", "permission": "contacts.organisations.write"},
+    {"id": "show-people", "kind": "navigate", "target": "contacts.people.list"},
+    {"id": "show-organisations", "kind": "navigate", "target": "contacts.organisations.list"},
+    {"id": "search-organisations", "kind": "navigate", "target": "contacts.organisations.search", "parameters": {"query": {"source": "literal", "value": ""}}},
+    {"id": "filter-organisations", "kind": "navigate", "target": "contacts.organisations.filter", "parameters": {"status": {"source": "literal", "value": "All"}}},
+    {"id": "sort-organisations", "kind": "navigate", "target": "contacts.organisations.sort", "parameters": {"sort": {"source": "literal", "value": "name"}}},
+    {"id": "clear-organisations-query", "kind": "navigate", "target": "contacts.organisations.clear"},
+    {"id": "select-organisation", "kind": "navigate", "target": "contacts.organisations.select", "parameters": {"id": {"source": "literal", "value": ""}}},
+    {"id": "previous-page", "kind": "navigate", "target": "contacts.organisations.cursor", "parameters": {"cursor": {"source": "literal", "value": ""}}},
+    {"id": "next-page", "kind": "navigate", "target": "contacts.organisations.cursor", "parameters": {"cursor": {"source": "literal", "value": ""}}},
+    {"id": "edit-organisation", "kind": "navigate", "target": "contacts.organisations.edit", "permission": "contacts.organisations.write", "parameters": {"id": {"source": "data-source", "data_source": "directory", "path": "selected.id"}}},
+    {"id": "open-organisation", "kind": "navigate", "target": "contacts.organisations.open", "parameters": {"id": {"source": "data-source", "data_source": "directory", "path": "selected.id"}}}
+  ],
+  "root": {
+    "id": "organisations-page",
+    "component": "platform.ui.page",
+    "props": {"title": "Organisations", "description": "Find companies and teams, then keep their people and account context together."},
+    "children": [
+      {"id": "organisations-page-actions", "component": "platform.ui.action-bar", "props": {"label": "Organisation page actions"}, "children": [
+        {"id": "add-organisation-button", "component": "platform.ui.action", "permission": "contacts.organisations.write", "props": {"action": "add-organisation", "label": "Add organisation", "variant": "primary"}}
+      ]},
+      {"id": "contacts-sections", "component": "platform.ui.action-bar", "props": {"label": "Contacts sections"}, "children": [
+        {"id": "people-section-button", "component": "platform.ui.action", "props": {"action": "show-people", "label": "People", "variant": "quiet"}},
+        {"id": "organisations-section-button", "component": "platform.ui.action", "props": {"action": "show-organisations", "label": "Organisations", "variant": "primary"}}
+      ]},
+      {"id": "organisations-controls", "component": "platform.ui.collection-controls", "props": {"label": "Organisation search and filters"}, "children": [
+        {"id": "organisations-search", "component": "platform.ui.query-input", "props": {"label": "Search organisations", "placeholder": "Search by name, sector or address", "action": "search-organisations", "parameter": "query", "submit_label": "Search"}, "bindings": {"value": {"source": "data-source", "data_source": "directory", "path": "query"}}},
+        {"id": "organisations-status-filter", "component": "platform.ui.query-select", "permission": "contacts.organisations.custom-fields.read", "props": {"label": "Filter by account status", "action": "filter-organisations", "parameter": "status", "options": [{"value": "All", "label": "All statuses"}, {"value": "Active", "label": "Active"}, {"value": "Prospect", "label": "Prospect"}, {"value": "Partner", "label": "Partner"}]}, "bindings": {"value": {"source": "data-source", "data_source": "directory", "path": "status"}}},
+        {"id": "organisations-sort", "component": "platform.ui.query-select", "props": {"label": "Sort organisations", "action": "sort-organisations", "parameter": "sort", "options": [{"value": "name", "label": "Name A-Z"}, {"value": "recent", "label": "Recently updated"}]}, "bindings": {"value": {"source": "data-source", "data_source": "directory", "path": "sort"}}},
+        {"id": "clear-organisations-query-button", "component": "platform.ui.action", "props": {"action": "clear-organisations-query", "label": "Clear filters", "variant": "quiet"}, "conditions": {"visible": {"op": "equal", "left": {"source": "data-source", "data_source": "directory", "path": "has_filters"}, "right": {"source": "literal", "value": true}}}}
+      ]},
+      {"id": "organisations-content", "component": "platform.ui.split", "children": [
+        {"id": "organisations-results", "component": "platform.ui.section", "props": {"title": "Organisation directory"}, "bindings": {"title": {"source": "data-source", "data_source": "directory", "path": "result_heading"}, "description": {"source": "data-source", "data_source": "directory", "path": "result_description"}}, "children": [
+          {"id": "organisations-collection", "component": "platform.ui.collection", "props": {"label": "Organisations", "resource": "platform.contacts.organisation", "select_action": "select-organisation", "selection_parameter": "id", "presentation": "auto", "fields": [{"key": "sector", "label": "Sector"}, {"key": "telephone", "label": "Phone", "format": "phone"}, {"key": "account_status__c", "label": "Account status"}, {"key": "updated_at", "label": "Updated"}]}, "bindings": {"items": {"source": "data-source", "data_source": "directory", "path": "items"}, "selected_id": {"source": "data-source", "data_source": "directory", "path": "selected_id"}}},
+          {"id": "organisations-cursor", "component": "platform.ui.cursor", "props": {"label": "Organisation result pages", "previous_action": "previous-page", "next_action": "next-page", "parameter": "cursor"}, "bindings": {"previous_cursor": {"source": "data-source", "data_source": "directory", "path": "previous_cursor"}, "next_cursor": {"source": "data-source", "data_source": "directory", "path": "next_cursor"}}}
+        ]},
+        {"id": "organisation-preview", "component": "platform.ui.record-preview", "props": {"label": "Organisation preview", "empty_title": "Select an organisation", "empty_description": "Choose an organisation to keep its account context visible while you scan the directory."}}
+      ]}
+    ]
+  }
+}

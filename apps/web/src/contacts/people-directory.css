@@ -1,0 +1,23 @@
+.people-directory { width: min(100%, 96rem); }
+.person-metadata-directory .meta-page { gap: var(--space-6); }
+.person-metadata-directory [data-metadata-node="people-page-actions"] { margin-top: calc(-1 * var(--space-6)); border-top: 0; }
+.person-metadata-directory [data-metadata-node="contacts-sections"] { justify-content: flex-start; padding: 0 0 var(--space-3); border-top: 0; border-bottom: var(--border-width) solid var(--border-subtle); }
+.person-metadata-directory [data-metadata-node="people-results"] { min-width: 0; padding-top: var(--space-4); border-top: var(--border-width) solid var(--border-subtle); }
+.person-metadata-directory [data-metadata-node="person-preview"] { position: sticky; top: 6.5rem; border-top: 4px solid var(--color-forest-800); background: var(--surface-subtle); }
+.person-metadata-directory [data-metadata-node="person-preview"]:focus { outline: var(--focus-width) solid var(--focus-ring); outline-offset: var(--focus-offset); }
+.organisation-metadata-directory [data-metadata-node="organisations-page-actions"] { margin-top: calc(-1 * var(--space-6)); border-top: 0; }
+.organisation-metadata-directory [data-metadata-node="organisations-results"] { padding-top: var(--space-4); border-top: var(--border-width) solid var(--border-subtle); }
+.organisation-metadata-directory [data-metadata-node="organisation-preview"] { position: sticky; top: 6.5rem; border-top: 4px solid var(--color-forest-800); background: var(--surface-subtle); }
+.organisation-metadata-directory [data-metadata-node="organisation-preview"]:focus { outline: var(--focus-width) solid var(--focus-ring); outline-offset: var(--focus-offset); }
+
+@media (max-width: 62rem) {
+  .person-metadata-directory [data-metadata-node="person-preview"] { position: static; }
+  .organisation-metadata-directory [data-metadata-node="organisation-preview"] { position: static; }
+  .person-metadata-directory [data-metadata-node="people-content"] > [data-empty="false"],
+  .organisation-metadata-directory [data-metadata-node="organisations-content"] > [data-empty="false"] { order: -1; }
+}
+
+@media (forced-colors: active) {
+  .person-metadata-directory [data-metadata-node="person-preview"] { border-top-color: CanvasText; }
+  .organisation-metadata-directory [data-metadata-node="organisation-preview"] { border-top-color: CanvasText; }
+}

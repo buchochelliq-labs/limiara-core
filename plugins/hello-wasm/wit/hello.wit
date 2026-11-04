@@ -1,0 +1,6 @@
+package platform:hello;
+world hello-plugin {
+  import host-log: func(level: string, message: string);
+  export hello: func() -> string;
+  export health: func() -> string;
+}

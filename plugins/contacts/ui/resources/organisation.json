@@ -1,0 +1,30 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.organisation",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "label": "Organisation",
+  "name_field": "name",
+  "fields": [
+    {"api_name": "name", "label": "Name", "field_type": "text", "source": "standard", "readable": true, "writable": true, "required": true, "classification": "internal"},
+    {"api_name": "sector", "label": "Sector", "field_type": "text", "source": "standard", "readable": true, "writable": true, "classification": "internal"},
+    {"api_name": "website", "label": "Website", "field_type": "text", "source": "standard", "readable": true, "writable": true, "classification": "internal"},
+    {"api_name": "telephone", "label": "Phone", "field_type": "phone", "source": "standard", "readable": true, "writable": true, "classification": "personal"},
+    {"api_name": "address", "label": "Address", "field_type": "long-text", "source": "standard", "readable": true, "writable": true, "classification": "personal"},
+    {"api_name": "account_status__c", "label": "Account status", "field_type": "choice", "source": "tenant-custom", "readable": true, "writable": true, "permission": "contacts.organisations.custom-fields.read", "classification": "internal", "options": [{"value": "Active", "label": "Active"}, {"value": "Prospect", "label": "Prospect"}, {"value": "Partner", "label": "Partner"}]},
+    {"api_name": "service_region__c", "label": "Service region", "field_type": "choice", "source": "tenant-custom", "readable": true, "writable": true, "permission": "contacts.organisations.custom-fields.read", "classification": "internal", "options": [{"value": "London", "label": "London"}, {"value": "North", "label": "North"}, {"value": "Wales", "label": "Wales"}, {"value": "Scotland", "label": "Scotland"}, {"value": "South West", "label": "South West"}]}
+  ],
+  "relationships": [
+    {"id": "people", "target_resource": "platform.contacts.person", "cardinality": "many", "permission": "contacts.people.read"}
+  ],
+  "operations": [
+    {"id": "read", "kind": "read", "permission": "contacts.organisations.read", "hosts": ["internal-web", "desktop"]},
+    {"id": "list", "kind": "list", "permission": "contacts.organisations.read", "hosts": ["internal-web", "desktop"]},
+    {"id": "create", "kind": "create", "permission": "contacts.organisations.write", "hosts": ["internal-web", "desktop"]},
+    {"id": "update", "kind": "update", "permission": "contacts.organisations.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "archive", "kind": "archive", "permission": "contacts.organisations.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "restore", "kind": "command", "permission": "contacts.organisations.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "link-person", "kind": "command", "permission": "contacts.organisations.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]},
+    {"id": "unlink-person", "kind": "command", "permission": "contacts.organisations.write", "concurrency": "etag", "hosts": ["internal-web", "desktop"]}
+  ]
+}

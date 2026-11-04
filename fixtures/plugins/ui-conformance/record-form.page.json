@@ -1,0 +1,71 @@
+{
+  "contract_version": 1,
+  "id": "example.conformance.record-form",
+  "definition_version": 1,
+  "owner_plugin": "example.conformance",
+  "kind": "record-form",
+  "hosts": ["internal-web", "desktop"],
+  "resource": "example.conformance.record",
+  "data_sources": [
+    {
+      "id": "record",
+      "resource": "example.conformance.record",
+      "operation": "read",
+      "parameters": {"id": {"source": "context", "path": "record-id"}},
+      "load": "eager"
+    }
+  ],
+  "actions": [
+    {
+      "id": "save",
+      "kind": "resource-operation",
+      "target": "example.conformance.record.update",
+      "permission": "example.records.write"
+    }
+  ],
+  "root": {
+    "id": "record-form",
+    "component": "platform.ui.form",
+    "props": {"label": "Example record form"},
+    "children": [
+      {
+        "id": "fields",
+        "component": "platform.ui.section",
+        "props": {"title": "Record details"},
+        "children": [
+          {
+            "id": "name-field",
+            "component": "platform.ui.field.text",
+            "props": {"field": "name"},
+            "bindings": {"value": {"source": "field", "field": "name"}}
+          },
+          {
+            "id": "priority-field",
+            "component": "platform.ui.field.select",
+            "props": {"field": "priority__c"},
+            "bindings": {"value": {"source": "field", "field": "priority__c"}},
+            "conditions": {
+              "visible": {
+                "op": "not-equal",
+                "left": {"source": "context", "path": "mode"},
+                "right": {"source": "literal", "value": "view"}
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "component": "platform.ui.action-bar",
+        "props": {"label": "Record actions"},
+        "children": [
+          {
+            "id": "save-action",
+            "component": "platform.ui.action",
+            "props": {"action": "save", "label": "Save", "submit": true}
+          }
+        ]
+      }
+    ]
+  }
+}

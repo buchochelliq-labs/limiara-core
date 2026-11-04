@@ -1,0 +1,48 @@
+{
+  "contract_version": 1,
+  "id": "example.conformance.record",
+  "definition_version": 1,
+  "owner_plugin": "example.conformance",
+  "label": "Example record",
+  "name_field": "name",
+  "fields": [
+    {
+      "api_name": "name",
+      "label": "Name",
+      "description": "A required standard field.",
+      "field_type": "text",
+      "source": "standard",
+      "readable": true,
+      "writable": true,
+      "required": true
+    },
+    {
+      "api_name": "priority__c",
+      "label": "Priority",
+      "field_type": "choice",
+      "source": "tenant-custom",
+      "readable": true,
+      "writable": true,
+      "default_value": "normal",
+      "options": [
+        {"value": "normal", "label": "Normal"},
+        {"value": "high", "label": "High"}
+      ]
+    }
+  ],
+  "operations": [
+    {
+      "id": "read",
+      "kind": "read",
+      "permission": "example.records.read",
+      "hosts": ["internal-web", "desktop"]
+    },
+    {
+      "id": "update",
+      "kind": "update",
+      "permission": "example.records.write",
+      "concurrency": "etag",
+      "hosts": ["internal-web", "desktop"]
+    }
+  ]
+}

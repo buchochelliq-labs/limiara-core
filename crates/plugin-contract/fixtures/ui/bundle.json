@@ -1,0 +1,239 @@
+{
+  "resources": [
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.person",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "label": "Person",
+      "name_field": "first_name",
+      "fields": [
+        {
+          "api_name": "first_name",
+          "label": "First name",
+          "field_type": "text",
+          "source": "standard",
+          "readable": true,
+          "writable": true,
+          "required": true,
+          "classification": "personal"
+        },
+        {
+          "api_name": "email",
+          "label": "Email",
+          "field_type": "email",
+          "source": "standard",
+          "readable": true,
+          "writable": true,
+          "classification": "personal",
+          "validation_schema": {"type": "string", "format": "email"}
+        },
+        {
+          "api_name": "service_tier__c",
+          "label": "Service tier",
+          "field_type": "choice",
+          "source": "tenant-custom",
+          "readable": true,
+          "writable": true,
+          "permission": "contacts.person.read-custom",
+          "options": [
+            {"value": "standard", "label": "Standard"},
+            {"value": "priority", "label": "Priority"}
+          ]
+        }
+      ],
+      "relationships": [
+        {
+          "id": "primary-organisation",
+          "target_resource": "platform.contacts.organisation",
+          "cardinality": "one",
+          "permission": "contacts.organisation.read"
+        }
+      ],
+      "operations": [
+        {
+          "id": "read",
+          "kind": "read",
+          "permission": "contacts.person.read",
+          "hosts": ["internal-web", "desktop", "portal"]
+        },
+        {
+          "id": "create",
+          "kind": "create",
+          "permission": "contacts.person.create",
+          "hosts": ["internal-web", "desktop"]
+        },
+        {
+          "id": "update",
+          "kind": "update",
+          "permission": "contacts.person.update",
+          "concurrency": "etag",
+          "hosts": ["internal-web", "desktop"]
+        }
+      ]
+    },
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.organisation",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "label": "Organisation",
+      "name_field": "name",
+      "fields": [
+        {
+          "api_name": "name",
+          "label": "Name",
+          "field_type": "text",
+          "source": "standard",
+          "readable": true,
+          "writable": true,
+          "required": true
+        }
+      ],
+      "operations": [
+        {
+          "id": "read",
+          "kind": "read",
+          "permission": "contacts.organisation.read",
+          "hosts": ["internal-web", "desktop", "portal"]
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.person-form",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "kind": "record-form",
+      "hosts": ["internal-web", "desktop"],
+      "resource": "platform.contacts.person",
+      "data_sources": [
+        {
+          "id": "person-record",
+          "resource": "platform.contacts.person",
+          "operation": "read",
+          "parameters": {
+            "id": {"source": "context", "path": "route.person_id"}
+          },
+          "load": "eager"
+        }
+      ],
+      "actions": [
+        {
+          "id": "save-person",
+          "kind": "resource-operation",
+          "target": "platform.contacts.person.update",
+          "permission": "contacts.person.update"
+        }
+      ],
+      "variants": [
+        {
+          "id": "create-mode",
+          "priority": 10,
+          "condition": {
+            "op": "equal",
+            "left": {"source": "context", "path": "mode"},
+            "right": {"source": "literal", "value": "create"}
+          },
+          "root": {
+            "id": "create-person-form",
+            "component": "platform.ui.form",
+            "children": []
+          }
+        }
+      ],
+      "root": {
+        "id": "person-form",
+        "component": "platform.ui.form",
+        "bindings": {
+          "record": {"source": "data-source", "data_source": "person-record", "path": "$"}
+        },
+        "children": [
+          {
+            "id": "identity-section",
+            "component": "platform.ui.section",
+            "props": {"title": "Identity"},
+            "children": [
+              {
+                "id": "first-name-field",
+                "component": "platform.ui.field",
+                "props": {"field": "first_name"}
+              },
+              {
+                "id": "email-field",
+                "component": "platform.ui.field",
+                "props": {"field": "email"}
+              }
+            ]
+          },
+          {
+            "id": "custom-fields-slot",
+            "component": "platform.ui.slot",
+            "props": {"accepts": ["platform.ui.field", "platform.ui.card"]},
+            "conditions": {
+              "visible": {"op": "has-permission", "permission": "contacts.person.read-custom"}
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "fragments": [
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.person-summary",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "hosts": ["internal-web", "desktop", "portal"],
+      "root": {
+        "id": "person-summary",
+        "component": "platform.ui.record-summary",
+        "children": []
+      }
+    }
+  ],
+  "components": [
+    {
+      "contract_version": 1,
+      "id": "platform.ui.card",
+      "definition_version": 1,
+      "owner_plugin": "platform.ui",
+      "props_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+        "additionalProperties": false
+      },
+      "slots": [
+        {"id": "content", "accepts": ["platform.ui.text"], "multiple": true}
+      ],
+      "hosts": ["internal-web", "desktop", "portal", "public-form"],
+      "accessibility": {
+        "semantics": "Named article region",
+        "keyboard": [],
+        "required_label_prop": "title"
+      }
+    }
+  ],
+  "extensions": [
+    {
+      "contract_version": 1,
+      "id": "customer.service-tier-field",
+      "owner_plugin": "customer.service",
+      "target_page": "platform.contacts.person-form",
+      "target_version": 1,
+      "target_node": "custom-fields-slot",
+      "operation": "inside",
+      "priority": 10,
+      "node": {
+        "id": "service-tier-field",
+        "component": "platform.ui.field",
+        "props": {"field": "service_tier__c"},
+        "permission": "contacts.person.read-custom"
+      }
+    }
+  ]
+}

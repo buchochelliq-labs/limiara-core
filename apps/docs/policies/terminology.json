@@ -1,0 +1,7 @@
+{
+  "rules": [
+    { "term": "Github", "preferred": "GitHub" },
+    { "term": "Javascript", "preferred": "JavaScript" },
+    { "term": "Open API", "preferred": "OpenAPI" }
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://limiara.dev/schemas/ui-metadata-v1.json",
+  "title": "Limiara UI metadata v1",
+  "oneOf": [
+    {"$ref": "#/$defs/resource"},
+    {"$ref": "#/$defs/page"},
+    {"$ref": "#/$defs/fragment"},
+    {"$ref": "#/$defs/component"},
+    {"$ref": "#/$defs/extension"}
+  ],
+  "$defs": {
+    "stableId": {"type": "string", "pattern": "^[a-z0-9]+([.-][a-z0-9-]+)+$"},
+    "nodeId": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "host": {"enum": ["internal-web", "desktop", "portal", "public-form"]},
+    "header": {
+      "type": "object",
+      "required": ["contract_version", "id", "definition_version", "owner_plugin"],
+      "properties": {
+        "contract_version": {"const": 1},
+        "id": {"$ref": "#/$defs/stableId"},
+        "definition_version": {"type": "integer", "minimum": 1},
+        "owner_plugin": {"$ref": "#/$defs/stableId"},
+        "name_field": {"type": "string", "description": "The declared required text field that is the record's display name (ADR 0014)."}
+      }
+    },
+    "binding": {
+      "oneOf": [
+        {"type": "object", "required": ["source", "field"], "properties": {"source": {"const": "field"}, "field": {"type": "string"}}, "additionalProperties": false},
+        {"type": "object", "required": ["source", "path"], "properties": {"source": {"const": "context"}, "path": {"type": "string"}}, "additionalProperties": false},
+        {"type": "object", "required": ["source", "value"], "properties": {"source": {"const": "literal"}, "value": {}}, "additionalProperties": false},
+        {"type": "object", "required": ["source", "data_source", "path"], "properties": {"source": {"const": "data-source"}, "data_source": {"type": "string"}, "path": {"type": "string"}}, "additionalProperties": false}
+      ]
+    },
+    "condition": {
+      "oneOf": [
+        {"type": "object", "required": ["op", "args"], "properties": {"op": {"enum": ["and", "or"]}, "args": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}}}},
+        {"type": "object", "required": ["op", "arg"], "properties": {"op": {"const": "not"}, "arg": {"$ref": "#/$defs/condition"}}},
+        {"type": "object", "required": ["op", "left", "right"], "properties": {"op": {"enum": ["equal", "not-equal"]}, "left": {"$ref": "#/$defs/binding"}, "right": {"$ref": "#/$defs/binding"}}},
+        {"type": "object", "required": ["op", "value"], "properties": {"op": {"const": "exists"}, "value": {"$ref": "#/$defs/binding"}}},
+        {
+          "type": "object",
+          "required": ["op", "value", "set"],
+          "properties": {
+            "op": {"const": "in"},
+            "value": {"$ref": "#/$defs/binding"},
+            "set": {"type": "array", "items": {"$ref": "#/$defs/binding"}}
+          }
+        },
+        {"type": "object", "required": ["op", "permission"], "properties": {"op": {"const": "has-permission"}, "permission": {"type": "string"}}, "additionalProperties": false}
+      ]
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "component"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "component": {"$ref": "#/$defs/stableId"},
+        "props": {"type": "object"},
+        "bindings": {"type": "object", "additionalProperties": {"$ref": "#/$defs/binding"}},
+        "conditions": {
+          "type": "object",
+          "propertyNames": {"enum": ["visible", "enabled", "read-only", "required"]},
+          "additionalProperties": {"$ref": "#/$defs/condition"}
+        },
+        "children": {"type": "array", "items": {"$ref": "#/$defs/node"}},
+        "permission": {"type": "string"},
+        "hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "field": {
+      "type": "object",
+      "required": ["api_name", "label", "field_type", "source"],
+      "properties": {
+        "api_name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "label": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "field_type": {"enum": ["text", "long-text", "email", "phone", "number", "boolean", "date", "date-time", "choice", "multi-choice", "reference", "money", "json", "user"]},
+        "source": {"enum": ["standard", "tenant-custom", "extension", "system"]},
+        "readable": {"type": "boolean"},
+        "writable": {"type": "boolean"},
+        "required": {"type": "boolean"},
+        "permission": {"type": "string"},
+        "classification": {"enum": ["public", "internal", "personal", "sensitive"]},
+        "options": {"type": "array", "items": {"type": "object", "required": ["value", "label"], "properties": {"value": {"type": "string"}, "label": {"type": "string"}}, "additionalProperties": false}},
+        "validation_schema": {},
+        "default_value": {},
+        "submit_when_hidden": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "allOf": [
+        {"$ref": "#/$defs/header"},
+        {
+          "type": "object",
+          "required": ["label"],
+          "properties": {
+            "label": {"type": "string"},
+            "fields": {"type": "array", "items": {"$ref": "#/$defs/field"}},
+            "relationships": {"type": "array", "items": {"type": "object", "required": ["id", "target_resource", "cardinality"], "properties": {"id": {"type": "string"}, "target_resource": {"$ref": "#/$defs/stableId"}, "cardinality": {"enum": ["one", "many"]}, "permission": {"type": "string"}}}},
+            "operations": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "permission"], "properties": {"id": {"type": "string"}, "kind": {"enum": ["read", "list", "create", "update", "archive", "command"]}, "permission": {"type": "string"}, "concurrency": {"enum": ["none", "etag"]}, "hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}}}}}
+          }
+        }
+      ]
+    },
+    "page": {
+      "allOf": [
+        {"$ref": "#/$defs/header"},
+        {
+          "type": "object",
+          "required": ["kind", "hosts", "root"],
+          "properties": {
+            "kind": {"enum": ["record", "record-form", "collection", "kanban", "calendar", "timeline", "dashboard", "wizard", "settings", "portal", "public-form"]},
+            "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/host"}, "uniqueItems": true},
+            "resource": {"$ref": "#/$defs/stableId"},
+            "data_sources": {"type": "array", "items": {"type": "object"}},
+            "actions": {"type": "array", "items": {"type": "object"}},
+            "variants": {"type": "array", "items": {"type": "object", "required": ["id", "root"], "properties": {"id": {"type": "string"}, "priority": {"type": "integer"}, "condition": {"$ref": "#/$defs/condition"}, "root": {"$ref": "#/$defs/node"}}}},
+            "root": {"$ref": "#/$defs/node"}
+          }
+        }
+      ]
+    },
+    "fragment": {
+      "allOf": [
+        {"$ref": "#/$defs/header"},
+        {"type": "object", "required": ["hosts", "root"], "properties": {"hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}}, "root": {"$ref": "#/$defs/node"}}}
+      ]
+    },
+    "component": {
+      "allOf": [
+        {"$ref": "#/$defs/header"},
+        {"type": "object", "required": ["props_schema", "hosts", "accessibility"], "properties": {"props_schema": {}, "slots": {"type": "array", "items": {"type": "object"}}, "hosts": {"type": "array", "items": {"$ref": "#/$defs/host"}}, "capabilities": {"type": "array", "items": {"type": "string"}}, "accessibility": {"type": "object", "required": ["semantics"], "properties": {"semantics": {"type": "string"}, "keyboard": {"type": "array", "items": {"type": "string"}}, "required_label_prop": {"type": "string"}}}}}
+      ]
+    },
+    "extension": {
+      "type": "object",
+      "required": ["contract_version", "id", "owner_plugin", "target_page", "target_version", "target_node", "operation"],
+      "properties": {
+        "contract_version": {"const": 1},
+        "id": {"$ref": "#/$defs/stableId"},
+        "owner_plugin": {"$ref": "#/$defs/stableId"},
+        "target_page": {"$ref": "#/$defs/stableId"},
+        "target_version": {"type": "integer", "minimum": 1},
+        "target_node": {"$ref": "#/$defs/nodeId"},
+        "operation": {"enum": ["inside", "before", "after", "move", "configure", "replace"]},
+        "priority": {"type": "integer"},
+        "node": {"$ref": "#/$defs/node"},
+        "props": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

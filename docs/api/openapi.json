@@ -1,0 +1,43 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Limiara public API",
+    "version": "0.1.0",
+    "description": "A bounded public API example for the documentation-platform spike."
+  },
+  "paths": {
+    "/health/live": {
+      "get": {
+        "summary": "Check whether the API process is live",
+        "operationId": "getLiveness",
+        "x-limiara-visibility": "public",
+        "responses": {
+          "200": {
+            "description": "The process is live",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Liveness"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Liveness": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ok"]
+          }
+        }
+      }
+    }
+  }
+}

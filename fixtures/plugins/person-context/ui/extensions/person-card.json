@@ -1,0 +1,18 @@
+{
+  "contract_version": 1,
+  "id": "example.person-context.card",
+  "owner_plugin": "example.person-context",
+  "target_page": "platform.contacts.person-detail",
+  "target_version": 1,
+  "target_node": "person-card-slot",
+  "operation": "inside",
+  "priority": 100,
+  "node": {
+    "id": "example-customer-context-card",
+    "component": "platform.ui.card",
+    "props": {"title": "Customer context"},
+    "children": [
+      {"id": "example-customer-context-copy", "component": "platform.ui.text", "props": {"text": "Fixture contribution loaded through the stable person card slot.", "tone": "muted"}}
+    ]
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "contract_version": 1,
+  "resources": [
+    {
+      "id": "platform.contacts.person",
+      "owner_plugin": "platform.contacts",
+      "version": 1,
+      "fields": [
+        {"api_name": "first_name", "type": "text", "source": "standard", "readable": true, "writable": true},
+        {"api_name": "last_name", "type": "text", "source": "standard", "readable": true, "writable": true},
+        {"api_name": "email", "type": "email", "source": "standard", "readable": true, "writable": true},
+        {"api_name": "service_tier__c", "type": "choice", "source": "tenant-custom", "readable": true, "writable": true}
+      ],
+      "operations": [
+        {"id": "create", "permission": "contacts.person.create"},
+        {"id": "update", "permission": "contacts.person.update", "concurrency": "etag"},
+        {"id": "read", "permission": "contacts.person.read"}
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.person.form",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "kind": "record-form",
+      "hosts": ["internal-web", "desktop", "portal"],
+      "root": {
+        "id": "person-form",
+        "component": "form",
+        "hosts": ["internal-web", "desktop", "portal"],
+        "props": {"resource": "platform.contacts.person", "operation_by_mode": {"create": "create", "edit": "update"}},
+        "children": [
+          {
+            "id": "identity",
+            "component": "section",
+            "props": {"title": "Identity"},
+            "children": [
+              {"id": "first-name", "component": "field", "props": {"field": "first_name", "label": "First name"}},
+              {"id": "last-name", "component": "field", "props": {"field": "last_name", "label": "Last name"}},
+              {"id": "email", "component": "field", "props": {"field": "email", "label": "Email"}}
+            ]
+          },
+          {
+            "id": "customer-context",
+            "component": "section",
+            "props": {"title": "Customer context"},
+            "children": [
+              {
+                "id": "service-tier",
+                "component": "field",
+                "props": {"field": "service_tier__c", "label": "Service tier"},
+                "conditions": {"visible": {"op": "has-permission", "value": "contacts.person.read-custom"}}
+              }
+            ]
+          },
+          {"id": "form-actions", "component": "action-bar", "props": {"primary": "submit", "secondary": "cancel"}}
+        ]
+      }
+    },
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.person.record",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "kind": "record",
+      "hosts": ["internal-web", "desktop", "portal"],
+      "root": {
+        "id": "person-record",
+        "component": "page",
+        "hosts": ["internal-web", "desktop", "portal"],
+        "children": [
+          {"id": "person-summary", "component": "record-summary", "props": {"resource": "platform.contacts.person"}},
+          {"id": "person-main", "component": "section", "props": {"title": "Details"}},
+          {"id": "person-sidebar", "component": "slot", "props": {"accepts": ["card"]}}
+        ]
+      }
+    },
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.people.collection",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "kind": "collection",
+      "hosts": ["internal-web", "desktop"],
+      "root": {
+        "id": "people-collection",
+        "component": "page",
+        "hosts": ["internal-web", "desktop"],
+        "children": [
+          {"id": "people-search", "component": "search", "props": {"resource": "platform.contacts.person", "query_param": "q"}},
+          {"id": "people-table", "component": "collection", "props": {"resource": "platform.contacts.person", "columns": ["full_name", "email", "service_tier__c"], "sort": "full_name", "pagination": "cursor"}}
+        ]
+      }
+    },
+    {
+      "contract_version": 1,
+      "id": "platform.contacts.public.enquiry",
+      "definition_version": 1,
+      "owner_plugin": "platform.contacts",
+      "kind": "public-form",
+      "hosts": ["public-form"],
+      "publication": {"slug": "contact-us", "operation": "submit-enquiry"},
+      "root": {
+        "id": "public-enquiry",
+        "component": "form",
+        "hosts": ["public-form"],
+        "children": [
+          {"id": "public-name", "component": "field", "props": {"field": "first_name", "label": "Your name"}},
+          {"id": "public-email", "component": "field", "props": {"field": "email", "label": "Email"}},
+          {"id": "public-submit", "component": "action", "props": {"action": "submit", "label": "Send enquiry"}}
+        ]
+      }
+    }
+  ],
+  "contributions": [
+    {
+      "plugin_id": "customer.activity-insights",
+      "dependency_order": 1,
+      "priority": 0,
+      "target_page": "platform.contacts.person.record",
+      "target_version": 1,
+      "target_node": "person-sidebar",
+      "operation": "inside",
+      "node": {"id": "activity-insights-card", "component": "card", "hosts": ["internal-web", "desktop", "portal"], "props": {"title": "Activity insights"}}
+    }
+  ]
+}

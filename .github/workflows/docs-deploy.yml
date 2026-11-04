@@ -1,0 +1,120 @@
+name: docs-publish
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "apps/docs/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docs-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "apps/docs/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      deployment_environment:
+        description: Deployment target; production requires the protected docs-production environment
+        required: true
+        default: preview
+        type: choice
+        options: [preview, production]
+      source_ref:
+        description: Reviewed branch, tag, or commit to build (use a retained production SHA for rollback)
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: docs-publish-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docs-publish-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOCS_DEPLOYMENT_ENV: ${{ github.event_name == 'pull_request' && 'preview' || (github.event_name == 'workflow_dispatch' && inputs.deployment_environment || 'production') }}
+      DOCS_SOURCE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter docs build
+      - run: node apps/docs/scripts/verify-portable-artifact.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-static-site-${{ github.sha }}
+          path: apps/docs/.vitepress/dist
+          if-no-files-found: error
+          retention-days: 90
+
+  preview:
+    name: docs-preview
+    needs: build
+    if: >-
+      vars.DOCS_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.deployment_environment == 'preview'))
+    runs-on: ubuntu-latest
+    environment:
+      name: docs-preview
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-static-site-${{ github.sha }}
+          path: site
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.68.0"
+          command: pages deploy site --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=preview-${{ github.event.pull_request.number || github.run_id }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+  production:
+    name: docs-production
+    needs: build
+    if: >-
+      vars.DOCS_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deployment_environment == 'production'))
+    runs-on: ubuntu-latest
+    environment:
+      name: docs-production
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-static-site-${{ github.sha }}
+          path: site
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.68.0"
+          command: pages deploy site --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

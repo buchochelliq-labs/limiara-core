@@ -1,0 +1,53 @@
+{
+  "contract_version": 1,
+  "id": "platform.contacts.organisation-detail",
+  "definition_version": 1,
+  "owner_plugin": "platform.contacts",
+  "kind": "record",
+  "hosts": ["internal-web", "desktop"],
+  "resource": "platform.contacts.organisation",
+  "data_sources": [
+    {"id": "organisation", "resource": "platform.contacts.organisation", "operation": "read", "parameters": {"id": {"source": "context", "path": "record_id"}}, "load": "eager"},
+    {"id": "related_people", "resource": "platform.contacts.person", "operation": "list", "parameters": {"organisation_id": {"source": "context", "path": "record_id"}}, "load": "eager"}
+  ],
+  "actions": [
+    {"id": "back-to-organisations", "kind": "navigate", "target": "contacts.organisations.list"},
+    {"id": "edit-organisation", "kind": "navigate", "target": "contacts.organisations.edit", "permission": "contacts.organisations.write", "parameters": {"id": {"source": "data-source", "data_source": "organisation", "path": "record.id"}}},
+    {"id": "archive-organisation", "kind": "resource-operation", "target": "platform.contacts.organisation.archive", "permission": "contacts.organisations.write"},
+    {"id": "restore-organisation", "kind": "resource-operation", "target": "platform.contacts.organisation.restore", "permission": "contacts.organisations.write"},
+    {"id": "link-person", "kind": "resource-operation", "target": "platform.contacts.organisation.link-person", "permission": "contacts.organisations.write"},
+    {"id": "unlink-person", "kind": "resource-operation", "target": "platform.contacts.organisation.unlink-person", "permission": "contacts.organisations.write"},
+    {"id": "open-related-person", "kind": "navigate", "target": "contacts.people.open", "permission": "contacts.people.read", "parameters": {"id": {"source": "literal", "value": ""}}}
+  ],
+  "root": {
+    "id": "organisation-detail-page",
+    "component": "platform.ui.page",
+    "props": {"title": "Organisation", "description": "Account details, workspace fields, and related people."},
+    "bindings": {"title": {"source": "data-source", "data_source": "organisation", "path": "record.title"}},
+    "children": [
+      {"id": "organisation-detail-actions", "component": "platform.ui.action-bar", "props": {"label": "Organisation record actions"}, "children": [
+        {"id": "back-to-organisations-button", "component": "platform.ui.action", "props": {"action": "back-to-organisations", "label": "Back to organisations", "variant": "quiet"}},
+        {"id": "edit-organisation-button", "component": "platform.ui.action", "permission": "contacts.organisations.write", "props": {"action": "edit-organisation", "label": "Edit organisation", "variant": "primary"}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": false}}}},
+        {"id": "archive-organisation-button", "component": "platform.ui.action", "permission": "contacts.organisations.write", "props": {"action": "archive-organisation", "label": "Archive organisation", "variant": "danger"}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": false}}}},
+        {"id": "restore-organisation-button", "component": "platform.ui.action", "permission": "contacts.organisations.write", "props": {"action": "restore-organisation", "label": "Restore organisation", "variant": "secondary"}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": true}}}}
+      ]},
+      {"id": "organisation-detail-notice", "component": "platform.ui.alert", "props": {"title": "Organisation update", "variant": "info"}, "conditions": {"visible": {"op": "exists", "value": {"source": "data-source", "data_source": "organisation", "path": "notice"}}}, "children": [
+        {"id": "organisation-detail-notice-text", "component": "platform.ui.text", "props": {"text": "Updated"}, "bindings": {"text": {"source": "data-source", "data_source": "organisation", "path": "notice"}}}
+      ]},
+      {"id": "organisation-version-changed", "component": "platform.ui.state", "props": {"variant": "unavailable", "title": "This organisation changed", "description": "A newer saved version is available. Review the current values before editing."}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "version_changed"}, "right": {"source": "literal", "value": true}}}},
+      {"id": "organisation-archived-state", "component": "platform.ui.state", "props": {"variant": "archived", "title": "Archived organisation", "description": "This record and its relationships are read-only until it is restored."}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": true}}}},
+      {"id": "organisation-detail-content", "component": "platform.ui.stack", "props": {"gap": "large"}, "children": [
+        {"id": "organisation-summary", "component": "platform.ui.record-summary", "props": {"label": "Organisation details", "resource": "platform.contacts.organisation", "fields": [{"key": "sector", "label": "Sector"}, {"key": "website", "label": "Website"}, {"key": "telephone", "label": "Phone", "format": "phone"}, {"key": "address", "label": "Address"}, {"key": "account_status__c", "label": "Account status"}]}, "bindings": {"record": {"source": "data-source", "data_source": "organisation", "path": "record"}}},
+        {"id": "organisation-related-people-section", "component": "platform.ui.section", "permission": "contacts.people.read", "props": {"title": "People", "description": "People linked to this organisation."}, "children": [
+          {"id": "organisation-relationship-actions", "component": "platform.ui.action-bar", "permission": "contacts.organisations.write", "props": {"label": "People relationship actions"}, "children": [
+            {"id": "link-person-button", "component": "platform.ui.action", "props": {"action": "link-person", "label": "Link a person", "variant": "secondary"}, "conditions": {"visible": {"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": false}}}},
+            {"id": "unlink-person-button", "component": "platform.ui.action", "props": {"action": "unlink-person", "label": "Unlink first person", "variant": "quiet"}, "conditions": {"visible": {"op": "and", "args": [{"op": "equal", "left": {"source": "context", "path": "archived"}, "right": {"source": "literal", "value": false}}, {"op": "equal", "left": {"source": "context", "path": "has_people"}, "right": {"source": "literal", "value": true}}]}}}
+          ]},
+          {"id": "organisation-related-people", "component": "platform.ui.relationship-list", "props": {"label": "Related people", "resource": "platform.contacts.person", "select_action": "open-related-person", "selection_parameter": "id", "empty_title": "No people linked", "empty_description": "Link a person when this organisation becomes part of their contact context.", "presentation": "cards", "fields": [{"key": "job_title", "label": "Job title"}, {"key": "email", "label": "Email", "format": "email"}]}, "bindings": {"items": {"source": "data-source", "data_source": "related_people", "path": "items"}}}
+        ]},
+        {"id": "organisation-workspace-fields", "component": "platform.ui.record-summary", "props": {"label": "Workspace fields", "resource": "platform.contacts.organisation", "show_identity": false, "fields": [{"key": "service_region__c", "label": "Service region"}]}, "bindings": {"record": {"source": "data-source", "data_source": "organisation", "path": "record"}}},
+        {"id": "organisation-record-metadata", "component": "platform.ui.record-summary", "props": {"label": "Record metadata", "resource": "platform.contacts.organisation", "show_identity": false, "fields": [{"key": "version", "label": "Version", "format": "number"}, {"key": "updated_at", "label": "Last modified"}]}, "bindings": {"record": {"source": "data-source", "data_source": "organisation", "path": "record"}}}
+      ]}
+    ]
+  }
+}
