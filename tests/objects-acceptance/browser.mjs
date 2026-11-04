@@ -14,7 +14,7 @@ import {extname, join, normalize} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from '@playwright/test';
 
-const apiBase = new URL(process.env.API_BASE ?? 'http://127.0.0.1:58091');
+const apiBase = new URL(process.env.API_BASE ?? 'http://127.0.0.1:18091');
 const sessionToken = process.env.SESSION_TOKEN;
 const screenshots = process.env.SCREENSHOT_DIR ?? '';
 if (!sessionToken) {

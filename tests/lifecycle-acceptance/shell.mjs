@@ -20,7 +20,7 @@ if (phase !== 'enabled' && phase !== 'disabled') {
   console.error('usage: shell.mjs <enabled|disabled>');
   process.exit(2);
 }
-const apiBase = new URL(process.env.API_BASE ?? 'http://127.0.0.1:58080');
+const apiBase = new URL(process.env.API_BASE ?? 'http://127.0.0.1:18080');
 const sessionToken = process.env.SESSION_TOKEN;
 const cookieName = process.env.SESSION_COOKIE ?? 'platform_session';
 if (!sessionToken) {
