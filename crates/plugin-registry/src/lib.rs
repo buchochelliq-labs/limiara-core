@@ -484,7 +484,9 @@ sbom = "https://example.invalid/plugin.spdx.json"
     fn policy() -> RegistryPolicy {
         RegistryPolicy {
             reserved_namespaces: vec!["platform".into()],
-            trusted_core_repositories: vec!["https://github.com/buchochelliq-labs/limiara-core".into()],
+            trusted_core_repositories: vec![
+                "https://github.com/buchochelliq-labs/limiara-core".into()
+            ],
             trusted_provenance_hosts: vec!["github.com".into()],
             storage_backend: plugin_contract::StorageBackend::Postgres,
         }
