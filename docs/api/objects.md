@@ -467,8 +467,11 @@ server, the app locks its data until it signs in again.
   `refresh_reused`) and `current`.
 - `POST /devices/{id}/revoke` revokes one of the caller's devices, or
   anyone's with `devices.manage`. Others' devices are `404`.
-- With the device's own token only: `DELETE /devices/current` signs the
-  device out, `PUT /devices/current/push` with `{"provider": "apns" |
+- With the device's own token only: `GET /devices/current` returns the
+  device, its `member` (`id`, `display_name`, `email`, `permissions`,
+  `roles` by name and `role_ids`) and the `workspace` (`id`, `name`), which
+  the app builds its replica's engine from; `DELETE /devices/current` signs
+  the device out, `PUT /devices/current/push` with `{"provider": "apns" |
   "fcm", "token": "…"}` sets where its push notifications go, and
   `DELETE /devices/current/push` stops them.
 

@@ -2,6 +2,7 @@ import React, {useEffect, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Skeleton} from '../components/ui';
 import {DevicesApiError, type DeviceRecord, type DevicesClient} from './api';
 import '../objects/objects.css';
+import '../device/device.css';
 
 export const devicesRoute = '/settings/devices';
 
@@ -32,8 +33,10 @@ function status(device: DeviceRecord): {label: string; variant: 'success' | 'neu
  * The devices list as markup, with every state, so tests render it
  * without a browser. Names come from the API and render as text.
  */
-export function DevicesView({load, confirming, revoking, notice, headingRef, onNavigate, onRetry, onAsk, onCancel, onRevoke}: {
+export function DevicesView({load, confirming, revoking, notice, address, headingRef, onNavigate, onRetry, onAsk, onCancel, onRevoke}: {
   load: DevicesLoad;
+  /** The workspace address to enter in the app; none inside the app itself. */
+  address?: string;
   confirming?: string;
   revoking?: string;
   notice?: string;
@@ -50,6 +53,11 @@ export function DevicesView({load, confirming, revoking, notice, headingRef, onN
       <h1 ref={headingRef} tabIndex={-1}>Devices</h1>
       <p>Phones and computers signed in to this workspace with the Limiara app. Revoking one signs it out and erases its copy of the workspace the next time it connects.</p>
     </div></header>
+    {address && <section className="devices-address" aria-labelledby="devices-address-title">
+      <h2 id="devices-address-title">Sign in on a phone or computer</h2>
+      <label htmlFor="devices-address">Enter this workspace address in the Limiara app</label>
+      <input id="devices-address" readOnly value={address} onFocus={event => event.currentTarget.select()} />
+    </section>}
     <div className="sr-only" aria-live="polite">{notice}</div>
     {notice && <Alert variant="info" title={notice} />}
     {load.status === 'loading' && <Skeleton label="Loading devices" lines={4} />}
@@ -79,7 +87,7 @@ export function DevicesView({load, confirming, revoking, notice, headingRef, onN
 }
 
 /** Settings → Devices (ADR 0029). */
-export function DevicesPage({client, onNavigate, headingRef}: {client: DevicesClient; onNavigate: (route: string) => void; headingRef?: RefObject<HTMLHeadingElement | null>}) {
+export function DevicesPage({client, address, onNavigate, headingRef}: {client: DevicesClient; address?: string; onNavigate: (route: string) => void; headingRef?: RefObject<HTMLHeadingElement | null>}) {
   const [load, setLoad] = useState<DevicesLoad>({status: 'loading'});
   const [attempt, setAttempt] = useState(0);
   const [confirming, setConfirming] = useState<string>();
@@ -114,6 +122,6 @@ export function DevicesPage({client, onNavigate, headingRef}: {client: DevicesCl
     }
   };
 
-  return <DevicesView load={load} confirming={confirming} revoking={revoking} notice={notice} headingRef={headingRef} onNavigate={onNavigate}
+  return <DevicesView load={load} confirming={confirming} revoking={revoking} notice={notice} address={address} headingRef={headingRef} onNavigate={onNavigate}
     onRetry={() => setAttempt(value => value + 1)} onAsk={device => { setNotice(''); setConfirming(device.id); }} onCancel={() => setConfirming(undefined)} onRevoke={device => void revoke(device)} />;
 }

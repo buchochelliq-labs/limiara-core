@@ -105,6 +105,36 @@ notifications is a later slice (ADR 0024, "Continual sync").
 Registering and revoking a device are audited in its workspace with the
 reason (`revoked`, `signed_out`, `refresh_reused`), never with tokens.
 
+### 7. The app's side (2026-11-03)
+
+The sign-in lifecycle is the same on every platform, in
+`platform_device::app::Controller`, over `platform_sync::auth`:
+1. The member enters the workspace address the web shows in Settings →
+   Devices (`https://server/workspaces/{id}`), since the code is redeemed
+   for one workspace and `/workspaces` belongs to browser sessions.
+2. The controller opens the system browser at `GET /auth/device/login` and
+   waits for the redirect: on desktop, a loopback listener on
+   `http://127.0.0.1:47185/callback`, which desktop builds register; on
+   phones, the app's private-use scheme. It redeems the code with its
+   verifier.
+3. `GET /devices/current`, with the device's own token, returns the device,
+   the member (name, permissions, role names and ids) and the workspace.
+   The replica's engine is built for that member, the offline limit from
+   the token response is passed to it, and the first sync runs before the
+   workspace opens. Signing in always starts from an empty replica.
+4. The refresh token and the member's profile are kept in the platform
+   keychain, never in the app's directory, with each workspace file's
+   database key. At launch the replica opens from them before any
+   network. One refresh runs at a time, since a refresh token sent twice
+   revokes the device; every rotated token is stored at once.
+5. Sign-out calls `DELETE /devices/current` and deletes the replica, its
+   key and the stored session even when the server cannot be reached. A
+   refused refresh, or `auth.device_wipe_required` from the sync, deletes
+   them too.
+
+On Linux the desktop keychain is the kernel keyring, which forgets the
+session when the member logs out; the next launch signs in again.
+
 ## Alternatives considered
 
 - **The app talks to the identity provider directly**, as a public client

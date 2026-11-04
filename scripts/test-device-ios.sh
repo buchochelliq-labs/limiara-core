@@ -38,10 +38,12 @@ cargo build --locked --target aarch64-apple-ios "${crates[@]}"
 cargo build --locked --target aarch64-apple-ios-sim "${crates[@]}"
 
 log "booting a simulator"
-runtime=$(xcrun simctl list runtimes --json |
-  jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
-device_type=$(xcrun simctl list devicetypes --json |
-  jq -r '[.devicetypes[] | select(.productFamily == "iPhone")] | last | .identifier')
+# The newest available iOS runtime, and an iPhone that runtime supports: the
+# newest device type overall can be one the runtime cannot run.
+runtime_json=$(xcrun simctl list runtimes --json |
+  jq '[.runtimes[] | select(.isAvailable and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last')
+runtime=$(jq -r '.identifier' <<<"$runtime_json")
+device_type=$(jq -r '[.supportedDeviceTypes[]? | select(.productFamily == "iPhone")] | last | .identifier' <<<"$runtime_json")
 [[ -n "$runtime" && "$runtime" != null && -n "$device_type" && "$device_type" != null ]] ||
   { echo "no iOS simulator runtime is installed" >&2; exit 1; }
 simulator=$(xcrun simctl create "limiara-ci-$$" "$device_type" "$runtime")

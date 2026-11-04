@@ -13,14 +13,21 @@
 //!
 //! The server is reached through a [`SyncTransport`]: [`HttpTransport`]
 //! calls the workspace API with the device's own access token (ADR 0029).
-//! Token refresh and storage stay with the app.
+//! [`auth`] is the app's side of device sign-in: PKCE, the token grants and
+//! a [`DeviceSession`] that refreshes and rotates the device's tokens;
+//! storing them in the platform keychain stays with the app.
 
+pub mod auth;
 pub mod client;
 pub mod error;
 pub mod http;
 pub mod transport;
 pub mod wire;
 
+pub use auth::{
+    AuthError, DeviceProfile, DeviceSession, Pkce, ProfileMember, ProfileWorkspace, Registration,
+    SignIn, TokenClient, TokenSink, Tokens,
+};
 pub use client::{PendingConflict, SyncClient, SyncReport};
 pub use error::SyncError;
 pub use http::{AccessToken, HttpTransport};

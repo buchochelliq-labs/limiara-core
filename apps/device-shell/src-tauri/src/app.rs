@@ -2,9 +2,14 @@
 //! desktop binary and the mobile entry point (Tauri builds the iOS and
 //! Android apps from this library).
 
-use crate::{fixture, start_url, Asset, Assets, Shell, SCHEME};
+use crate::{start_url, Asset, Assets, Shell, SCHEME};
+use platform_device::app::{AppSettings, Browser, Controller, LoopbackRedirects, Services};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+
+/// The redirect URI desktop builds register in
+/// `platform.devices.redirect_uris` (ADR 0029).
+const DESKTOP_REDIRECT_URI: &str = "http://127.0.0.1:47185/callback";
 
 /// The web build embedded in the app by `tauri::generate_context!`.
 struct Embedded<R: Runtime>(AppHandle<R>);
@@ -18,6 +23,38 @@ impl<R: Runtime> Assets for Embedded<R> {
                 bytes: asset.bytes,
                 mime_type: asset.mime_type,
             })
+    }
+}
+
+/// The member's default browser: the system browser RFC 8252 asks for, with
+/// their existing sign-in at the identity provider.
+struct SystemBrowser;
+
+impl Browser for SystemBrowser {
+    #[cfg(desktop)]
+    fn open(&self, url: &str) -> Result<(), String> {
+        open::that_detached(url).map_err(|error| error.to_string())
+    }
+
+    /// Phones sign in through `ASWebAuthenticationSession` and Custom Tabs
+    /// with the app's own redirect scheme, which come with the phone
+    /// sign-in work; until then the sign-in screen says so.
+    #[cfg(mobile)]
+    fn open(&self, _url: &str) -> Result<(), String> {
+        Err("signing in on a phone is not available yet".into())
+    }
+}
+
+/// How the device shows in the member's device list.
+fn device_name() -> String {
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_default();
+    let host = host.trim();
+    if host.is_empty() {
+        "Limiara desktop".into()
+    } else {
+        host.chars().take(80).collect()
     }
 }
 
@@ -44,10 +81,33 @@ pub fn run() {
         })
         .setup(move |app| {
             let directory = app.path().app_data_dir()?;
-            let bridge = tauri::async_runtime::block_on(fixture::open(&directory))
-                .map_err(|error| format!("the demonstration workspace did not open: {error}"))?;
+            let redirect_uri = std::env::var("LIMIARA_REDIRECT_URI")
+                .unwrap_or_else(|_| DESKTOP_REDIRECT_URI.to_owned());
+            let redirects = LoopbackRedirects::new(&redirect_uri)
+                .map_err(|error| format!("the redirect URI is invalid: {error}"))?;
+            let keychain = Arc::new(crate::keychain::Keychain::default());
+            let controller = Controller::new(
+                directory.join("workspaces"),
+                AppSettings {
+                    redirect_uri,
+                    device_name: device_name(),
+                    platform: "desktop".into(),
+                },
+                Services {
+                    vault: keychain.clone(),
+                    keys: keychain,
+                    browser: Arc::new(SystemBrowser),
+                    redirects: Arc::new(redirects),
+                },
+            );
+            // Reopens a signed-in workspace before any network.
+            tauri::async_runtime::block_on(controller.resume());
             let assets: Arc<dyn Assets> = Arc::new(Embedded(app.handle().clone()));
-            let _ = shell.set(Shell::new(bridge, assets));
+            let _ = shell.set(Shell::new(
+                controller,
+                assets,
+                directory.join("demonstration"),
+            ));
             let url = start_url()
                 .parse()
                 .map_err(|error| format!("the start URL is invalid: {error}"))?;

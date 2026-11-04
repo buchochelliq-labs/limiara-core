@@ -69,6 +69,22 @@ jobs:
       # The realm's issuer is auth.localhost:8081, which the API must reach.
       - run: echo '127.0.0.1 auth.localhost' | sudo tee -a /etc/hosts
       - run: bash scripts/test-device-sign-in.sh
+  device-app-sign-in:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci-use-docker-mirror.sh
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      # The realm's issuer is auth.localhost:8081, which the API must reach.
+      - run: echo '127.0.0.1 auth.localhost' | sudo tee -a /etc/hosts
+      - run: bash scripts/test-device-app-sign-in.sh
   compose-startup:
     runs-on: ubuntu-latest
     timeout-minutes: 30

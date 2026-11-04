@@ -24,6 +24,8 @@
 //! permissions, sharing, saved reports and bulk jobs are made on the
 //! server, and the bridge answers `403 sync.server_only` for them.
 
+pub mod app;
+
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{Request, State};
