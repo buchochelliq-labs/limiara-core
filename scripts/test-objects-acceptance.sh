@@ -18,7 +18,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 work_root="$repository_root/target/objects-acceptance"
-api_port="${PLATFORM_ACCEPTANCE_API_PORT:-58091}"
+api_port="${PLATFORM_ACCEPTANCE_API_PORT:-18091}"
 tenant="018f0000-0000-7000-8000-000000000001"
 member="018f0000-0000-7000-8000-000000000101"
 viewer="018f0000-0000-7000-8000-000000000102"

@@ -11,7 +11,7 @@ set -Eeuo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 nats_root="${PLATFORM_LOCAL_NATS_ROOT:-$repository_root/target/local-nats}"
-port="${PLATFORM_LOCAL_NATS_PORT:-54222}"
+port="${PLATFORM_LOCAL_NATS_PORT:-14222}"
 nats_version="v2.10.24"
 nats_sha256="ee6500f364e3a741b496ae0296c04f2a9d53bbaabac457104ac74596b4a59d85"
 nats_cache="$repository_root/target/nats-server-$nats_version"
