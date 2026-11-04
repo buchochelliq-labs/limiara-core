@@ -422,12 +422,15 @@ impl<T: SyncTransport> SyncClient<T> {
         let mut forgotten = 0;
         let mut chunk: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut size = 0;
-        let ids = manifest
-            .iter()
-            .flat_map(|(object, ids)| ids.iter().map(move |id| (object, id)));
-        let mut pending = ids.peekable();
+        // Owned pairs: a borrowed iterator held across the awaits below
+        // would keep the sync's future from being `Send`.
+        let ids: Vec<(String, String)> = manifest
+            .into_iter()
+            .flat_map(|(object, ids)| ids.into_iter().map(move |id| (object.clone(), id)))
+            .collect();
+        let mut pending = ids.into_iter().peekable();
         while let Some((object, id)) = pending.next() {
-            chunk.entry(object.clone()).or_default().push(id.clone());
+            chunk.entry(object).or_default().push(id);
             size += 1;
             if size == MANIFEST_MAX || pending.peek().is_none() {
                 for (object, revoked) in self.net(self.transport.revocations(&chunk)).await? {
@@ -460,13 +463,13 @@ impl<T: SyncTransport> SyncClient<T> {
                 .take_push_answers(&batch, &answers, context)
                 .await?;
             let mut progress = !taken.stored.is_empty();
-            for (object, public_id, code) in &taken.failed {
+            for (object, public_id, code) in taken.failed.clone() {
                 if code != VERSION_CONFLICT {
                     continue;
                 }
-                if let Some(body) = self.net(self.transport.record(object, public_id)).await? {
+                if let Some(body) = self.net(self.transport.record(&object, &public_id)).await? {
                     let remote = remote_record(&body)?;
-                    progress |= self.resolve(object, &remote, report, context).await?;
+                    progress |= self.resolve(&object, &remote, report, context).await?;
                 }
             }
             report.pushed.push(taken);

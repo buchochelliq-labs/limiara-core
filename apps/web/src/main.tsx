@@ -5,6 +5,8 @@ import {AppShell} from './shell/AppShell';
 import {fixtureUser, loadShellContext, loadWorkspaceNavigation, shellFixture, WorkspaceRequestSequence} from './shell/data';
 import type {ShellStatus, ShellViewModel} from './shell/types';
 import {ExternalHostApp, ExternalUnavailableApp, isExternalRoutePath, parseExternalRoute} from './external-host/ExternalHostApp';
+import {DeviceGate} from './device/DeviceGate';
+import {inDeviceShell} from './device/session';
 import './styles/global.css';
 
 const debugStatus = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('shell-state') as ShellStatus | null : null;
@@ -131,4 +133,7 @@ function LimiaraApp() {
 const showDevelopmentShowcase = import.meta.env.DEV && window.location.pathname === '/__ui';
 const externalRoute = parseExternalRoute(window.location.pathname);
 const malformedExternalRoute = !externalRoute && isExternalRoutePath(window.location.pathname);
-createRoot(document.getElementById('root')!).render(showDevelopmentShowcase ? <UiShowcase /> : externalRoute ? <ExternalHostApp route={externalRoute} /> : malformedExternalRoute ? <ExternalUnavailableApp host={window.location.pathname.startsWith('/portal') ? 'portal' : 'public-form'} /> : <LimiaraApp />);
+// In the native device shell the workspace opens only after the app signs
+// in (ADR 0029); its gate shows sign-in, the first sync and the lease.
+const workspaceApp = inDeviceShell() ? <DeviceGate><LimiaraApp /></DeviceGate> : <LimiaraApp />;
+createRoot(document.getElementById('root')!).render(showDevelopmentShowcase ? <UiShowcase /> : externalRoute ? <ExternalHostApp route={externalRoute} /> : malformedExternalRoute ? <ExternalUnavailableApp host={window.location.pathname.startsWith('/portal') ? 'portal' : 'public-form'} /> : workspaceApp);

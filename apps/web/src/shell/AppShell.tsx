@@ -33,6 +33,7 @@ import './app-shell.css';
 import {resolveUsersClient, type UsersClient} from '../users/api';
 import {resolveDevicesClient, type DevicesClient} from '../devices/api';
 import {DevicesPage, devicesRoute} from '../devices/DevicesPage';
+import {currentWorkspaceAddress} from '../device/session';
 import {UserRecordPage} from '../users/UserRecordPage';
 import {resolveObjectsClient, type ObjectsClient} from '../objects/api';
 import {NewRecordPage, ObjectHome, ObjectRecordPage} from '../objects/ObjectPages';
@@ -223,7 +224,7 @@ function PageContent({route, search = '', model, onNavigate, contactsClient, use
 
   if (route === '/settings') return <SettingsHome onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === membersRoute) return <MembersPage client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
-  if (route === devicesRoute) return <DevicesPage client={resolvedDevices} onNavigate={onNavigate} headingRef={headingRef} />;
+  if (route === devicesRoute) return <DevicesPage client={resolvedDevices} address={currentWorkspaceAddress(model.activeWorkspaceId)} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === queryRoute) return <QueryConsole client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === reportsRoute || route.startsWith(`${reportsRoute}/`)) return <ReportsPage client={resolvedObjects} route={route} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === searchRoute) return <SearchResultsPage client={resolvedObjects} search={search} onNavigate={onNavigate} headingRef={headingRef} />;

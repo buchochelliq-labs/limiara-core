@@ -210,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/api/v1/workspaces/:workspace_id/devices/current",
-            axum::routing::delete(devices::sign_out),
+            get(devices::current_device).delete(devices::sign_out),
         )
         .route(
             "/api/v1/workspaces/:workspace_id/devices/current/push",

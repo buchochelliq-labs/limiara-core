@@ -487,6 +487,54 @@ fn current(principal: &WorkspacePrincipal) -> Option<Uuid> {
     principal.device
 }
 
+/// The calling device, its member and the workspace: what the app needs to
+/// build its replica's engine, since `/me` and `/workspaces` belong to
+/// browser sessions. Roles come as ids, for the engine's object
+/// permissions, and as names, for the shell.
+pub(crate) async fn current_device(
+    State(state): State<AppState>,
+    Extension(principal): Extension<WorkspacePrincipal>,
+) -> Response {
+    let Some(device) = current(&principal) else {
+        return not_found();
+    };
+    let Some(pool) = state.pool.as_ref() else {
+        return unavailable();
+    };
+    let tenant_id = principal.workspace.tenant_id;
+    let user = &principal.session.user;
+    let Ok(devices) = platform_db::devices(pool, tenant_id, Some(user.id)).await else {
+        return unavailable();
+    };
+    let Ok(role_ids) = platform_db::user_role_ids(pool, tenant_id, user.id).await else {
+        return unavailable();
+    };
+    // A device token's principal carries no name; the membership has it.
+    let Ok(Some(member)) = platform_db::workspace_member(pool, tenant_id, user.id).await else {
+        return unavailable();
+    };
+    let Some(row) = devices.iter().find(|row| row.id == device) else {
+        return not_found();
+    };
+    let mut value = json!({
+        "device": device_json(row, Some(device)),
+        "member": {
+            "id": user.id,
+            "display_name": member.display_name,
+            "email": member.email,
+            "permissions": principal.workspace.permissions,
+            "roles": principal.workspace.roles,
+            "role_ids": role_ids,
+        },
+        "workspace": {
+            "id": tenant_id,
+            "name": principal.workspace.display_name,
+        },
+    });
+    crate::users::name_record_users(&state, tenant_id, &mut value).await;
+    Json(value).into_response()
+}
+
 /// Signs the calling device out of the workspace.
 pub(crate) async fn sign_out(
     State(state): State<AppState>,

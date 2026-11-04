@@ -17,12 +17,24 @@ The shell and its API share one origin, so the web shell's relative
 response carries a strict content security policy: no third-party script
 can run in the origin.
 
-## Status
+## Sign-in
 
-Until device sign-in lands (#385), the app opens a demonstration workspace:
-an encrypted replica with one object and three records, keyed in memory, so
-it starts afresh at each launch. The Keychain and Keystore adapters come with
-the iOS and Android builds (#386, #387).
+The app opens signed out. The member enters the workspace address shown on
+the web in Settings → Devices, and the app signs them in through their
+default browser (ADR 0029 §7): the browser returns to
+`http://127.0.0.1:47185/callback`, which the server must list in
+`platform.devices.redirect_uris` (`LIMIARA_REDIRECT_URI` overrides it for
+development). The first sync brings the workspace down, then the web shell
+opens over it, with a bar for the sync state, the offline lease and
+sign-out. Sign-out deletes the device's copy and its key.
+
+The session and the database keys live in the platform keychain
+(`src-tauri/src/keychain.rs`): the Keychain on macOS, the Credential Manager
+on Windows, and the kernel keyring on Linux, which forgets them at logout.
+The sign-in screen also opens a demonstration workspace with no server.
+
+`bash scripts/test-device-app-sign-in.sh` runs the same sign-in controller
+headless against the API and the Keycloak fixture.
 
 ## Build and run
 

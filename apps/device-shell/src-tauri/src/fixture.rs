@@ -1,9 +1,7 @@
-//! The demonstration workspace the shell opens until device sign-in lands
-//! (#385): an encrypted replica on the device with one object and a few
-//! records, so the shell's navigation, lists and record pages work with no
-//! server. Its key is held in memory only, so it starts afresh at each
-//! launch; the platform keystore adapters come with the mobile builds
-//! (#386, #387).
+//! The demonstration workspace a signed-out member can open from the
+//! sign-in screen: an encrypted replica on the device with one object and a
+//! few records, so the shell's navigation, lists and record pages work with
+//! no server. Its key is held in memory only, so it starts afresh each time.
 
 use platform_device::{device_databases, Bridge, DeviceHost, Member, MemoryKeys, Workspace};
 use platform_objects::store::sqlite::SqliteObjectStore;

@@ -24,6 +24,13 @@ function render(load: DevicesLoad, extra: {confirming?: string; revoking?: strin
 }
 
 describe('signed-in devices', () => {
+  it('shows the workspace address to sign in with in the app', () => {
+    const html = renderToStaticMarkup(<DevicesView load={{status: 'ready', devices: []}} address="https://limiara.example.com/workspaces/w1" onNavigate={() => undefined} onRetry={() => undefined} onAsk={() => undefined} onCancel={() => undefined} onRevoke={() => undefined} />);
+    expect(html).toContain('<label for="devices-address">Enter this workspace address in the Limiara app</label>');
+    expect(html).toContain('value="https://limiara.example.com/workspaces/w1"');
+    expect(render({status: 'ready', devices: []})).not.toContain('devices-address');
+  });
+
   it('lists devices from the kernel devices route', async () => {
     const fetcher = respond(200, {data: [apiDevice]});
     const devices = await createDevicesApiClient(workspace, fetcher).list();
