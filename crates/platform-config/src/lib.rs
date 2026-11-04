@@ -298,7 +298,9 @@ impl Default for PluginSettings {
         Self {
             manifest_paths: vec!["plugins/contacts/plugin.toml".into()],
             reserved_namespaces: vec!["platform".into()],
-            trusted_core_repositories: vec!["https://github.com/buchochelliq-labs/limiara-core".into()],
+            trusted_core_repositories: vec![
+                "https://github.com/buchochelliq-labs/limiara-core".into()
+            ],
             trusted_provenance_hosts: vec!["github.com".into()],
         }
     }
