@@ -50,6 +50,11 @@ export function DeviceSessionView(props: DeviceViewProps) {
         <progress aria-label="Waiting for the browser" />
         <Button variant="secondary" onClick={props.onCancel}>Cancel</Button>
       </>}
+      {status.phase === 'signing_out' && <>
+        <h1 id="device-gate-title">Signing out</h1>
+        <p>Deleting this device's copy of {status.workspace ?? 'the workspace'}. You can sign in again in a moment.</p>
+        <progress aria-label="Deleting this device's copy" />
+      </>}
       {status.phase === 'syncing' && <>
         <h1 id="device-gate-title">Bringing {status.workspace ?? 'your workspace'} to this device</h1>
         <p>Signed in{status.member ? ` as ${status.member}` : ''}. The first sync copies the records you can see, so you can keep working offline.</p>

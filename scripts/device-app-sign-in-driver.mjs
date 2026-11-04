@@ -3,7 +3,7 @@
 // scripts/test-device-app-sign-in.sh (#385). Each `OPEN <url>` the probe
 // prints is a sign-in at Keycloak in a fresh Chromium context; `WAITING
 // revoke` is the member revoking the device from the web with their session.
-import {spawn} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {chromium} from '@playwright/test';
 
@@ -16,6 +16,8 @@ const probe = required('PROBE');
 const apiBase = required('API_BASE');
 const workspace = required('WORKSPACE_ID');
 const cookie = `platform_session=${required('MEMBER_SESSION')}`;
+const database = required('DATABASE_URL');
+const member = '018f0000-0000-7000-8000-000000000101';
 
 const browser = await chromium.launch();
 
@@ -53,6 +55,15 @@ lines.on('line', (line) => {
   seen.push(line);
   if (line.startsWith('OPEN ')) {
     signIn(line.slice(5)).catch((error) => failures.push(error));
+  } else if (line === 'WAITING rename') {
+    // An administrator's change to the member, which the app must pick up.
+    try {
+      execFileSync('psql', [database, '--no-psqlrc', '--set=ON_ERROR_STOP=1', '--quiet', '--command',
+        `UPDATE users SET display_name = 'Morgan M. Member' WHERE id = '${member}'`]);
+      child.stdin.write('renamed\n');
+    } catch (error) {
+      failures.push(error);
+    }
   } else if (line === 'WAITING revoke') {
     revokeProbe()
       .then(() => child.stdin.write('revoked\n'))
@@ -63,7 +74,7 @@ const code = await new Promise((resolve) => child.on('exit', resolve));
 await browser.close();
 if (failures.length) throw failures[0];
 if (code !== 0) throw new Error(`the probe exited with ${code}`);
-for (const step of ['WIPED', 'SIGNED_OUT']) {
+for (const step of ['REFRESHED', 'WIPED', 'SIGNED_OUT']) {
   if (!seen.includes(step)) throw new Error(`the probe never reached ${step}`);
 }
-console.log('== the app signed in, was wiped when revoked, and signed out');
+console.log('== the app signed in, took a changed profile, was wiped when revoked, and signed out');

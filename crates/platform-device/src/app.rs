@@ -17,7 +17,7 @@ use crate::{device_databases, Bridge, DatabaseKeys, DeviceHost, Member, Workspac
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use platform_objects::store::sqlite::SqliteObjectStore;
-use platform_objects::{MutationContext, ObjectCaller, ObjectService};
+use platform_objects::{MutationContext, ObjectCaller, ObjectService, ObjectStore};
 use platform_storage::sqlite::SqliteTenantDatabases;
 use platform_sync::{
     AuthError, DeviceSession, HttpTransport, Registration, SignIn, SyncClient, SyncError,
@@ -43,6 +43,9 @@ const SIGN_IN_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Retry delays after a sync that could not reach the server.
 const RETRY_MIN: Duration = Duration::from_secs(5);
 const RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+/// How often the app rereads the member's profile, so a change to their
+/// permissions or roles reaches the replica's engine.
+const PROFILE_EVERY: Duration = Duration::from_secs(15 * 60);
 /// How long sign-out waits for the server before it wipes anyway.
 const SIGN_OUT_WAIT: Duration = Duration::from_secs(10);
 /// The largest redirect request the loopback listener reads.
@@ -236,6 +239,9 @@ pub enum Phase {
     Ready,
     /// The demonstration workspace is open, with no server.
     Demo,
+    /// The workspace is closed and its replica, key and session are being
+    /// deleted; signing in waits until they are gone.
+    SigningOut,
 }
 
 /// The offline lease, for the shell's warning.
@@ -316,6 +322,8 @@ struct Active {
     sink: Arc<Sink>,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
+    /// Rereads the member's profile ([`Controller::watch_profile`]).
+    profile_task: Option<JoinHandle<()>>,
 }
 
 /// Stores each rotated refresh token and passes the offline limit to the
@@ -363,6 +371,9 @@ pub struct Controller {
     active: tokio::sync::Mutex<Option<Active>>,
     attempt: Mutex<Option<JoinHandle<()>>>,
     generation: AtomicU64,
+    /// The bridge the first sync opens, rebuilt when the member's profile
+    /// changes before then.
+    prepared: Mutex<Option<Bridge>>,
 }
 
 fn message(error: &AuthError) -> String {
@@ -396,6 +407,7 @@ impl Controller {
             active: tokio::sync::Mutex::new(None),
             attempt: Mutex::new(None),
             generation: AtomicU64::new(0),
+            prepared: Mutex::new(None),
         })
     }
 
@@ -416,6 +428,25 @@ impl Controller {
         if let Ok(mut slot) = self.bridge.write() {
             *slot = bridge;
         }
+    }
+
+    /// Closes the open workspace at once and holds the app in
+    /// [`Phase::SigningOut`] while its storage is deleted.
+    fn closing(&self) {
+        self.set_bridge(None);
+        if let Ok(mut sync) = self.sync.write() {
+            *sync = None;
+        }
+        if let Ok(mut prepared) = self.prepared.lock() {
+            *prepared = None;
+        }
+        self.update(|status| {
+            *status = Status {
+                phase: Phase::SigningOut,
+                workspace: status.workspace.take(),
+                ..Status::default()
+            }
+        });
     }
 
     fn signed_out(&self, notice: Option<String>) {
@@ -593,17 +624,8 @@ impl Controller {
     ) -> Result<(), String> {
         let profile = stored.profile.clone();
         let workspace = profile.workspace.id;
-        let engine = ObjectService::new(
-            Arc::new(SqliteObjectStore::new(files.clone())),
-            ObjectCaller::new(
-                workspace,
-                profile.member.id,
-                profile.member.permissions.clone(),
-                profile.member.role_ids.clone(),
-            ),
-        )
-        .with_replica()
-        .with_client_ids();
+        let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(files.clone()));
+        let engine = replica_engine(store.clone(), &profile);
         engine
             .set_offline_limit(stored.offline_limit_seconds)
             .await
@@ -627,18 +649,10 @@ impl Controller {
         let transport = HttpTransport::new(stored.server.clone(), workspace, session.clone())
             .map_err(|error| error.to_string())?;
         let sync = Arc::new(SyncClient::new(engine.clone(), transport));
-        let bridge = Bridge::new(DeviceHost::new(
-            engine.clone(),
-            Member {
-                display_name: profile.member.display_name.clone(),
-                email: profile.member.email.clone(),
-                permissions: profile.member.permissions.clone(),
-                roles: profile.member.roles.clone(),
-            },
-            Workspace {
-                name: profile.workspace.name.clone(),
-            },
-        ));
+        let bridge = bridge_for(engine.clone(), &profile);
+        if let Ok(mut prepared) = self.prepared.lock() {
+            *prepared = Some(bridge.clone());
+        }
         let resumed = tokens.is_none();
         self.update(|status| {
             *status = Status {
@@ -665,8 +679,15 @@ impl Controller {
         let task =
             tokio::spawn(
                 self.clone()
-                    .run_sync(generation, sync, session.clone(), bridge, stopped),
+                    .run_sync(generation, sync, session.clone(), stopped.clone()),
             );
+        let profile_task = tokio::spawn(self.clone().watch_profile(
+            generation,
+            session.clone(),
+            sink.clone(),
+            store,
+            stopped,
+        ));
         *active = Some(Active {
             generation,
             workspace,
@@ -676,6 +697,7 @@ impl Controller {
             sink,
             stop,
             task: Some(task),
+            profile_task: Some(profile_task),
         });
         Ok(())
     }
@@ -686,7 +708,6 @@ impl Controller {
         generation: u64,
         sync: Arc<SyncClient<HttpTransport>>,
         session: Arc<DeviceSession>,
-        bridge: Bridge,
         mut stopped: watch::Receiver<bool>,
     ) {
         let mut delay = RETRY_MIN;
@@ -699,9 +720,7 @@ impl Controller {
                 let _ = stop.wait_for(|stop| *stop).await;
             };
             let observer = self.clone();
-            let opened = bridge.clone();
-            let observe =
-                move |report: &SyncReport| observer.synced(generation, opened.clone(), report);
+            let observe = move |report: &SyncReport| observer.synced(generation, report);
             let result = sync
                 .follow(MutationContext::new(Uuid::now_v7()), until_stopped, observe)
                 .await;
@@ -736,7 +755,7 @@ impl Controller {
         }
     }
 
-    fn synced(&self, generation: u64, bridge: Bridge, _report: &SyncReport) {
+    fn synced(&self, generation: u64, _report: &SyncReport) {
         if self.generation.load(Ordering::SeqCst) != generation {
             return;
         }
@@ -750,6 +769,99 @@ impl Controller {
             }
         });
         if open {
+            let bridge = self
+                .prepared
+                .lock()
+                .ok()
+                .and_then(|prepared| prepared.clone());
+            self.set_bridge(bridge);
+        }
+    }
+
+    /// Rereads the member's profile at start and every [`PROFILE_EVERY`],
+    /// so permissions and roles an administrator changes reach the
+    /// replica's engine without another sign-in. Offline, the stored
+    /// profile stays in force.
+    async fn watch_profile(
+        self: Arc<Self>,
+        generation: u64,
+        session: Arc<DeviceSession>,
+        sink: Arc<Sink>,
+        store: Arc<dyn ObjectStore>,
+        mut stopped: watch::Receiver<bool>,
+    ) {
+        loop {
+            if *stopped.borrow() {
+                return;
+            }
+            if let Ok(token) = session.access().await {
+                if let Ok(profile) = session.client().profile(&token, session.workspace()).await {
+                    self.apply_profile(generation, &sink, &store, profile).await;
+                }
+            }
+            tokio::select! {
+                _ = stopped.wait_for(|stop| *stop) => return,
+                () = tokio::time::sleep(PROFILE_EVERY) => {}
+            }
+        }
+    }
+
+    /// Rereads the member's profile now, as when the app returns to the
+    /// foreground, and applies a change to the replica's engine.
+    pub async fn refresh_profile(&self) -> Result<(), String> {
+        let (generation, session, sink, files) = {
+            let active = self.active.lock().await;
+            let Some(active) = active.as_ref() else {
+                return Ok(());
+            };
+            (
+                active.generation,
+                active.session.clone(),
+                active.sink.clone(),
+                active.files.clone(),
+            )
+        };
+        let token = session.access().await.map_err(|error| error.to_string())?;
+        let profile = session
+            .client()
+            .profile(&token, session.workspace())
+            .await
+            .map_err(|error| error.to_string())?;
+        let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(files));
+        self.apply_profile(generation, &sink, &store, profile).await;
+        Ok(())
+    }
+
+    async fn apply_profile(
+        &self,
+        generation: u64,
+        sink: &Sink,
+        store: &Arc<dyn ObjectStore>,
+        profile: DeviceProfile,
+    ) {
+        let mut stored = sink.stored.lock().await;
+        if stored.profile == profile
+            || sink.closed.load(Ordering::SeqCst)
+            || self.generation.load(Ordering::SeqCst) != generation
+        {
+            return;
+        }
+        stored.profile = profile.clone();
+        if let Err(error) = self.services.vault.save(&stored).await {
+            tracing::warn!(%error, "the refreshed profile was not stored");
+        }
+        drop(stored);
+        let bridge = bridge_for(replica_engine(store.clone(), &profile), &profile);
+        if let Ok(mut prepared) = self.prepared.lock() {
+            *prepared = Some(bridge.clone());
+        }
+        let mut open = false;
+        self.update(|status| {
+            status.member = Some(profile.member.display_name.clone());
+            status.workspace = Some(profile.workspace.name.clone());
+            open = status.phase == Phase::Ready;
+        });
+        if open && self.generation.load(Ordering::SeqCst) == generation {
             self.set_bridge(Some(bridge));
         }
     }
@@ -788,9 +900,12 @@ impl Controller {
             return;
         };
         self.generation.fetch_add(1, Ordering::SeqCst);
-        self.signed_out(Some(notice.to_owned()));
+        self.closing();
         stop_worker(&mut active).await;
         self.forget(&active).await;
+        // Only now can another sign-in start: nothing of this workspace is
+        // left to delete the new one's state.
+        self.signed_out(Some(notice.to_owned()));
     }
 
     async fn forget(&self, active: &Active) {
@@ -816,7 +931,7 @@ impl Controller {
             return;
         };
         self.generation.fetch_add(1, Ordering::SeqCst);
-        self.signed_out(None);
+        self.closing();
         stop_worker(&mut active).await;
         let reached = tokio::time::timeout(SIGN_OUT_WAIT, async {
             let token = active.session.access().await.ok()?;
@@ -832,13 +947,11 @@ impl Controller {
         .flatten()
         .is_some();
         self.forget(&active).await;
-        self.update(|status| {
-            status.notice = Some(if reached {
-                "Signed out. This device's copy of the workspace was deleted.".into()
-            } else {
-                "Signed out. This device's copy of the workspace was deleted; the server could not be reached, so revoke the device in Settings → Devices on the web.".into()
-            })
-        });
+        self.signed_out(Some(if reached {
+            "Signed out. This device's copy of the workspace was deleted.".into()
+        } else {
+            "Signed out. This device's copy of the workspace was deleted; the server could not be reached, so revoke the device in Settings → Devices on the web.".into()
+        }));
     }
 
     /// Opens the demonstration workspace the shell built.
@@ -858,12 +971,47 @@ impl Controller {
     }
 }
 
+/// The replica's engine, acting as the member the profile describes.
+fn replica_engine(store: Arc<dyn ObjectStore>, profile: &DeviceProfile) -> ObjectService {
+    ObjectService::new(
+        store,
+        ObjectCaller::new(
+            profile.workspace.id,
+            profile.member.id,
+            profile.member.permissions.clone(),
+            profile.member.role_ids.clone(),
+        ),
+    )
+    .with_replica()
+    .with_client_ids()
+}
+
+fn bridge_for(engine: ObjectService, profile: &DeviceProfile) -> Bridge {
+    Bridge::new(DeviceHost::new(
+        engine,
+        Member {
+            display_name: profile.member.display_name.clone(),
+            email: profile.member.email.clone(),
+            permissions: profile.member.permissions.clone(),
+            roles: profile.member.roles.clone(),
+        },
+        Workspace {
+            name: profile.workspace.name.clone(),
+        },
+    ))
+}
+
 /// Stops the workspace's sync worker before its storage goes: it finishes
 /// a step in progress for up to [`SIGN_OUT_WAIT`], then is aborted, so it
 /// cannot write the replica or store a token after the wipe. The worker
 /// itself, wiping on the server's word, does not wait for itself.
 async fn stop_worker(active: &mut Active) {
     let _ = active.stop.send(true);
+    if let Some(profile_task) = active.profile_task.take() {
+        // It may be mid-request; nothing it holds outlives the wipe.
+        profile_task.abort();
+        let _ = profile_task.await;
+    }
     let Some(mut task) = active.task.take() else {
         return;
     };

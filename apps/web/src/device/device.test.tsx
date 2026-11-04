@@ -70,6 +70,14 @@ describe('device sign-in', () => {
     expect(locked).not.toContain('to keep working offline');
   });
 
+  it('holds the sign-in while the old workspace is deleted', () => {
+    const html = render({...signedOut, phase: 'signing_out', workspace: 'Engines'});
+    expect(html).toContain('Signing out');
+    expect(html).toContain('aria-label="Deleting this device');
+    expect(html).not.toContain('Continue in your browser');
+    expect(statusFromApi({phase: 'signing_out'}).phase).toBe('signing_out');
+  });
+
   it('marks the demonstration workspace', () => {
     const html = render({...signedOut, phase: 'demo', workspace: 'Demonstration'});
     expect(html).toContain('demonstration, nothing is saved');

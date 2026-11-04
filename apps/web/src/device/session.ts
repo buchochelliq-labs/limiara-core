@@ -2,7 +2,7 @@
 // `/api/device/session` rather than by the server. The browser never
 // reaches it: the web signs in with its own session.
 
-export type DevicePhase = 'signed_out' | 'browser' | 'syncing' | 'ready' | 'demo';
+export type DevicePhase = 'signed_out' | 'browser' | 'syncing' | 'ready' | 'demo' | 'signing_out';
 
 export type DeviceStatus = {
   phase: DevicePhase;
@@ -57,7 +57,7 @@ type ApiStatus = {
   lease?: {expires_at?: unknown; locked?: unknown} | null;
 };
 
-const phases: DevicePhase[] = ['signed_out', 'browser', 'syncing', 'ready', 'demo'];
+const phases: DevicePhase[] = ['signed_out', 'browser', 'syncing', 'ready', 'demo', 'signing_out'];
 const text = (value: unknown): string | null => typeof value === 'string' ? value : null;
 
 export function statusFromApi(body: ApiStatus): DeviceStatus {

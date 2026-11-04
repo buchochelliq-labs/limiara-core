@@ -101,6 +101,7 @@ PROBE="$repository_root/target/debug/examples/sign_in_probe" \
   REDIRECT_URI="http://127.0.0.1:${loopback_port}/callback" \
   DATA_DIR="$work_root/data" \
   API_BASE="$api_base" WORKSPACE_ID="$tenant" MEMBER_SESSION="$member_session" \
+  DATABASE_URL="$PLATFORM_TEST_BOOTSTRAP_DATABASE_URL" \
   node scripts/device-app-sign-in-driver.mjs
 
 # The server's side: the first device was revoked, the second signed out.

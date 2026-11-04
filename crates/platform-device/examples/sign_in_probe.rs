@@ -5,9 +5,10 @@
 //!
 //! 1. the sign-in completes, the first sync opens the replica, the bridge
 //!    answers as the member, and the offline limit reaches the replica;
-//! 2. after the driver revokes the device (`revoked` on stdin), the next
+//! 2. a profile changed on the server reaches the open workspace;
+//! 3. after the driver revokes the device (`revoked` on stdin), the next
 //!    refresh wipes the replica, its key and the stored session;
-//! 3. a second sign-in, then sign-out, deletes the replica again.
+//! 4. a second sign-in, then sign-out, deletes the replica again.
 //!
 //! Environment: `LIMIARA_ADDRESS` (the workspace address), `REDIRECT_URI`
 //! (a registered loopback redirect) and `DATA_DIR`.
@@ -110,6 +111,24 @@ async fn main() {
         .expect("vault")
         .expect("a stored session");
     assert_eq!(stored.profile.workspace.id, workspace);
+
+    println!("WAITING rename");
+    std::io::stdout().flush().expect("flush");
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).expect("stdin");
+    assert_eq!(line.trim(), "renamed");
+
+    println!("== a changed profile reaches the open workspace");
+    controller.refresh_profile().await.expect("profile");
+    assert_eq!(
+        controller.status().await.member.as_deref(),
+        Some("Morgan M. Member")
+    );
+    let (_, me) = bridge_get(&controller, "/api/v1/me").await;
+    assert_eq!(me["user"]["display_name"], "Morgan M. Member");
+    let stored = vault.load().await.expect("vault").expect("a stored session");
+    assert_eq!(stored.profile.member.display_name, "Morgan M. Member");
+    println!("REFRESHED");
 
     println!("WAITING revoke");
     std::io::stdout().flush().expect("flush");
