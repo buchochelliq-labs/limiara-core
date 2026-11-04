@@ -9,4 +9,4 @@ Limiara does not yet provide a production support service or service-level agree
 - Remove tokens, cookies, personal data, tenant identifiers, proprietary plugin code, and full environment dumps.
 - Describe security vulnerabilities privately to the maintainers rather than posting exploit details in a public issue. A dedicated public security-reporting channel must be established before a production release.
 
-Roadmap priority is tracked through [issue #90](https://github.com/buchochelliq-labs/limiara-core/issues/90). A GitHub issue is not a support entitlement or a delivery commitment.
+Roadmap priority is tracked through [issue #61](https://github.com/buchochelliq-labs/limiara-core/issues/61). A GitHub issue is not a support entitlement or a delivery commitment.

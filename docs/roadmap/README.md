@@ -11,7 +11,7 @@ This roadmap is the active delivery guide for Limiara maintainers and contributo
 
 Design documents, interfaces, SQL test plans, and proof-of-concept routes are identified as such. They do not count as shipped end-to-end behaviour.
 
-Actionable work is tracked in the [roadmap implementation issue index](https://github.com/buchochelliq-labs/limiara-core/issues/90). Oversized roadmap bullets are split there into bounded issues with dependencies and acceptance criteria.
+Actionable work is tracked in the [roadmap implementation issue index](https://github.com/buchochelliq-labs/limiara-core/issues/61). Oversized roadmap bullets are split there into bounded issues with dependencies and acceptance criteria.
 
 ## Roadmap principles
 
