@@ -94,6 +94,29 @@ services=$(xcrun simctl spawn "$simulator" launchctl list)
 grep -q "$bundle_id" <<<"$services" ||
   { echo "the app exited within 10 seconds of launch" >&2; exit 1; }
 
+log "delivering a simulated push"
+# The app declares background pushes (Info.ios.plist), and a content-free
+# push reaches the controller's wake, whose outcome completes it for iOS
+# (ADR 0030 §5). Signed out, the wake has no workspace to sync.
+/usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app/Info.plist" | grep -q remote-notification ||
+  { echo "the app does not declare remote-notification background mode" >&2; exit 1; }
+payload="$work_root/push.json"
+echo '{"aps": {"content-available": 1}}' >"$payload"
+xcrun simctl push "$simulator" "$bundle_id" "$payload"
+push_log=""
+for _ in $(seq 1 30); do
+  sleep 1
+  push_log=$(xcrun simctl spawn "$simulator" log show --last 2m --style compact \
+    --predicate 'subsystem == "device.push"' 2>/dev/null || true)
+  grep -q "wake finished: no_data" <<<"$push_log" && break
+done
+printf '%s\n' "$push_log" | tail -n 20
+grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the app" >&2; exit 1; }
+grep -q "wake finished: no_data" <<<"$push_log" ||
+  { echo "the push did not complete through the controller's wake" >&2; exit 1; }
+services=$(xcrun simctl spawn "$simulator" launchctl list)
+grep -q "$bundle_id" <<<"$services" || { echo "the app exited after the push" >&2; exit 1; }
+
 app_size=$(du -sk "$app" | awk '{print $1}')
 binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")" | awk '{print $1}')
 {
@@ -107,4 +130,4 @@ binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutabl
   echo
   echo "ADR 0024's budget is for release device builds; a debug simulator build is an upper bound."
 } >>"$summary"
-log "iOS build, simulator tests and app launch passed"
+log "iOS build, simulator tests, app launch and simulated push passed"

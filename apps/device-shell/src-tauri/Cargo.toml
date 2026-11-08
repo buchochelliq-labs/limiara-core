@@ -10,7 +10,7 @@ description = "The Limiara app shell for desktop and mobile: the web shell over 
 # Its own workspace: it links the platform's GUI libraries (WebKitGTK on
 # Linux), which the server workspace must not need.
 [workspace]
-members = ["browser", "keystore"]
+members = ["browser", "keystore", "push"]
 
 [lib]
 name = "device_shell"
@@ -27,6 +27,7 @@ tauri-build = { version = "2", features = [] }
 async-trait = "0.1"
 device-browser = { path = "browser" }
 device-keystore = { path = "keystore" }
+device-push = { path = "push" }
 http = "1.1"
 platform-device = { path = "../../../crates/platform-device" }
 platform-objects = { path = "../../../crates/platform-objects" }

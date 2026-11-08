@@ -106,3 +106,12 @@ to `app.limiara.shell:/callback`, which the server must list in
 plugin onto the controller's browser and redirect ports; its tests run on
 the desktop. The emulator check confirms Android routes the redirect to the
 plugin's redirect activity and that a stray redirect leaves the app running.
+
+## Push
+
+On iOS the `device-push` plugin (`push/`) registers for APNs and hands each
+content-free push to the controller's wake, which completes the push for
+iOS (ADR 0030 §5). `Info.ios.plist` declares the `remote-notification`
+background mode. A real device token needs a build signed with the
+`aps-environment` entitlement; the `ios` workflow delivers a simulated push
+with `xcrun simctl push` instead. Android's FCM half is still to come.

@@ -1,0 +1,23 @@
+[package]
+name = "device-push"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+publish = false
+description = "Push registration and background wakes for the app shell, as a Tauri plugin."
+# Tauri finds a plugin's Swift package through this key.
+links = "tauri-plugin-device-push"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+# Denied, not forbidden: the iOS plugin binding Tauri generates declares a
+# Swift entry point through FFI. That one binding is allowed in src/lib.rs
+# (ADR 0030 §5); nothing else may use `unsafe`.
+[lints.rust]
+unsafe_code = "deny"

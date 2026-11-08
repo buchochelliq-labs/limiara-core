@@ -1,6 +1,8 @@
-//! Phone sign-in (ADR 0029 §7, "Phone sign-in"): the system browser of
-//! the `device-browser` plugin behind the controller's [`Browser`] and
-//! [`Redirects`] ports.
+//! The phone's platform parts behind the controller's ports:
+//! - sign-in (ADR 0029 §8): the system browser of the `device-browser`
+//!   plugin behind [`Browser`] and [`Redirects`];
+//! - push (ADR 0030 §5): how a background wake's outcome completes the
+//!   push for the platform ([`finished`]).
 //!
 //! The controller prepares the redirect before it opens the browser. Here
 //! [`Redirects::prepare`] parks the waiting side, and [`Browser::open`] runs
@@ -8,7 +10,8 @@
 //! app's scheme, then hands the redirect over.
 
 use async_trait::async_trait;
-use platform_device::app::{Browser, PendingRedirect, Redirects};
+use device_push::Finished;
+use platform_device::app::{Browser, PendingRedirect, Redirects, WakeOutcome};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use url::Url;
@@ -92,9 +95,32 @@ impl Browser for BrowserSignIn {
     }
 }
 
+/// How long a push-started wake may sync. iOS allows about 30 seconds
+/// before it suspends the app again.
+pub const WAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// What a background wake tells the platform: iOS schedules later wakes by
+/// how useful earlier ones were.
+pub fn finished(outcome: &Result<WakeOutcome, String>) -> Finished {
+    match outcome {
+        Ok(WakeOutcome::Synced) => Finished::NewData,
+        Ok(WakeOutcome::NoWorkspace | WakeOutcome::Wiped) => Finished::NoData,
+        Ok(WakeOutcome::OutOfTime) | Err(_) => Finished::Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_tells_the_platform_how_it_went() {
+        assert_eq!(finished(&Ok(WakeOutcome::Synced)), Finished::NewData);
+        assert_eq!(finished(&Ok(WakeOutcome::NoWorkspace)), Finished::NoData);
+        assert_eq!(finished(&Ok(WakeOutcome::Wiped)), Finished::NoData);
+        assert_eq!(finished(&Ok(WakeOutcome::OutOfTime)), Finished::Failed);
+        assert_eq!(finished(&Err("offline".into())), Finished::Failed);
+    }
 
     fn sign_in(
         authenticate: impl Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,

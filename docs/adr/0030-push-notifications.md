@@ -111,6 +111,23 @@ renewal each hold one lock. The two runs therefore never push the same
 queued change twice, and the wake's deadline cuts off only the wake's own
 requests.
 
+### 5. The phone's side (2026-11-08)
+
+The shell's `device-push` plugin carries the platform half.
+
+On iOS:
+- **Callbacks:** when the plugin loads, it adds the three APNs callbacks to the app delegate's class with the Objective-C runtime: registration, a registration failure, and `didReceiveRemoteNotification:fetchCompletionHandler:`. Any callback the delegate already has still runs. It then registers for remote notifications. The app declares the `remote-notification` background mode (`Info.ios.plist`).
+- **Events:** each callback becomes an event the shell reads on a thread of its own:
+  - a device token goes to `register_push(apns, …)`;
+  - a push runs `wake` with a 25-second budget, inside the roughly 30 seconds iOS allows;
+  - the outcome completes the push for iOS: `new_data` after a sync, `no_data` with no workspace or after a wipe, `failed` when out of time or on an error. iOS schedules later wakes by those answers.
+- **What a real token needs:** a build signed by an Apple team with the `aps-environment` entitlement, and the deployment's APNs key (§2). Without them, iOS refuses registration, and the app syncs when it is opened.
+- **CI:** the iOS simulator job delivers a simulated push with `xcrun simctl push`. It checks in the system log that the push reached the plugin and completed through the controller's wake.
+
+The plugin crate denies `unsafe` rather than forbidding it, as `device-browser` does (ADR 0029 §8). Tauri's `ios_plugin_binding!` declares the Swift entry point through FFI, and only that binding is allowed.
+
+Android's half comes with a deployment's Firebase project: the FCM SDK, its `google-services.json` supplied at build time, and a messaging service that hands the token and wakes to the same controller calls.
+
 ## Alternatives considered
 
 - **Notifications that name the changed records**, so the app can fetch

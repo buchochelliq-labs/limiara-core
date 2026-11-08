@@ -841,12 +841,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-push"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "device-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "device-browser",
  "device-keystore",
+ "device-push",
  "http",
  "keyring",
  "open",
