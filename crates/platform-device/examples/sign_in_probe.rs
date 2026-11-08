@@ -6,16 +6,19 @@
 //! 1. the sign-in completes, the first sync opens the replica, the bridge
 //!    answers as the member, and the offline limit reaches the replica;
 //! 2. a profile changed on the server reaches the open workspace;
-//! 3. after the driver revokes the device (`revoked` on stdin), the next
+//! 3. the platform's push token reaches the server (the driver reads it
+//!    back), and a background wake syncs;
+//! 4. after the driver revokes the device (`revoked` on stdin), the next
 //!    refresh wipes the replica, its key and the stored session;
-//! 4. a second sign-in, then sign-out, deletes the replica again.
+//! 5. a second sign-in sends the push token for the new device too, then
+//!    sign-out deletes the replica again.
 //!
 //! Environment: `LIMIARA_ADDRESS` (the workspace address), `REDIRECT_URI`
 //! (a registered loopback redirect) and `DATA_DIR`.
 
 use platform_device::app::{
-    AppSettings, Browser, Controller, LoopbackRedirects, MemoryVault, Phase, Services,
-    SessionVault, Status,
+    AppSettings, Browser, Controller, LoopbackRedirects, MemoryVault, Phase, PushProvider,
+    Services, SessionVault, Status, WakeOutcome,
 };
 use platform_device::{device_databases, MemoryKeys};
 use std::io::{BufRead, Write};
@@ -29,6 +32,15 @@ impl Browser for Printed {
         println!("OPEN {url}");
         std::io::stdout().flush().map_err(|error| error.to_string())
     }
+}
+
+/// Prints `WAITING <what>` and waits for the driver's `answer`.
+fn handshake(what: &str, answer: &str) {
+    println!("WAITING {what}");
+    std::io::stdout().flush().expect("flush");
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).expect("stdin");
+    assert_eq!(line.trim(), answer);
 }
 
 fn env(name: &str) -> String {
@@ -134,6 +146,19 @@ async fn main() {
     assert_eq!(stored.profile.member.display_name, "Morgan M. Member");
     println!("REFRESHED");
 
+    println!("== the platform's push token reaches the server, and a wake syncs");
+    controller
+        .register_push(PushProvider::Fcm, "probe-push-token")
+        .await
+        .expect("push registration");
+    handshake("push", "pushed");
+    let outcome = controller
+        .wake(Duration::from_secs(30))
+        .await
+        .expect("wake");
+    assert_eq!(outcome, WakeOutcome::Synced);
+    println!("WOKE");
+
     println!("WAITING revoke");
     std::io::stdout().flush().expect("flush");
     let mut line = String::new();
@@ -163,6 +188,8 @@ async fn main() {
     controller.start_sign_in(&address).expect("sign-in starts");
     until(&controller, Phase::Ready).await;
     assert!(file.exists());
+    // The new device gets the token the app already holds.
+    handshake("push again", "pushed");
     controller.sign_out().await;
     let signed_out = controller.status().await;
     assert_eq!(signed_out.phase, Phase::SignedOut);

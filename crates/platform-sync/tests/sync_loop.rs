@@ -1385,6 +1385,42 @@ async fn a_background_wake_syncs_within_its_budget() {
 }
 
 #[tokio::test]
+async fn a_background_wake_never_cuts_off_the_foreground_loop() {
+    let world =
+        World::build(|client| client.with_renew_every(std::time::Duration::from_millis(50))).await;
+    world.sync().await;
+    following(&world, async {
+        eventually("the stream opens", || async {
+            world.client.transport().streams.load(Ordering::Relaxed) == 1
+        })
+        .await;
+        // A push wakes the app while the loop still follows; the server stops
+        // answering, so the wake runs out of time while the loop's renewals
+        // come due.
+        world.client.transport().hang.store(true, Ordering::Relaxed);
+        let woke = world
+            .client
+            .wake(context(), std::time::Duration::from_millis(300))
+            .await;
+        assert!(matches!(woke, Err(SyncError::OutOfTime)), "{woke:?}");
+        world
+            .client
+            .transport()
+            .hang
+            .store(false, Ordering::Relaxed);
+        // The loop waited out the wake rather than inheriting its deadline.
+        let late = world
+            .create(&world.member, ACCOUNT, json!({"name": "Late"}))
+            .await;
+        eventually("the loop still follows", || async {
+            world.on_device(ACCOUNT, &late.public_id).await.is_some()
+        })
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_background_sync_the_app_drops_leaves_no_budget_behind() {
     let world = World::new().await;
     world.sync().await;

@@ -545,6 +545,10 @@ Built (2026-10-19):
     - a step that writes to the replica always finishes, since a SQLite
       transaction cut off part-way would hold the database;
     - what it stored stays stored, and the next sync carries on from there.
+    - it never interleaves with the foreground loop: each step that talks
+      to the server or writes the replica holds one lock, so a wake that
+      starts while `follow` is still alive waits for the step in flight
+      and the loop waits for the wake (ADR 0030 §4).
 - The offline lease (§4). The app passes the token response's
   `offline_limit_seconds` to `ObjectService::set_offline_limit` at each
   sign-in and refresh, and every sync records contact as soon as the server

@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use platform_objects::store::sqlite::SqliteObjectStore;
 use platform_objects::{MutationContext, ObjectCaller, ObjectService, ObjectStore};
 use platform_storage::sqlite::SqliteTenantDatabases;
+pub use platform_sync::PushProvider;
 use platform_sync::{
     AuthError, DeviceSession, HttpTransport, Registration, SignIn, SyncClient, SyncError,
     SyncReport, TokenClient, TokenSink, Tokens,
@@ -374,6 +375,24 @@ pub struct Controller {
     /// The bridge the first sync opens, rebuilt when the member's profile
     /// changes before then.
     prepared: Mutex<Option<Bridge>>,
+    /// The platform's push token ([`Controller::register_push`]), sent to
+    /// the server whenever a workspace opens.
+    push: Mutex<Option<(PushProvider, String)>>,
+}
+
+/// What a background wake did ([`Controller::wake`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOutcome {
+    /// No workspace is open; nothing to sync.
+    NoWorkspace,
+    /// The sync finished within its budget.
+    Synced,
+    /// The budget ran out; what was stored stays stored, and the next sync
+    /// carries on.
+    OutOfTime,
+    /// The server asked for the device to be wiped, and it was.
+    Wiped,
 }
 
 fn message(error: &AuthError) -> String {
@@ -408,6 +427,7 @@ impl Controller {
             attempt: Mutex::new(None),
             generation: AtomicU64::new(0),
             prepared: Mutex::new(None),
+            push: Mutex::new(None),
         })
     }
 
@@ -699,6 +719,14 @@ impl Controller {
             task: Some(task),
             profile_task: Some(profile_task),
         });
+        drop(active);
+        // A device signed in again is a new device to the server: it gets
+        // the platform's token too. A failure leaves the app working; the
+        // next launch or token tries again.
+        let controller = self.clone();
+        tokio::spawn(async move {
+            let _ = controller.send_push().await;
+        });
         Ok(())
     }
 
@@ -868,6 +896,92 @@ impl Controller {
 
     /// Refreshes the device's tokens now, as when the app comes back to
     /// the foreground. A server that refuses the device wipes it.
+    /// Takes the token the platform's push service gave the app (ADR
+    /// 0030): APNs on iOS, FCM on Android. It is kept for later workspaces
+    /// and sent now if one is open. The platform may hand out a new token at
+    /// any time; each one replaces the last.
+    pub async fn register_push(&self, provider: PushProvider, token: &str) -> Result<(), String> {
+        if token.is_empty() {
+            return Err("the push token is empty".into());
+        }
+        if let Ok(mut push) = self.push.lock() {
+            *push = Some((provider, token.to_owned()));
+        }
+        self.send_push().await
+    }
+
+    /// Sends the platform's push token for the open workspace, if both exist.
+    async fn send_push(&self) -> Result<(), String> {
+        let Some((provider, token)) = self.push.lock().ok().and_then(|push| push.clone()) else {
+            return Ok(());
+        };
+        let (generation, workspace, session) = {
+            let active = self.active.lock().await;
+            let Some(active) = active.as_ref() else {
+                return Ok(());
+            };
+            (active.generation, active.workspace, active.session.clone())
+        };
+        let result = match session.access().await {
+            Ok(access) => {
+                session
+                    .client()
+                    .set_push(&access, workspace, provider, &token)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(AuthError::WipeRequired | AuthError::InvalidGrant(_)) => {
+                self.wipe(generation, WIPED).await;
+                Ok(())
+            }
+            Err(error) => Err(message(&error)),
+        }
+    }
+
+    /// One short sync for an app the platform woke in the background, after
+    /// a content-free push or a scheduled refresh (ADR 0024, "Continual
+    /// sync"). It never overlaps the foreground loop's steps, and stops
+    /// within `budget`, the time the platform allows.
+    pub async fn wake(&self, budget: Duration) -> Result<WakeOutcome, String> {
+        let (generation, session) = {
+            let active = self.active.lock().await;
+            let Some(active) = active.as_ref() else {
+                return Ok(WakeOutcome::NoWorkspace);
+            };
+            (active.generation, active.session.clone())
+        };
+        let Some(sync) = self.sync.read().ok().and_then(|sync| sync.clone()) else {
+            return Ok(WakeOutcome::NoWorkspace);
+        };
+        match sync
+            .wake(MutationContext::new(Uuid::now_v7()), budget)
+            .await
+        {
+            Ok(report) => {
+                self.synced(generation, &report);
+                Ok(WakeOutcome::Synced)
+            }
+            Err(SyncError::OutOfTime) => Ok(WakeOutcome::OutOfTime),
+            Err(SyncError::WipeRequired) => {
+                self.wipe(generation, WIPED).await;
+                Ok(WakeOutcome::Wiped)
+            }
+            Err(SyncError::Unauthorized) => match session.refresh().await {
+                // The next wake or the foreground loop syncs with the new token.
+                Ok(_) => Ok(WakeOutcome::OutOfTime),
+                Err(AuthError::WipeRequired | AuthError::InvalidGrant(_)) => {
+                    self.wipe(generation, WIPED).await;
+                    Ok(WakeOutcome::Wiped)
+                }
+                Err(error) => Err(message(&error)),
+            },
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     pub async fn refresh_tokens(&self) -> Result<(), String> {
         let (generation, session) = {
             let active = self.active.lock().await;

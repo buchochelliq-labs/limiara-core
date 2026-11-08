@@ -361,13 +361,32 @@ impl TokenClient {
         access_token: &str,
         workspace: Uuid,
     ) -> Result<(StatusCode, Value), AuthError> {
-        let response = self
+        self.device_request(method, access_token, workspace, "", None)
+            .await
+    }
+
+    /// A call on `/devices/current{suffix}` with the device's own token.
+    async fn device_request(
+        &self,
+        method: reqwest::Method,
+        access_token: &str,
+        workspace: Uuid,
+        suffix: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value), AuthError> {
+        let mut request = self
             .client
             .request(
                 method,
-                self.url(&format!("/api/v1/workspaces/{workspace}/devices/current")),
+                self.url(&format!(
+                    "/api/v1/workspaces/{workspace}/devices/current{suffix}"
+                )),
             )
-            .bearer_auth(access_token)
+            .bearer_auth(access_token);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| AuthError::Transport(error.to_string()))?;
@@ -414,6 +433,42 @@ impl TokenClient {
         })
     }
 
+    /// `PUT /devices/current/push`: where the server sends this device's
+    /// content-free push notifications (ADR 0030). The app calls it with
+    /// each token the platform hands it, since a provider may change it.
+    pub async fn set_push(
+        &self,
+        access_token: &str,
+        workspace: Uuid,
+        provider: PushProvider,
+        token: &str,
+    ) -> Result<(), AuthError> {
+        let (status, body) = self
+            .device_request(
+                reqwest::Method::PUT,
+                access_token,
+                workspace,
+                "/push",
+                Some(serde_json::json!({"provider": provider, "token": token})),
+            )
+            .await?;
+        server_result(status, &body)
+    }
+
+    /// `DELETE /devices/current/push`: the server stops waking this device.
+    pub async fn clear_push(&self, access_token: &str, workspace: Uuid) -> Result<(), AuthError> {
+        let (status, body) = self
+            .device_request(
+                reqwest::Method::DELETE,
+                access_token,
+                workspace,
+                "/push",
+                None,
+            )
+            .await?;
+        server_result(status, &body)
+    }
+
     /// `DELETE /devices/current`: the device signs itself out. A device
     /// the server already revoked counts as signed out.
     pub async fn sign_out(&self, access_token: &str, workspace: Uuid) -> Result<(), AuthError> {
@@ -429,6 +484,27 @@ impl TokenClient {
             Err(AuthError::WipeRequired) => Ok(()),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// The push service a device's token belongs to (ADR 0030).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushProvider {
+    /// Apple Push Notification service, on iOS.
+    Apns,
+    /// Firebase Cloud Messaging, on Android.
+    Fcm,
+}
+
+fn server_result(status: StatusCode, body: &Value) -> Result<(), AuthError> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(AuthError::Server {
+            status: status.as_u16(),
+            code: body["code"].as_str().unwrap_or_default().to_owned(),
+        })
     }
 }
 
