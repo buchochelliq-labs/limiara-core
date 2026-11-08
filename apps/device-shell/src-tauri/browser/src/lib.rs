@@ -93,6 +93,11 @@ pub use mobile::Browser;
 #[allow(unsafe_code)]
 mod ios_binding {
     tauri::ios_plugin_binding!(init_plugin_device_browser);
+
+    /// The generated binding is private to this module; Tauri calls it.
+    pub(super) fn entry_point() -> unsafe fn() -> *const std::ffi::c_void {
+        init_plugin_device_browser
+    }
 }
 
 /// The plugin. On a phone it registers the native half and manages a
@@ -109,7 +114,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             #[cfg(target_os = "ios")]
             {
                 use tauri::Manager;
-                let handle = _api.register_ios_plugin(ios_binding::init_plugin_device_browser)?;
+                let handle = _api.register_ios_plugin(ios_binding::entry_point())?;
                 _app.manage(mobile::Browser(handle));
             }
             Ok(())
