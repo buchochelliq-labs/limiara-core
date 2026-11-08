@@ -45,16 +45,29 @@ impl Browser for SystemBrowser {
     }
 }
 
+/// The platform the server records for the device (ADR 0029).
+fn platform() -> &'static str {
+    if cfg!(target_os = "ios") {
+        "ios"
+    } else if cfg!(target_os = "android") {
+        "android"
+    } else {
+        "desktop"
+    }
+}
+
 /// How the device shows in the member's device list.
 fn device_name() -> String {
     let host = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_default();
     let host = host.trim();
-    if host.is_empty() {
-        "Limiara desktop".into()
-    } else {
+    if !host.is_empty() {
         host.chars().take(80).collect()
+    } else if cfg!(mobile) {
+        "Limiara phone".into()
+    } else {
+        "Limiara desktop".into()
     }
 }
 
@@ -91,7 +104,7 @@ pub fn run() {
                 AppSettings {
                     redirect_uri,
                     device_name: device_name(),
-                    platform: "desktop".into(),
+                    platform: platform().into(),
                 },
                 Services {
                     vault: keychain.clone(),
