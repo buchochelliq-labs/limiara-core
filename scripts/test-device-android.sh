@@ -113,6 +113,16 @@ device() {
     fail "the app exited within 10 seconds of launch"
   }
 
+  # The debug build stored a probe secret through the Android Keystore at
+  # launch (src/keychain.rs): its entry must be in the app's preferences as
+  # ciphertext, and the plaintext nowhere in them.
+  preferences=$(adb shell run-as "$package" cat shared_prefs/device-keystore.xml </dev/null | tr -d '\r')
+  grep -q "name=\"$package/probe\"" <<<"$preferences" ||
+    fail "the Keystore probe entry is missing from the app's preferences"
+  ! grep -q 'keystore-probe-plaintext' <<<"$preferences" ||
+    fail "the Keystore probe's plaintext reached the app's preferences"
+  log "the Keystore stored the probe secret as ciphertext"
+
   apk_size=$(du -k "$apk" | awk '{print $1}')
   library=$(unzip -l "$apk" | awk '/lib\/x86_64\/.*\.so$/ {print $1, $4}' | sort -n | tail -n 1)
   {

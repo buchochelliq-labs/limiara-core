@@ -639,9 +639,16 @@ Built: every workspace file on a device is encrypted with SQLCipher.
   destroy it. The storage layer never stores, logs or derives the key;
   `DatabaseKey` is zeroed when dropped and never prints. sqlx's statement
   and slow-statement logs are off on encrypted connections, because sqlx
-  runs the key pragma through its executor and would log its text. The iOS
-  Keychain and Android Keystore adapters belong to the native shells
-  (#386, #387). `MemoryKeys` serves tests and desktop development.
+  runs the key pragma through its executor and would log its text. The app
+  shell's keychain implements it (`apps/device-shell/src-tauri/src/keychain.rs`):
+  the Keychain on macOS and iOS, the Credential Manager on Windows, the
+  kernel keyring on Linux, and on Android the Keystore, through the shell's
+  `device-keystore` plugin. On Android an AES-256-GCM key generated inside
+  the Android Keystore encrypts each secret, with the entry's name as
+  associated data, and only the nonce and ciphertext are written to the
+  app's private preferences; a copy of those preferences without the
+  device's keystore decrypts to nothing. `MemoryKeys` serves tests and the
+  demonstration workspace.
 - A wrong or missing key fails as `SqliteStoreError::Key`, which the
   engine reports as `409 storage.key_unavailable`, never as an empty
   workspace.

@@ -78,6 +78,7 @@ pub fn run() {
     let shell: Arc<std::sync::OnceLock<Shell>> = Arc::new(std::sync::OnceLock::new());
     let handler_shell = shell.clone();
     let result = tauri::Builder::default()
+        .plugin(device_keystore::init())
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let shell = handler_shell.clone();
             tauri::async_runtime::spawn(async move {
@@ -98,7 +99,22 @@ pub fn run() {
                 .unwrap_or_else(|_| DESKTOP_REDIRECT_URI.to_owned());
             let redirects = LoopbackRedirects::new(&redirect_uri)
                 .map_err(|error| format!("the redirect URI is invalid: {error}"))?;
-            let keychain = Arc::new(crate::keychain::Keychain::default());
+            let keychain = crate::keychain::Keychain::default();
+            #[cfg(target_os = "android")]
+            let keychain = {
+                use tauri::Manager as _;
+                let store = app
+                    .try_state::<device_keystore::Store<tauri::Wry>>()
+                    .ok_or("the Android Keystore plugin did not start")?;
+                let keychain = keychain.with_store(store.inner().clone());
+                // Debug builds prove the Keystore round trip at launch; CI
+                // then checks that only ciphertext reached the app's files.
+                if cfg!(debug_assertions) {
+                    tauri::async_runtime::block_on(keychain.probe())?;
+                }
+                keychain
+            };
+            let keychain = Arc::new(keychain);
             let controller = Controller::new(
                 directory.join("workspaces"),
                 AppSettings {

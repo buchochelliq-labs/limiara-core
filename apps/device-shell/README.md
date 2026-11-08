@@ -83,10 +83,11 @@ cargo tauri android init     # generates gen/android, which is not committed
 cargo tauri android dev      # or: cargo tauri android build --debug --apk --target x86_64
 ```
 
-Android has no keychain adapter yet, so the app keeps no session there and
-signing in is refused rather than storing secrets in the app's files; the
-demonstration workspace works (`src/keychain.rs`). The Keystore adapter is a
-follow-up.
+On Android the keychain is the Android Keystore, through the
+`device-keystore` plugin (`keystore/`): its Kotlin half keeps an AES-256-GCM
+key in the Keystore and writes only ciphertext to the app's private
+preferences. Debug builds store and read back a probe secret at launch, and
+the emulator check confirms it reached the preferences only as ciphertext.
 
 `bash scripts/test-device-android.sh build` builds the device crates for
 arm64-v8a and x86_64, the x86_64 test binaries and a debug APK;

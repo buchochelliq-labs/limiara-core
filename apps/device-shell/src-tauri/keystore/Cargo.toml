@@ -1,0 +1,20 @@
+[package]
+name = "device-keystore"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+publish = false
+description = "The Android Keystore for the app shell's secrets, as a Tauri plugin."
+# Tauri finds a plugin's Android library through this key.
+links = "tauri-plugin-device-keystore"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[lints.rust]
+unsafe_code = "forbid"

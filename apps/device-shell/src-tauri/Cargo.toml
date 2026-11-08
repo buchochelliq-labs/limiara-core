@@ -10,6 +10,7 @@ description = "The Limiara app shell for desktop and mobile: the web shell over 
 # Its own workspace: it links the platform's GUI libraries (WebKitGTK on
 # Linux), which the server workspace must not need.
 [workspace]
+members = ["keystore"]
 
 [lib]
 name = "device_shell"
@@ -24,6 +25,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 async-trait = "0.1"
+device-keystore = { path = "keystore" }
 http = "1.1"
 platform-device = { path = "../../../crates/platform-device" }
 platform-objects = { path = "../../../crates/platform-objects" }
@@ -37,9 +39,8 @@ uuid = { version = "1", features = ["v7"] }
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 open = "5"
 
-# The platform keychain (src/keychain.rs). Android has no keyring backend;
-# its Keystore adapter is a follow-up, and until then the app keeps no
-# session on Android (src/keychain.rs).
+# The platform keychain (src/keychain.rs). Android has no keyring backend
+# and uses the Keystore plugin (`keystore/`) instead.
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3.6", features = ["apple-native"] }
 [target.'cfg(windows)'.dependencies]
