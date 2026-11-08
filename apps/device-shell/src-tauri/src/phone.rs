@@ -99,6 +99,16 @@ impl Browser for BrowserSignIn {
 /// before it suspends the app again.
 pub const WAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// What is left of [`WAKE_BUDGET`] for a push iOS delivered at
+/// `received_at`, both in seconds since the Unix epoch: a wake that waited
+/// behind another one has less. `None` once nothing is left.
+pub fn wake_budget(received_at: f64, now: f64) -> Option<std::time::Duration> {
+    let waited = (now - received_at).max(0.0);
+    std::time::Duration::try_from_secs_f64(WAKE_BUDGET.as_secs_f64() - waited)
+        .ok()
+        .filter(|left| !left.is_zero())
+}
+
 /// What a background wake tells the platform: iOS schedules later wakes by
 /// how useful earlier ones were.
 pub fn finished(outcome: &Result<WakeOutcome, String>) -> Finished {
@@ -112,6 +122,20 @@ pub fn finished(outcome: &Result<WakeOutcome, String>) -> Finished {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_that_waited_gets_only_what_is_left() {
+        let at = 1_000.0;
+        assert_eq!(wake_budget(at, at), Some(WAKE_BUDGET));
+        assert_eq!(
+            wake_budget(at, at + 10.0),
+            Some(std::time::Duration::from_secs(15))
+        );
+        assert_eq!(wake_budget(at, at + 25.0), None);
+        assert_eq!(wake_budget(at, at + 40.0), None);
+        // A clock that moved back gives no more than the full budget.
+        assert_eq!(wake_budget(at, at - 5.0), Some(WAKE_BUDGET));
+    }
 
     #[test]
     fn a_wake_tells_the_platform_how_it_went() {

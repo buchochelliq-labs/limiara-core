@@ -98,10 +98,19 @@ fn follow_push(app: &tauri::App<tauri::Wry>, controller: Arc<Controller>) {
                     controller.register_push(PushProvider::Apns, &token),
                 );
             }
-            Ok(Event::Wake { id }) => {
-                let outcome =
-                    tauri::async_runtime::block_on(controller.wake(crate::phone::WAKE_BUDGET));
-                let _ = push.finish(id, crate::phone::finished(&outcome));
+            Ok(Event::Wake { id, received_at }) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_secs_f64())
+                    .unwrap_or(received_at);
+                let result = match crate::phone::wake_budget(received_at, now) {
+                    Some(budget) => crate::phone::finished(&tauri::async_runtime::block_on(
+                        controller.wake(budget),
+                    )),
+                    // Its time ran out while an earlier wake synced.
+                    None => device_push::Finished::Failed,
+                };
+                let _ = push.finish(id, result);
             }
             // Without the push entitlement, the app syncs when it is opened.
             Ok(Event::Unavailable { .. }) => {}

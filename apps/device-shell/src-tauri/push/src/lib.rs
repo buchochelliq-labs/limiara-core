@@ -31,13 +31,15 @@ impl std::fmt::Display for PushError {
 impl std::error::Error for PushError {}
 
 /// What the platform reported.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// The device token, hex encoded.
     Token { token: String },
     /// A push woke the app; answer with [`Push::finish`] and this id.
-    Wake { id: u64 },
+    /// `received_at` is when iOS delivered it, in seconds since the Unix
+    /// epoch: the time iOS allows runs from then.
+    Wake { id: u64, received_at: f64 },
     /// Registration failed; the app syncs only when opened.
     Unavailable { message: String },
 }

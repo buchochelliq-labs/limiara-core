@@ -24,7 +24,11 @@ class PushPlugin: Plugin {
     private let lock = NSLock()
     private var events: [JsonObject] = []
     private var waiting: Invoke?
-    private var wakes: [UInt64: (UIBackgroundFetchResult) -> Void] = [:]
+    /// The completion handlers each wake answers; pushes that arrive while
+    /// a wake is still queued join it.
+    private var wakes: [UInt64: [(UIBackgroundFetchResult) -> Void]] = [:]
+    /// The wake queued and not yet read, if any.
+    private var queuedWake: UInt64?
     private var nextWake: UInt64 = 1
 
     @objc public override func load(webview: WKWebView) {
@@ -46,6 +50,9 @@ class PushPlugin: Plugin {
             lock.unlock()
         } else {
             let event = events.removeFirst()
+            if let value = event["id"], let id = value as? UInt64, id == queuedWake {
+                queuedWake = nil
+            }
             lock.unlock()
             invoke.resolve(event)
         }
@@ -55,7 +62,7 @@ class PushPlugin: Plugin {
     @objc public func finish(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(FinishArgs.self)
         lock.lock()
-        let completion = wakes.removeValue(forKey: args.id)
+        let completions = wakes.removeValue(forKey: args.id) ?? []
         lock.unlock()
         let result: UIBackgroundFetchResult
         switch args.result {
@@ -64,7 +71,7 @@ class PushPlugin: Plugin {
         default: result = .failed
         }
         os_log("wake finished: %{public}@", log: log, type: .default, args.result)
-        DispatchQueue.main.async { completion?(result) }
+        DispatchQueue.main.async { completions.forEach { $0(result) } }
         invoke.resolve()
     }
 
@@ -95,12 +102,32 @@ class PushPlugin: Plugin {
 
     func woke(_ completion: @escaping (UIBackgroundFetchResult) -> Void) {
         lock.lock()
+        if let id = queuedWake {
+            // One sync answers both pushes, within the first one's window.
+            wakes[id, default: []].append(completion)
+            lock.unlock()
+            os_log("woken by a push, joining the queued wake", log: log, type: .default)
+            return
+        }
         let id = nextWake
         nextWake += 1
-        wakes[id] = completion
-        lock.unlock()
+        wakes[id] = [completion]
+        // When iOS delivered it: the app's time to answer runs from here,
+        // however long the event waits to be read.
+        let event: JsonObject = [
+            "kind": "wake", "id": id, "received_at": Date().timeIntervalSince1970,
+        ]
         os_log("woken by a push", log: log, type: .default)
-        emit(["kind": "wake", "id": id])
+        if let invoke = waiting {
+            waiting = nil
+            lock.unlock()
+            invoke.resolve(event)
+        } else {
+            // Only a wake still waiting to be read can take later pushes.
+            events.append(event)
+            queuedWake = id
+            lock.unlock()
+        }
     }
 
     // MARK: - The delegate's callbacks
