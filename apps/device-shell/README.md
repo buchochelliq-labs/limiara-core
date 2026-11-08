@@ -96,3 +96,13 @@ the object engine's conformance suite and the `platform-device` tests on it,
 then installs and launches the app and records its size and cold start. The
 `android` workflow runs both on an Ubuntu runner when the device code
 changes.
+
+## Phone sign-in
+
+Phones sign in through the `device-browser` plugin (`browser/`):
+`ASWebAuthenticationSession` on iOS and a Custom Tab on Android, redirecting
+to `app.limiara.shell:/callback`, which the server must list in
+`platform.devices.redirect_uris` (ADR 0029 §8). `src/phone.rs` maps the
+plugin onto the controller's browser and redirect ports; its tests run on
+the desktop. The emulator check confirms Android routes the redirect to the
+plugin's redirect activity and that a stray redirect leaves the app running.

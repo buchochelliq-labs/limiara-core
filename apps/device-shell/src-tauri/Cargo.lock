@@ -823,6 +823,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-browser"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "device-keystore"
 version = "0.1.0"
 dependencies = [
@@ -836,6 +845,7 @@ name = "device-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "device-browser",
  "device-keystore",
  "http",
  "keyring",
@@ -847,6 +857,7 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
 ]
 

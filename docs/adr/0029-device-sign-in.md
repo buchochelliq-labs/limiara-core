@@ -135,6 +135,37 @@ The sign-in lifecycle is the same on every platform, in
 On Linux the desktop keychain is the kernel keyring, which forgets the
 session when the member logs out; the next launch signs in again.
 
+### 8. Phone sign-in (2026-11-08)
+
+Phones redirect to the app's private-use scheme, its application id
+(RFC 8252 §7.1): `app.limiara.shell:/callback`, which deployments that
+serve the phone apps add to `platform.devices.redirect_uris` next to the
+desktop loopback URI. The shell's `device-browser` plugin opens the
+system browser, never an embedded web view:
+- iOS uses `ASWebAuthenticationSession`, which shares the system
+  browser's sign-in at the identity provider and hands back the redirect
+  to the scheme it was started with.
+- Android opens a Custom Tab, or the default browser where none offers
+  Custom Tabs. The redirect opens the plugin's redirect activity,
+  registered for the application id's scheme, which hands it to the
+  waiting sign-in and returns to the app. Returning to the app with no
+  redirect cancels the sign-in; a redirect no sign-in waits for is
+  dropped.
+
+Another app could register the same scheme on Android, which is why the
+code is bound to the sign-in: the redirect is accepted only with the
+sign-in's `state`, and the code is redeemed only with its PKCE verifier,
+which never leaves the app.
+
+The shell maps the plugin onto the controller's `Browser` and
+`Redirects` ports (`apps/device-shell/src-tauri/src/phone.rs`), so the
+controller is the same on every platform.
+
+The plugin crate denies `unsafe` rather than forbidding it. Tauri's iOS
+binding, `ios_plugin_binding!`, declares the Swift plugin's entry point
+through FFI as an `unsafe fn`; that one generated binding is allowed, in
+its own module, and nothing else in the crate may use `unsafe`.
+
 ## Alternatives considered
 
 - **The app talks to the identity provider directly**, as a public client
@@ -156,7 +187,8 @@ session when the member logs out; the next launch signs in again.
 ## Consequences
 
 - Device sign-in needs a registered redirect URI per app build, set by the
-  deployment.
+  deployment: the desktop loopback URI and, for the phone apps,
+  `app.limiara.shell:/callback`.
 - Old app versions depend on the token endpoint and the wipe signals, so
   they must evolve compatibly.
 - Building it surfaced a defect in the shared callback: the identity lock

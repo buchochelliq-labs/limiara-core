@@ -3,12 +3,13 @@
 //! Android apps from this library).
 
 use crate::{start_url, Asset, Assets, Shell, SCHEME};
-use platform_device::app::{AppSettings, Browser, Controller, LoopbackRedirects, Services};
+use platform_device::app::{AppSettings, Browser, Controller, Redirects, Services};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 /// The redirect URI desktop builds register in
 /// `platform.devices.redirect_uris` (ADR 0029).
+#[cfg(desktop)]
 const DESKTOP_REDIRECT_URI: &str = "http://127.0.0.1:47185/callback";
 
 /// The web build embedded in the app by `tauri::generate_context!`.
@@ -28,21 +29,51 @@ impl<R: Runtime> Assets for Embedded<R> {
 
 /// The member's default browser: the system browser RFC 8252 asks for, with
 /// their existing sign-in at the identity provider.
+#[cfg(desktop)]
 struct SystemBrowser;
 
+#[cfg(desktop)]
 impl Browser for SystemBrowser {
-    #[cfg(desktop)]
     fn open(&self, url: &str) -> Result<(), String> {
         open::that_detached(url).map_err(|error| error.to_string())
     }
+}
 
-    /// Phones sign in through `ASWebAuthenticationSession` and Custom Tabs
-    /// with the app's own redirect scheme, which come with the phone
-    /// sign-in work; until then the sign-in screen says so.
-    #[cfg(mobile)]
-    fn open(&self, _url: &str) -> Result<(), String> {
-        Err("signing in on a phone is not available yet".into())
-    }
+/// This build's redirect URI and the ports that open the browser and
+/// receive the redirect.
+type SignInPorts = (String, Arc<dyn Browser>, Arc<dyn Redirects>);
+
+/// Desktop: the default browser and a loopback redirect (RFC 8252 §7.3).
+#[cfg(desktop)]
+fn sign_in_ports<R: Runtime>(_app: &tauri::App<R>) -> Result<SignInPorts, String> {
+    let redirect_uri =
+        std::env::var("LIMIARA_REDIRECT_URI").unwrap_or_else(|_| DESKTOP_REDIRECT_URI.to_owned());
+    let redirects = platform_device::app::LoopbackRedirects::new(&redirect_uri)
+        .map_err(|error| format!("the redirect URI is invalid: {error}"))?;
+    Ok((redirect_uri, Arc::new(SystemBrowser), Arc::new(redirects)))
+}
+
+/// Phones: `ASWebAuthenticationSession` or a Custom Tab, redirecting to the
+/// app's private-use scheme, its application id (RFC 8252 §7.1).
+#[cfg(mobile)]
+fn sign_in_ports(app: &tauri::App<tauri::Wry>) -> Result<SignInPorts, String> {
+    let browser = app
+        .try_state::<device_browser::Browser<tauri::Wry>>()
+        .ok_or("the sign-in browser plugin did not start")?
+        .inner()
+        .clone();
+    let sign_in = Arc::new(crate::phone::BrowserSignIn::new(
+        app.config().identifier.clone(),
+        Arc::new(move |url: &str, scheme: &str| {
+            browser
+                .authenticate(url, scheme)
+                .map_err(|error| error.to_string())
+        }),
+    ));
+    let redirect_uri = sign_in.redirect_uri();
+    let opener: Arc<dyn Browser> = sign_in.clone();
+    let receiver: Arc<dyn Redirects> = sign_in;
+    Ok((redirect_uri, opener, receiver))
 }
 
 /// The platform the server records for the device (ADR 0029).
@@ -79,6 +110,7 @@ pub fn run() {
     let handler_shell = shell.clone();
     let result = tauri::Builder::default()
         .plugin(device_keystore::init())
+        .plugin(device_browser::init())
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let shell = handler_shell.clone();
             tauri::async_runtime::spawn(async move {
@@ -95,10 +127,7 @@ pub fn run() {
         })
         .setup(move |app| {
             let directory = app.path().app_data_dir()?;
-            let redirect_uri = std::env::var("LIMIARA_REDIRECT_URI")
-                .unwrap_or_else(|_| DESKTOP_REDIRECT_URI.to_owned());
-            let redirects = LoopbackRedirects::new(&redirect_uri)
-                .map_err(|error| format!("the redirect URI is invalid: {error}"))?;
+            let (redirect_uri, browser, redirects) = sign_in_ports(app)?;
             let keychain = crate::keychain::Keychain::default();
             #[cfg(target_os = "android")]
             let keychain = {
@@ -125,8 +154,8 @@ pub fn run() {
                 Services {
                     vault: keychain.clone(),
                     keys: keychain,
-                    browser: Arc::new(SystemBrowser),
-                    redirects: Arc::new(redirects),
+                    browser,
+                    redirects,
                 },
             );
             // Reopens a signed-in workspace before any network.
