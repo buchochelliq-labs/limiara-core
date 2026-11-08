@@ -325,6 +325,9 @@ struct Active {
     task: Option<JoinHandle<()>>,
     /// Rereads the member's profile ([`Controller::watch_profile`]).
     profile_task: Option<JoinHandle<()>>,
+    /// Background wakes in flight ([`Controller::wake`]), stopped with the
+    /// rest before the workspace's storage is deleted.
+    wakes: Vec<JoinHandle<()>>,
 }
 
 /// Stores each rotated refresh token and passes the offline limit to the
@@ -718,6 +721,7 @@ impl Controller {
             stop,
             task: Some(task),
             profile_task: Some(profile_task),
+            wakes: Vec::new(),
         });
         drop(active);
         // A device signed in again is a new device to the server: it gets
@@ -946,20 +950,32 @@ impl Controller {
     /// sync"). It never overlaps the foreground loop's steps, and stops
     /// within `budget`, the time the platform allows.
     pub async fn wake(&self, budget: Duration) -> Result<WakeOutcome, String> {
-        let (generation, session) = {
-            let active = self.active.lock().await;
-            let Some(active) = active.as_ref() else {
+        // Registered under the lock sign-out and a wipe take the workspace
+        // with, so either the wake sees no workspace or it is stopped before
+        // the workspace's storage is deleted.
+        let (generation, session, finished) = {
+            let mut active = self.active.lock().await;
+            let Some(active) = active.as_mut() else {
                 return Ok(WakeOutcome::NoWorkspace);
             };
-            (active.generation, active.session.clone())
+            let Some(sync) = self.sync.read().ok().and_then(|sync| sync.clone()) else {
+                return Ok(WakeOutcome::NoWorkspace);
+            };
+            let (sender, finished) = tokio::sync::oneshot::channel();
+            active.wakes.retain(|wake| !wake.is_finished());
+            active.wakes.push(tokio::spawn(async move {
+                let result = sync
+                    .wake(MutationContext::new(Uuid::now_v7()), budget)
+                    .await;
+                let _ = sender.send(result);
+            }));
+            (active.generation, active.session.clone(), finished)
         };
-        let Some(sync) = self.sync.read().ok().and_then(|sync| sync.clone()) else {
+        // Stopped by sign-out or a wipe: the workspace is gone.
+        let Ok(result) = finished.await else {
             return Ok(WakeOutcome::NoWorkspace);
         };
-        match sync
-            .wake(MutationContext::new(Uuid::now_v7()), budget)
-            .await
-        {
+        match result {
             Ok(report) => {
                 self.synced(generation, &report);
                 Ok(WakeOutcome::Synced)
@@ -1125,6 +1141,17 @@ async fn stop_worker(active: &mut Active) {
         // It may be mid-request; nothing it holds outlives the wipe.
         profile_task.abort();
         let _ = profile_task.await;
+    }
+    // A wake in flight finishes its step, or is cut off, before the storage
+    // it writes to is deleted.
+    for mut wake in active.wakes.drain(..) {
+        if tokio::time::timeout(SIGN_OUT_WAIT, &mut wake)
+            .await
+            .is_err()
+        {
+            wake.abort();
+            let _ = wake.await;
+        }
     }
     let Some(mut task) = active.task.take() else {
         return;

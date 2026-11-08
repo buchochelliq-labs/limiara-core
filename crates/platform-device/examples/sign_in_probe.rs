@@ -190,14 +190,27 @@ async fn main() {
     assert!(file.exists());
     // The new device gets the token the app already holds.
     handshake("push again", "pushed");
+    // A background wake racing sign-out never brings the replica back.
+    let waking = tokio::spawn({
+        let controller = controller.clone();
+        async move { controller.wake(Duration::from_secs(30)).await }
+    });
     controller.sign_out().await;
+    let outcome = waking.await.expect("wake task").expect("wake");
+    assert!(
+        matches!(outcome, WakeOutcome::Synced | WakeOutcome::NoWorkspace),
+        "{outcome:?}"
+    );
     let signed_out = controller.status().await;
     assert_eq!(signed_out.phase, Phase::SignedOut);
     assert_eq!(
         signed_out.notice.as_deref(),
         Some("Signed out. This device's copy of the workspace was deleted.")
     );
-    assert!(!file.exists(), "sign-out deleted the replica");
+    assert!(
+        !file.exists(),
+        "sign-out deleted the replica, and the wake left none behind"
+    );
     assert!(vault.load().await.expect("vault").is_none());
     println!("SIGNED_OUT");
 }

@@ -212,10 +212,14 @@ impl<T: SyncTransport> SyncClient<T> {
         context: MutationContext,
         budget: Duration,
     ) -> Result<SyncReport, SyncError> {
-        // The foreground loop's step in flight finishes first, and none
-        // starts until the wake is done, so the deadline is the wake's alone.
-        let _step = self.step.lock().await;
-        self.set_deadline(Some(tokio::time::Instant::now() + budget));
+        // The budget counts from now: waiting for the foreground loop's step
+        // in flight spends it too. No foreground step starts until the wake
+        // is done, so the deadline is the wake's alone.
+        let deadline = tokio::time::Instant::now() + budget;
+        let Ok(_step) = tokio::time::timeout_at(deadline, self.step.lock()).await else {
+            return Err(SyncError::OutOfTime);
+        };
+        self.set_deadline(Some(deadline));
         // Cleared however the sync ends, including when the app drops it,
         // so later syncs run without a budget.
         let _clear = ClearDeadline(self);
