@@ -1,6 +1,6 @@
 # Device shell
 
-The Limiara app for desktop and, next, iOS and Android (ADR 0024 §5): the
+The Limiara app for desktop, iOS and Android (ADR 0024 §5): the
 same React shell as the browser (`apps/web`), packaged with Tauri 2 and
 served from the `limiara://` scheme.
 
@@ -71,3 +71,27 @@ simulator, runs the object engine's conformance suite and the
 `platform-device` tests inside an iOS Simulator, then packages, installs and
 launches the app there. The `ios` workflow runs it on a macOS runner when
 the device code changes.
+
+## Android
+
+With the Android SDK, the NDK (`NDK_HOME`), Java 17 and the Tauri CLI:
+
+```sh
+pnpm --filter web build
+cd apps/device-shell/src-tauri
+cargo tauri android init     # generates gen/android, which is not committed
+cargo tauri android dev      # or: cargo tauri android build --debug --apk --target x86_64
+```
+
+Android has no keychain adapter yet, so the app keeps no session there and
+signing in is refused rather than storing secrets in the app's files; the
+demonstration workspace works (`src/keychain.rs`). The Keystore adapter is a
+follow-up.
+
+`bash scripts/test-device-android.sh build` builds the device crates for
+arm64-v8a and x86_64, the x86_64 test binaries and a debug APK;
+`bash scripts/test-device-android.sh device`, with an emulator attached, runs
+the object engine's conformance suite and the `platform-device` tests on it,
+then installs and launches the app and records its size and cold start. The
+`android` workflow runs both on an Ubuntu runner when the device code
+changes.

@@ -1,0 +1,61 @@
+name: android
+# #213: the device crates and the app shell built for Android, with the
+# object engine's conformance suite and the platform-device tests run on an
+# x86_64 emulator. It runs when the device code changes.
+on:
+  pull_request:
+    paths:
+      - crates/platform-objects/**
+      - crates/platform-storage/**
+      - crates/platform-sync/**
+      - crates/platform-device/**
+      - crates/platform-objects-http/**
+      - apps/device-shell/**
+      - apps/web/**
+      - Cargo.lock
+      - scripts/test-device-android.sh
+      - .github/workflows/android.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/platform-objects/**
+      - crates/platform-storage/**
+      - crates/platform-sync/**
+      - crates/platform-device/**
+      - crates/platform-objects-http/**
+      - apps/device-shell/**
+      - apps/web/**
+      - Cargo.lock
+      - scripts/test-device-android.sh
+      - .github/workflows/android.yml
+  workflow_dispatch:
+jobs:
+  android-emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "aarch64-linux-android,x86_64-linux-android" }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: cargo install tauri-cli --version "^2.9" --locked
+      - run: bash scripts/test-device-android.sh build
+      # Hardware acceleration for the emulator.
+      - run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash scripts/test-device-android.sh device
