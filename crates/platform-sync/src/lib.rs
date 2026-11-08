@@ -25,8 +25,8 @@ pub mod transport;
 pub mod wire;
 
 pub use auth::{
-    AuthError, DeviceProfile, DeviceSession, Pkce, ProfileMember, ProfileWorkspace, Registration,
-    SignIn, TokenClient, TokenSink, Tokens,
+    AuthError, DeviceProfile, DeviceSession, Pkce, ProfileMember, ProfileWorkspace, PushProvider,
+    Registration, SignIn, TokenClient, TokenSink, Tokens,
 };
 pub use client::{PendingConflict, SyncClient, SyncReport};
 pub use error::SyncError;

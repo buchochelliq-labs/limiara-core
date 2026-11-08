@@ -4,13 +4,13 @@
 
 use async_trait::async_trait;
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Form, Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use platform_sync::{
-    AccessToken, AuthError, DeviceSession, Registration, SignIn, SyncError, TokenClient, TokenSink,
-    Tokens,
+    AccessToken, AuthError, DeviceSession, PushProvider, Registration, SignIn, SyncError,
+    TokenClient, TokenSink, Tokens,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -31,6 +31,8 @@ struct Server {
     refreshes: Mutex<usize>,
     /// Refresh tokens the server answers with `"wipe": true`.
     revoked: Mutex<bool>,
+    /// The push registration each call left, with the token it came with.
+    push: Mutex<Vec<(String, Option<Value>)>>,
 }
 
 fn tokens(n: usize) -> Value {
@@ -111,12 +113,52 @@ async fn current() -> Json<Value> {
     }))
 }
 
+fn bearer(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+async fn set_push(
+    State(server): State<Arc<Server>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> axum::http::StatusCode {
+    if body["provider"] != "apns" && body["provider"] != "fcm" {
+        return axum::http::StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    server
+        .push
+        .lock()
+        .expect("lock")
+        .push((bearer(&headers), Some(body)));
+    axum::http::StatusCode::NO_CONTENT
+}
+
+async fn clear_push(
+    State(server): State<Arc<Server>>,
+    headers: axum::http::HeaderMap,
+) -> axum::http::StatusCode {
+    server
+        .push
+        .lock()
+        .expect("lock")
+        .push((bearer(&headers), None));
+    axum::http::StatusCode::NO_CONTENT
+}
+
 async fn serve(server: Arc<Server>) -> String {
     let app = Router::new()
         .route("/oauth/token", post(token))
         .route(
             "/api/v1/workspaces/:workspace/devices/current",
             get(current),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace/devices/current/push",
+            put(set_push).delete(clear_push),
         )
         .with_state(server);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -199,6 +241,37 @@ async fn a_code_is_redeemed_with_the_verifier_and_the_profile_follows() {
         client.redeem(&other, "one-time", &registration()).await,
         Err(AuthError::InvalidGrant(_))
     ));
+}
+
+#[tokio::test]
+async fn the_device_tells_the_server_where_to_push() {
+    let server = Arc::new(Server::default());
+    let base = serve(server.clone()).await;
+    let (client, tokens) = signed_in(&server, &base).await;
+    client
+        .set_push(
+            &tokens.access_token,
+            WORKSPACE,
+            PushProvider::Fcm,
+            "fcm-token",
+        )
+        .await
+        .expect("set");
+    client
+        .clear_push(&tokens.access_token, WORKSPACE)
+        .await
+        .expect("clear");
+    let calls = server.push.lock().expect("lock").clone();
+    assert_eq!(
+        calls,
+        vec![
+            (
+                "Bearer access-0".to_owned(),
+                Some(json!({"provider": "fcm", "token": "fcm-token"}))
+            ),
+            ("Bearer access-0".to_owned(), None),
+        ]
+    );
 }
 
 #[tokio::test]

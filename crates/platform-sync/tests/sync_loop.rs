@@ -151,6 +151,8 @@ struct LocalTransport {
     streams: std::sync::atomic::AtomicUsize,
     /// Change pages never answer, like a server that stopped responding.
     hang: AtomicBool,
+    /// How long each change page takes, like a slow connection.
+    slow: std::sync::Mutex<std::time::Duration>,
     /// Every call fails, like a device without a connection.
     down: AtomicBool,
     /// The workspace's members and roles, as `GET /users` and `/roles` list them.
@@ -302,6 +304,10 @@ impl SyncTransport for LocalTransport {
         self.check()?;
         if self.hang.load(Ordering::Relaxed) {
             std::future::pending::<()>().await;
+        }
+        let slow = *self.slow.lock().expect("lock");
+        if !slow.is_zero() {
+            tokio::time::sleep(slow).await;
         }
         if after.is_some() && self.expire.swap(false, Ordering::Relaxed) {
             return Err(SyncError::PositionExpired);
@@ -544,6 +550,7 @@ impl World {
                 stream_lifetime: std::sync::Mutex::new(std::time::Duration::from_secs(30)),
                 streams: std::sync::atomic::AtomicUsize::new(0),
                 hang: AtomicBool::new(false),
+                slow: std::sync::Mutex::new(std::time::Duration::ZERO),
                 down: AtomicBool::new(false),
                 directory: std::sync::Mutex::new(ReplicaDirectory {
                     members: BTreeMap::from([(member_id, "Ada Lovelace".to_owned())]),
@@ -1382,6 +1389,72 @@ async fn a_background_wake_syncs_within_its_budget() {
         .expect("wake");
     assert_eq!(report.pulled, 1);
     assert!(world.on_device(ACCOUNT, &acme.public_id).await.is_some());
+}
+
+#[tokio::test]
+async fn a_background_wake_never_cuts_off_the_foreground_loop() {
+    let world =
+        World::build(|client| client.with_renew_every(std::time::Duration::from_millis(50))).await;
+    world.sync().await;
+    following(&world, async {
+        eventually("the stream opens", || async {
+            world.client.transport().streams.load(Ordering::Relaxed) == 1
+        })
+        .await;
+        // A push wakes the app while the loop still follows; the server stops
+        // answering, so the wake runs out of time while the loop's renewals
+        // come due.
+        world.client.transport().hang.store(true, Ordering::Relaxed);
+        let woke = world
+            .client
+            .wake(context(), std::time::Duration::from_millis(300))
+            .await;
+        assert!(matches!(woke, Err(SyncError::OutOfTime)), "{woke:?}");
+        world
+            .client
+            .transport()
+            .hang
+            .store(false, Ordering::Relaxed);
+        // The loop waited out the wake rather than inheriting its deadline.
+        let late = world
+            .create(&world.member, ACCOUNT, json!({"name": "Late"}))
+            .await;
+        eventually("the loop still follows", || async {
+            world.on_device(ACCOUNT, &late.public_id).await.is_some()
+        })
+        .await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn waiting_for_the_foreground_loop_spends_the_wake_budget() {
+    let world =
+        World::build(|client| client.with_renew_every(std::time::Duration::from_millis(50))).await;
+    world.sync().await;
+    following(&world, async {
+        eventually("the stream opens", || async {
+            world.client.transport().streams.load(Ordering::Relaxed) == 1
+        })
+        .await;
+        // The loop's next renewal takes 800 ms on a slow connection.
+        *world.client.transport().slow.lock().expect("lock") =
+            std::time::Duration::from_millis(800);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let started = tokio::time::Instant::now();
+        let woke = world
+            .client
+            .wake(context(), std::time::Duration::from_millis(200))
+            .await;
+        assert!(matches!(woke, Err(SyncError::OutOfTime)), "{woke:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the wake kept to its budget: {:?}",
+            started.elapsed()
+        );
+        *world.client.transport().slow.lock().expect("lock") = std::time::Duration::ZERO;
+    })
+    .await;
 }
 
 #[tokio::test]

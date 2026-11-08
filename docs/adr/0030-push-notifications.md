@@ -88,6 +88,29 @@ Provider keys live in files the worker reads at startup
 (`platform.devices.push.apns.key_file`, `fcm.service_account_file`). A key
 that cannot be read stops the worker, since retrying cannot fix it.
 
+### 4. The app's side (2026-11-08)
+
+`platform_device::app::Controller` keeps the platform's push token:
+- `register_push(provider, token)` takes each token the platform hands
+  the app (APNs on iOS, FCM on Android) and sends it with
+  `PUT /devices/current/push`, using the device's own access token.
+  Every time a workspace opens, after sign-in or at launch, it is sent
+  again, so a device that signs in again, which is a new device to the
+  server, keeps being woken. A failure leaves the app working; the next
+  launch or token tries again.
+- `wake(budget)` is what the app runs when a notification or the OS
+  background scheduler wakes it: `SyncClient::wake` for the open workspace
+  within the time the platform allows. It ends as `synced`,
+  `out_of_time` (what was stored stays stored), `wiped` (the server asked
+  for it), or `no_workspace`.
+
+A wake can start while the foreground loop is still alive. On iOS a
+suspended app resumes both. So `SyncClient` serialises its steps: a sync,
+a push of queued changes, storing a streamed change, and the contact
+renewal each hold one lock. The two runs therefore never push the same
+queued change twice, and the wake's deadline cuts off only the wake's own
+requests.
+
 ## Alternatives considered
 
 - **Notifications that name the changed records**, so the app can fetch

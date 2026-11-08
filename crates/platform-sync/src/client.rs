@@ -86,6 +86,11 @@ pub struct SyncClient<T: SyncTransport> {
     renew_every: Duration,
     /// When a background sync must stop ([`SyncClient::wake`]).
     deadline: std::sync::Mutex<Option<tokio::time::Instant>>,
+    /// Held by each step that talks to the server or writes the replica, so
+    /// a background wake and the foreground loop never interleave: neither
+    /// pushes the same queued change twice, and the wake's deadline cuts off
+    /// only the wake's own requests.
+    step: tokio::sync::Mutex<()>,
 }
 
 impl<T: SyncTransport> SyncClient<T> {
@@ -100,6 +105,7 @@ impl<T: SyncTransport> SyncClient<T> {
             push_pause: PUSH_PAUSE,
             renew_every: RENEW_EVERY,
             deadline: std::sync::Mutex::new(None),
+            step: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -142,6 +148,11 @@ impl<T: SyncTransport> SyncClient<T> {
     /// moved, the revocation set after a reconnect, then the member's
     /// queued changes, then the server's.
     pub async fn sync_once(&self, context: MutationContext) -> Result<SyncReport, SyncError> {
+        let _step = self.step.lock().await;
+        self.sync_steps(context).await
+    }
+
+    async fn sync_steps(&self, context: MutationContext) -> Result<SyncReport, SyncError> {
         let mut report = SyncReport::default();
         let positions = self.engine.sync_positions().await?;
         // Without a position, the page starts at the oldest change kept,
@@ -201,11 +212,18 @@ impl<T: SyncTransport> SyncClient<T> {
         context: MutationContext,
         budget: Duration,
     ) -> Result<SyncReport, SyncError> {
-        self.set_deadline(Some(tokio::time::Instant::now() + budget));
+        // The budget counts from now: waiting for the foreground loop's step
+        // in flight spends it too. No foreground step starts until the wake
+        // is done, so the deadline is the wake's alone.
+        let deadline = tokio::time::Instant::now() + budget;
+        let Ok(_step) = tokio::time::timeout_at(deadline, self.step.lock()).await else {
+            return Err(SyncError::OutOfTime);
+        };
+        self.set_deadline(Some(deadline));
         // Cleared however the sync ends, including when the app drops it,
         // so later syncs run without a budget.
         let _clear = ClearDeadline(self);
-        self.sync_once(context).await
+        self.sync_steps(context).await
     }
 
     fn set_deadline(&self, deadline: Option<tokio::time::Instant>) {
@@ -284,6 +302,7 @@ impl<T: SyncTransport> SyncClient<T> {
                     biased;
                     () = &mut stop => return Ok(()),
                     () = tokio::time::sleep_until(renew_at) => {
+                        let _step = self.step.lock().await;
                         // A stream that stays open says nothing about the
                         // device's token, so contact is confirmed with a
                         // request of its own.
@@ -298,6 +317,7 @@ impl<T: SyncTransport> SyncClient<T> {
                             () = &mut stop => return Ok(()),
                             () = tokio::time::sleep(self.push_pause) => {}
                         }
+                        let _step = self.step.lock().await;
                         let mut report = SyncReport::default();
                         self.push(&mut report, context).await?;
                         observe(&report);
@@ -312,6 +332,7 @@ impl<T: SyncTransport> SyncClient<T> {
                         Some(Err(SyncError::PositionExpired)) => break,
                         Some(Err(error)) => return Err(error),
                         Some(Ok(StreamEvent::Metadata(version))) => {
+                            let _step = self.step.lock().await;
                             if metadata_version.is_none_or(|known| known < version) {
                                 let mut report = SyncReport::default();
                                 self.refresh_definitions(true, &mut report, context).await?;
@@ -327,6 +348,7 @@ impl<T: SyncTransport> SyncClient<T> {
                             }
                         }
                         Some(Ok(StreamEvent::Change(entry))) => {
+                            let _step = self.step.lock().await;
                             let mut report = SyncReport::default();
                             self.pull_record(&entry.object, &entry.record, &mut report, context)
                                 .await?;
