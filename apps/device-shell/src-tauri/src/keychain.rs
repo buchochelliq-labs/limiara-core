@@ -10,11 +10,9 @@
 //!   signs in again, starting a fresh replica. A Secret Service store that
 //!   survives logging out is a follow-up (docs/roadmap).
 //!
-//! - Android: no keychain yet. The Keystore adapter is a follow-up; until
-//!   it lands, [`Keychain`] on Android keeps nothing: there is no saved
-//!   session to resume, and signing in refuses to save one rather than
-//!   write it to the app's files. The demonstration workspace keeps its
-//!   keys in memory and works.
+//! - Android: the Keystore, through the `device-keystore` plugin: an
+//!   AES-256-GCM key held by the Android Keystore encrypts each secret, and
+//!   only the ciphertext is written to the app's private preferences.
 
 use async_trait::async_trait;
 use platform_device::app::{SessionVault, StoredSession, VaultError};
@@ -47,8 +45,10 @@ fn unhex(text: &str) -> Option<[u8; 32]> {
 /// The platform keychain under one service name.
 #[derive(Debug, Clone)]
 pub struct Keychain {
-    #[cfg_attr(target_os = "android", allow(dead_code))]
     service: String,
+    /// The Keystore plugin's store; [`Keychain::with_store`] sets it.
+    #[cfg(target_os = "android")]
+    store: Option<device_keystore::Store<tauri::Wry>>,
 }
 
 impl Default for Keychain {
@@ -62,7 +62,16 @@ impl Keychain {
     pub fn new(service: impl Into<String>) -> Self {
         Self {
             service: service.into(),
+            #[cfg(target_os = "android")]
+            store: None,
         }
+    }
+
+    /// Android: the Keystore plugin's store to keep the secrets in.
+    #[cfg(target_os = "android")]
+    pub fn with_store(mut self, store: device_keystore::Store<tauri::Wry>) -> Self {
+        self.store = Some(store);
+        self
     }
 }
 
@@ -104,24 +113,61 @@ impl Keychain {
     }
 }
 
-/// Android until the Keystore adapter lands: nothing is stored, and nothing
-/// secret reaches the app's files.
+/// Android: entries are named `<service>/<user>` in the Keystore plugin's
+/// store.
 #[cfg(target_os = "android")]
 impl Keychain {
-    const UNAVAILABLE: &'static str = "this device has no keychain for Limiara yet";
-
-    async fn read(&self, _user: String) -> Result<Option<String>, String> {
-        Ok(None)
+    async fn call<T: Send + 'static>(
+        &self,
+        user: String,
+        work: impl FnOnce(
+                device_keystore::Store<tauri::Wry>,
+                String,
+            ) -> Result<T, device_keystore::StoreError>
+            + Send
+            + 'static,
+    ) -> Result<T, String> {
+        let store = self
+            .store
+            .clone()
+            .ok_or_else(|| "the Android Keystore is not available".to_owned())?;
+        let name = format!("{}/{user}", self.service);
+        tokio::task::spawn_blocking(move || work(store, name))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
     }
 
-    async fn write(&self, _user: String, _secret: String) -> Result<(), String> {
-        Err(Self::UNAVAILABLE.into())
+    async fn read(&self, user: String) -> Result<Option<String>, String> {
+        self.call(user, |store, name| store.get(&name)).await
     }
 
-    async fn delete(&self, _user: String) -> Result<(), String> {
-        Ok(())
+    async fn write(&self, user: String, secret: String) -> Result<(), String> {
+        self.call(user, move |store, name| store.set(&name, &secret))
+            .await
+    }
+
+    async fn delete(&self, user: String) -> Result<(), String> {
+        self.call(user, |store, name| store.delete(&name)).await
+    }
+
+    /// Writes [`PROBE_VALUE`] under `probe`, reads it back and checks it.
+    /// The entry stays, so a test can look for it, as ciphertext, in the
+    /// app's files.
+    pub async fn probe(&self) -> Result<(), String> {
+        self.write(PROBE.into(), PROBE_VALUE.into()).await?;
+        match self.read(PROBE.into()).await? {
+            Some(value) if value == PROBE_VALUE => Ok(()),
+            _ => Err("the Android Keystore did not return what was stored".into()),
+        }
     }
 }
+
+/// The entry and plaintext of the debug build's Keystore check.
+#[cfg(target_os = "android")]
+const PROBE: &str = "probe";
+#[cfg(target_os = "android")]
+const PROBE_VALUE: &str = "keystore-probe-plaintext";
 
 #[async_trait]
 impl SessionVault for Keychain {
