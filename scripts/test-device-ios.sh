@@ -88,7 +88,10 @@ started=$(python3 -c 'import time; print(time.time())')
 xcrun simctl launch "$simulator" "$bundle_id" >/dev/null
 launched=$(python3 -c 'import time; print(time.time())')
 sleep 10
-xcrun simctl spawn "$simulator" launchctl list | grep -q "$bundle_id" ||
+# Captured before searching: `grep -q` stops reading at its first match,
+# and launchctl, killed by the broken pipe, would fail the pipeline.
+services=$(xcrun simctl spawn "$simulator" launchctl list)
+grep -q "$bundle_id" <<<"$services" ||
   { echo "the app exited within 10 seconds of launch" >&2; exit 1; }
 
 app_size=$(du -sk "$app" | awk '{print $1}')
