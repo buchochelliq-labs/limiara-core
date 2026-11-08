@@ -2,14 +2,16 @@ import ObjectiveC
 import Tauri
 import UIKit
 import WebKit
-import os.log
 
 class FinishArgs: Decodable {
     let id: UInt64
     let result: String
 }
 
-private let log = OSLog(subsystem: "device.push", category: "push")
+/// Writes to the system log with a prefix the CI check looks for.
+private func say(_ message: String) {
+    NSLog("[device.push] %@", message)
+}
 
 /// APNs registration and content-free background wakes (ADR 0030 §5).
 ///
@@ -31,12 +33,19 @@ class PushPlugin: Plugin {
     private var queuedWake: UInt64?
     private var nextWake: UInt64 = 1
 
-    @objc public override func load(webview: WKWebView) {
+    /// Installs the delegate's callbacks and registers as soon as the
+    /// plugin exists, without waiting for the webview: a push can wake the
+    /// app before any page loads.
+    override init() {
+        super.init()
         PushPlugin.shared = self
         DispatchQueue.main.async {
-            if let delegate = UIApplication.shared.delegate {
-                PushPlugin.install(on: type(of: delegate))
+            guard let delegate = UIApplication.shared.delegate else {
+                say("no app delegate to receive pushes")
+                return
             }
+            PushPlugin.install(on: type(of: delegate))
+            say("listening for pushes")
             UIApplication.shared.registerForRemoteNotifications()
         }
     }
@@ -70,7 +79,7 @@ class PushPlugin: Plugin {
         case "no_data": result = .noData
         default: result = .failed
         }
-        os_log("wake finished: %{public}@", log: log, type: .default, args.result)
+        say("wake finished: \(args.result)")
         DispatchQueue.main.async { completions.forEach { $0(result) } }
         invoke.resolve()
     }
@@ -89,14 +98,12 @@ class PushPlugin: Plugin {
 
     func registered(_ token: Data) {
         let hex = token.map { String(format: "%02x", $0) }.joined()
-        os_log("registered for remote notifications", log: log, type: .default)
+        say("registered for remote notifications")
         emit(["kind": "token", "token": hex])
     }
 
     func failed(_ error: Error) {
-        os_log(
-            "remote notifications unavailable: %{public}@", log: log, type: .default,
-            error.localizedDescription)
+        say("remote notifications unavailable: \(error.localizedDescription)")
         emit(["kind": "unavailable", "message": error.localizedDescription])
     }
 
@@ -106,7 +113,7 @@ class PushPlugin: Plugin {
             // One sync answers both pushes, within the first one's window.
             wakes[id, default: []].append(completion)
             lock.unlock()
-            os_log("woken by a push, joining the queued wake", log: log, type: .default)
+            say("woken by a push, joining the queued wake")
             return
         }
         let id = nextWake
@@ -117,7 +124,7 @@ class PushPlugin: Plugin {
         let event: JsonObject = [
             "kind": "wake", "id": id, "received_at": Date().timeIntervalSince1970,
         ]
-        os_log("woken by a push", log: log, type: .default)
+        say("woken by a push")
         if let invoke = waiting {
             waiting = nil
             lock.unlock()

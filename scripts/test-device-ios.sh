@@ -106,12 +106,20 @@ xcrun simctl push "$simulator" "$bundle_id" "$payload"
 push_log=""
 for _ in $(seq 1 30); do
   sleep 1
-  push_log=$(xcrun simctl spawn "$simulator" log show --last 2m --style compact \
-    --predicate 'subsystem == "device.push"' 2>/dev/null || true)
+  push_log=$(xcrun simctl spawn "$simulator" log show --last 5m --style compact \
+    --predicate 'eventMessage CONTAINS "[device.push]"' 2>/dev/null || true)
   grep -q "wake finished: no_data" <<<"$push_log" && break
 done
 printf '%s\n' "$push_log" | tail -n 20
-grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the app" >&2; exit 1; }
+grep -q "woken by a push" <<<"$push_log" || {
+  # What the app and the push daemon said, to tell a lost push from a
+  # plugin that never started.
+  xcrun simctl spawn "$simulator" log show --last 5m --style compact \
+    --predicate "process == \"$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")\" OR process == \"apsd\" OR eventMessage CONTAINS \"$bundle_id\"" 2>/dev/null |
+    tail -n 80 || true
+  echo "the push did not reach the app" >&2
+  exit 1
+}
 grep -q "wake finished: no_data" <<<"$push_log" ||
   { echo "the push did not complete through the controller's wake" >&2; exit 1; }
 services=$(xcrun simctl spawn "$simulator" launchctl list)
