@@ -55,7 +55,10 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
-          target: google_apis
+          # The plain AOSP image: on google_apis, Play services' font
+          # provider crashes while the emulator settles, and Android kills
+          # the app because its webview depends on that provider.
+          target: default
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash scripts/test-device-android.sh device
