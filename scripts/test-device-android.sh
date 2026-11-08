@@ -83,10 +83,11 @@ device() {
   while IFS= read -r binary; do
     name=$(basename "$binary")
     log "emulator: $name"
-    adb push "$binary" "$remote/$name" >/dev/null
+    # adb reads stdin; without </dev/null it would swallow the rest of the list.
+    adb push "$binary" "$remote/$name" >/dev/null </dev/null
     # `adb shell` returns the command's exit status (adb 1.0.39 and later);
     # the marker guards against an older adb that does not.
-    output=$(adb shell "cd $remote && chmod 755 ./$name && TMPDIR=$remote/tmp ./$name; echo \"exit=\$?\"")
+    output=$(adb shell "cd $remote && chmod 755 ./$name && TMPDIR=$remote/tmp ./$name; echo \"exit=\$?\"" </dev/null)
     printf '%s\n' "$output"
     grep -q '^exit=0' <<<"$(tr -d '\r' <<<"$output")" || fail "$name failed on the emulator"
   done <"$tests_list"
@@ -98,13 +99,17 @@ device() {
   adb install -r "$apk" >/dev/null
   activity=$(adb shell cmd package resolve-activity --brief "$package" | tr -d '\r' | tail -n 1)
   [[ "$activity" == */* ]] || fail "no launcher activity for $package"
+  adb logcat -c
   # Cold start: `am start -W` waits for the first frame and reports it.
   launch=$(adb shell am start -W -n "$activity" | tr -d '\r')
   printf '%s\n' "$launch"
   total=$(sed -n 's/^TotalTime: *//p' <<<"$launch")
   sleep 10
   adb shell pidof "$package" >/dev/null || {
-    adb logcat -d -t 200 | tail -n 100
+    # The app's own lines, Rust's output, and any crash or tombstone.
+    adb logcat -d -v brief |
+      grep -E "$package|RustStdoutStderr|AndroidRuntime|DEBUG|libc|Tauri|wry|ActivityManager|ActivityTaskManager" |
+      tail -n 200 || true
     fail "the app exited within 10 seconds of launch"
   }
 
