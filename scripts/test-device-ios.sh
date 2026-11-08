@@ -103,25 +103,31 @@ log "delivering a simulated push"
 payload="$work_root/push.json"
 echo '{"aps": {"content-available": 1}}' >"$payload"
 xcrun simctl push "$simulator" "$bundle_id" "$payload"
+# The plugin keeps a trail of each step in the app's temporary directory;
+# the simulator's containers sit on the Mac's own file system.
+container=$(xcrun simctl get_app_container "$simulator" "$bundle_id" data)
+trail="$container/tmp/device-push.log"
 push_log=""
 for _ in $(seq 1 30); do
   sleep 1
-  push_log=$(xcrun simctl spawn "$simulator" log show --last 5m --style compact \
-    --predicate 'eventMessage CONTAINS "[device.push]"' 2>/dev/null || true)
+  push_log=$(cat "$trail" 2>/dev/null || true)
   grep -q "wake finished: no_data" <<<"$push_log" && break
 done
-printf '%s\n' "$push_log" | tail -n 20
-grep -q "woken by a push" <<<"$push_log" || {
-  # What the app and the push daemon said, to tell a lost push from a
-  # plugin that never started.
-  xcrun simctl spawn "$simulator" log show --last 5m --style compact \
-    --predicate "process == \"$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")\" OR process == \"apsd\" OR eventMessage CONTAINS \"$bundle_id\"" 2>/dev/null |
-    tail -n 80 || true
-  echo "the push did not reach the app" >&2
+echo "--- the push plugin's trail"
+printf '%s\n' "${push_log:-(none: the plugin never started)}"
+if ! grep -q "wake finished: no_data" <<<"$push_log"; then
+  executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+  echo "--- the app's own log"
+  xcrun simctl spawn "$simulator" log show --last 10m --style compact \
+    --predicate "process == \"$executable\"" 2>/dev/null | tail -n 60 || true
+  echo "--- the push daemon on this app"
+  xcrun simctl spawn "$simulator" log show --last 10m --style compact \
+    --predicate "process == \"apsd\" AND eventMessage CONTAINS \"$bundle_id\"" 2>/dev/null |
+    tail -n 30 || true
+  grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the app" >&2; exit 1; }
+  echo "the push did not complete through the controller's wake" >&2
   exit 1
-}
-grep -q "wake finished: no_data" <<<"$push_log" ||
-  { echo "the push did not complete through the controller's wake" >&2; exit 1; }
+fi
 services=$(xcrun simctl spawn "$simulator" launchctl list)
 grep -q "$bundle_id" <<<"$services" || { echo "the app exited after the push" >&2; exit 1; }
 

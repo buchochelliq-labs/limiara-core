@@ -8,9 +8,23 @@ class FinishArgs: Decodable {
     let result: String
 }
 
-/// Writes to the system log with a prefix the CI check looks for.
+/// The plugin's own trail, in the app's temporary directory, which the CI
+/// check reads from the simulator's container.
+private let trail = FileManager.default.temporaryDirectory
+    .appendingPathComponent("device-push.log")
+
+/// Writes each step to the system log, with a prefix to search for, and
+/// to the trail.
 private func say(_ message: String) {
     NSLog("[device.push] %@", message)
+    let line = Data("\(message)\n".utf8)
+    if let handle = try? FileHandle(forWritingTo: trail) {
+        handle.seekToEndOfFile()
+        handle.write(line)
+        handle.closeFile()
+    } else {
+        try? line.write(to: trail)
+    }
 }
 
 /// APNs registration and content-free background wakes (ADR 0030 §5).
