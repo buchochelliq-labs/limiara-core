@@ -27,6 +27,9 @@ kotlin {
 }
 
 dependencies {
+    // The lifecycle hooks take AppCompatActivity; Tauri's library uses it
+    // without exporting it. The same version as Tauri's.
+    implementation("androidx.appcompat:appcompat:1.6.0")
     implementation("androidx.browser:browser:1.8.0")
     implementation(project(":tauri-android"))
 }
