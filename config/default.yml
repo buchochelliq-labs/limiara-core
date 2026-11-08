@@ -34,9 +34,9 @@ platform:
     cookie_secure: false
     same_site: Lax
   # Device apps that sign in through the system browser (ADR 0029). List
-  # each app build's redirect URI, such as com.example.app:/oauth, and
-  # http://127.0.0.1:47185/callback for the desktop app; empty turns device
-  # sign-in off.
+  # each app build's redirect URI: http://127.0.0.1:47185/callback for the
+  # desktop app and app.limiara.shell:/callback for the phone apps; empty
+  # turns device sign-in off.
   devices:
     redirect_uris: []
     offline_limit_seconds: 1209600

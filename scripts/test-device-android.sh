@@ -123,6 +123,19 @@ device() {
     fail "the Keystore probe's plaintext reached the app's preferences"
   log "the Keystore stored the probe secret as ciphertext"
 
+  # Phone sign-in: the browser's redirect to the app's scheme must reach the
+  # plugin's redirect activity, and a redirect no sign-in waits for is
+  # dropped without disturbing the app.
+  handlers=$(adb shell "cmd package query-activities --brief -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d '$package:/callback'" </dev/null | tr -d '\r')
+  grep -q "$package/device.browser.RedirectActivity" <<<"$handlers" || {
+    printf '%s\n' "$handlers"
+    fail "the sign-in redirect to $package:/callback reaches no redirect activity"
+  }
+  adb shell "am start -W -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d '$package:/callback?code=stray&state=stray'" </dev/null >/dev/null
+  sleep 3
+  adb shell pidof "$package" >/dev/null </dev/null || fail "a stray sign-in redirect stopped the app"
+  log "the sign-in redirect reaches the app, and a stray one is dropped"
+
   apk_size=$(du -k "$apk" | awk '{print $1}')
   library=$(unzip -l "$apk" | awk '/lib\/x86_64\/.*\.so$/ {print $1, $4}' | sort -n | tail -n 1)
   {

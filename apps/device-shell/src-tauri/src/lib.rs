@@ -28,6 +28,8 @@ use std::sync::Arc;
 pub mod app;
 pub mod fixture;
 pub mod keychain;
+#[cfg(any(mobile, test))]
+pub mod phone;
 
 /// The app's own sign-in route, answered by the shell rather than the
 /// bridge, so it works while no workspace is open.
