@@ -408,13 +408,15 @@ fn valid_url(value: &str) -> bool {
         && !value.chars().any(char::is_whitespace)
 }
 
+/// Significant decimal places: trailing zeros do not count, so `1.0`, which
+/// is how a normalised whole number reads back, has the scale of `1`.
 fn decimal_places(number: &Number) -> usize {
     let text = number.to_string();
     if text.contains(['e', 'E']) {
         return usize::MAX;
     }
     text.split_once('.')
-        .map_or(0, |(_, fraction)| fraction.len())
+        .map_or(0, |(_, fraction)| fraction.trim_end_matches('0').len())
 }
 
 /// Normalises one raw value for a field. `None` means the value is empty and
@@ -861,6 +863,19 @@ mod tests {
     use super::*;
     use crate::{DefinitionStatus, Origin, SharingModel};
     use serde_json::json;
+
+    #[test]
+    fn trailing_zeros_are_not_decimal_places() {
+        let places = |value: Value| match value {
+            Value::Number(number) => decimal_places(&number),
+            _ => usize::MAX,
+        };
+        assert_eq!(places(json!(1)), 0);
+        assert_eq!(places(json!(1.0)), 0);
+        assert_eq!(places(json!(2.5)), 1);
+        assert_eq!(places(json!(2.50)), 1);
+        assert_eq!(places(json!(0.125)), 3);
+    }
 
     fn field(api: &str, kind: FieldType) -> FieldDefinition {
         FieldDefinition {

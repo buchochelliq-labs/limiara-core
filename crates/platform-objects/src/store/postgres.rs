@@ -236,6 +236,43 @@ fn rule_from_row(row: &PgRow) -> Result<ValidationRule, ObjectError> {
     })
 }
 
+const QUICK_ACTION_COLUMNS: &str = "q.id, q.object_id, q.name, q.label, q.kind, q.position, \
+     q.target_object_id, t.api_name AS target_object, q.target_field, q.fields, q.presets, \
+     q.version, q.created_at, q.created_by, q.updated_at, q.updated_by";
+const QUICK_ACTION_FROM: &str = "FROM quick_actions q LEFT JOIN object_definitions t \
+     ON t.tenant_id = q.tenant_id AND t.id = q.target_object_id";
+
+fn quick_action_from_row(row: &PgRow) -> Result<crate::QuickAction, ObjectError> {
+    let fields: Value = row.try_get("fields")?;
+    let presets: Value = row.try_get("presets")?;
+    Ok(crate::QuickAction {
+        id: row.try_get("id")?,
+        object_id: row.try_get("object_id")?,
+        name: row.try_get("name")?,
+        label: row.try_get("label")?,
+        kind: crate::QuickActionKind::parse(&row.try_get::<String, _>("kind")?)
+            .ok_or(ObjectError::Invariant)?,
+        position: row.try_get("position")?,
+        target_object_id: row.try_get("target_object_id")?,
+        target_object: row.try_get("target_object")?,
+        target_field: row.try_get("target_field")?,
+        fields: serde_json::from_value(fields).map_err(|_| ObjectError::Invariant)?,
+        presets: serde_json::from_value(presets).map_err(|_| ObjectError::Invariant)?,
+        version: row.try_get("version")?,
+        created_at: row.try_get("created_at")?,
+        created_by: row.try_get("created_by")?,
+        updated_at: row.try_get("updated_at")?,
+        updated_by: row.try_get("updated_by")?,
+    })
+}
+
+fn quick_action_json(action: &crate::QuickAction) -> Result<(Value, Value), ObjectError> {
+    Ok((
+        serde_json::to_value(&action.fields).map_err(|_| ObjectError::Invariant)?,
+        serde_json::to_value(&action.presets).map_err(|_| ObjectError::Invariant)?,
+    ))
+}
+
 const AUTOMATION_COLUMNS: &str = "id, object_id, name, description, trigger, timing, condition, \
      actions, schedule, active, version, created_at, created_by, updated_at, updated_by";
 
@@ -1566,6 +1603,118 @@ impl ObjectTx for PostgresObjectTx {
         )
         .bind(self.tenant_id)
         .bind(rule_id)
+        .bind(expected_version)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn quick_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {QUICK_ACTION_COLUMNS} {QUICK_ACTION_FROM} \
+             WHERE q.tenant_id = $1 AND q.object_id = $2 ORDER BY q.position, q.name"
+        ))
+        .bind(self.tenant_id)
+        .bind(object_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(quick_action_from_row).collect()
+    }
+
+    async fn quick_actions_targeting(
+        &mut self,
+        target_object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {QUICK_ACTION_COLUMNS} {QUICK_ACTION_FROM} \
+             WHERE q.tenant_id = $1 AND q.target_object_id = $2 \
+             ORDER BY q.object_id, q.position, q.name"
+        ))
+        .bind(self.tenant_id)
+        .bind(target_object_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(quick_action_from_row).collect()
+    }
+
+    async fn insert_quick_action(
+        &mut self,
+        action: &crate::QuickAction,
+    ) -> Result<(), ObjectError> {
+        let (fields, presets) = quick_action_json(action)?;
+        sqlx::query(
+            "INSERT INTO quick_actions (tenant_id, id, object_id, name, label, kind, position, \
+             target_object_id, target_field, fields, presets, version, created_at, created_by, \
+             updated_at, updated_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+        )
+        .bind(self.tenant_id)
+        .bind(action.id)
+        .bind(action.object_id)
+        .bind(&action.name)
+        .bind(&action.label)
+        .bind(action.kind.as_str())
+        .bind(action.position)
+        .bind(action.target_object_id)
+        .bind(&action.target_field)
+        .bind(fields)
+        .bind(presets)
+        .bind(action.version)
+        .bind(action.created_at)
+        .bind(action.created_by)
+        .bind(action.updated_at)
+        .bind(action.updated_by)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(|error| {
+            if ObjectError::is_unique_violation(&error) {
+                ObjectError::Conflict("quick_actions.duplicate_name")
+            } else {
+                ObjectError::Database(error)
+            }
+        })?;
+        Ok(())
+    }
+
+    async fn update_quick_action(
+        &mut self,
+        action: &crate::QuickAction,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let (fields, presets) = quick_action_json(action)?;
+        let result = sqlx::query(
+            "UPDATE quick_actions SET label = $1, position = $2, fields = $3, presets = $4, \
+             version = $5, updated_at = $6, updated_by = $7 \
+             WHERE tenant_id = $8 AND id = $9 AND version = $10",
+        )
+        .bind(&action.label)
+        .bind(action.position)
+        .bind(fields)
+        .bind(presets)
+        .bind(action.version)
+        .bind(action.updated_at)
+        .bind(action.updated_by)
+        .bind(self.tenant_id)
+        .bind(action.id)
+        .bind(expected_version)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn delete_quick_action(
+        &mut self,
+        action_id: Uuid,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let result = sqlx::query(
+            "DELETE FROM quick_actions WHERE tenant_id = $1 AND id = $2 AND version = $3",
+        )
+        .bind(self.tenant_id)
+        .bind(action_id)
         .bind(expected_version)
         .execute(&mut *self.tx)
         .await?;

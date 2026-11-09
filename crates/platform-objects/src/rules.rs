@@ -80,7 +80,7 @@ fn issue(field: &str, code: &'static str, detail: impl Into<String>) -> Validati
     ValidationIssue::new(field, code, detail)
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && name.len() <= 63
