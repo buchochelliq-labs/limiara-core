@@ -152,7 +152,8 @@ export default {
             { text: "Device sign-in and revocation", link: "/adr/0029-device-sign-in" },
             { text: "Content-free push notifications", link: "/adr/0030-push-notifications" },
             { text: "Record ids assigned by devices", link: "/adr/0031-device-assigned-record-ids" },
-            { text: "Quick actions and global New", link: "/adr/0032-quick-actions" }
+            { text: "Quick actions and global New", link: "/adr/0032-quick-actions" },
+            { text: "Activities", link: "/adr/0033-activities" }
           ]
         }
       ],
