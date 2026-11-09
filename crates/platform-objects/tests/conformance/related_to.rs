@@ -881,34 +881,78 @@ pub async fn replica(store: Arc<dyn ObjectStore>) {
         .is_empty());
 
     // When the allowlist comes to hold nothing the device has, the field
-    // the device already kept retires.
-    let (task, _) = server.describe("custom:task").await.expect("task");
-    let regarding_version = task.field("custom:regarding").expect("field").version;
-    server
-        .update_field(
-            "custom:task",
-            "custom:regarding",
-            serde_json::from_value(json!({
-                "expected_version": regarding_version,
-                "reference_objects": ["custom:case"],
-            }))
-            .expect("update"),
-            context(),
-        )
-        .await
-        .expect("cases only");
-    let mut described = Vec::new();
-    for api in ["custom:account", "custom:task"] {
-        let (definition, _) = server.describe(api).await.expect("describe");
-        described.push(RemoteObject::from_definition(&definition, access, None));
-    }
+    // the device already keeps allows nothing locally; when an object it
+    // holds returns, so do its targets.
+    let narrow = |objects: &'static [&'static str]| {
+        let server = &server;
+        async move {
+            let (task, _) = server.describe("custom:task").await.expect("task");
+            let version = task.field("custom:regarding").expect("field").version;
+            server
+                .update_field(
+                    "custom:task",
+                    "custom:regarding",
+                    serde_json::from_value(json!({
+                        "expected_version": version,
+                        "reference_objects": objects,
+                    }))
+                    .expect("update"),
+                    context(),
+                )
+                .await
+                .expect("allowlist");
+            let mut described = Vec::new();
+            for api in ["custom:account", "custom:task"] {
+                let (definition, _) = server.describe(api).await.expect("describe");
+                described.push(RemoteObject::from_definition(&definition, access, None));
+            }
+            described
+        }
+    };
+    let described = narrow(&["custom:case"]).await;
     device
         .apply_remote_definitions(&described)
         .await
         .expect("narrowed definitions");
     let (task, _) = device.describe("custom:task").await.expect("device task");
     assert!(
-        task.field("custom:regarding").is_none(),
-        "a field now allowing nothing the device holds retires"
+        task.field("custom:regarding")
+            .expect("kept")
+            .reference_objects
+            .is_empty(),
+        "a field now allowing nothing the device holds allows nothing locally"
+    );
+    let initech = server
+        .create_record(
+            "custom:account",
+            &body(json!({"name": "Initech"})),
+            context(),
+        )
+        .await
+        .expect("account");
+    device
+        .apply_remote("custom:account", &super::push::remote(&initech), None)
+        .await
+        .expect("account on the device");
+    let refused = device
+        .create_record(
+            "custom:task",
+            &body(json!({"name": "Local", "custom:regarding": initech.public_id})),
+            context(),
+        )
+        .await
+        .expect_err("nothing allowed locally");
+    assert_eq!(codes(&refused), ["records.reference_object_not_allowed"]);
+    let described = narrow(&["custom:account", "custom:case"]).await;
+    device
+        .apply_remote_definitions(&described)
+        .await
+        .expect("widened definitions");
+    let (task, _) = device.describe("custom:task").await.expect("device task");
+    assert_eq!(
+        task.field("custom:regarding")
+            .expect("kept")
+            .reference_objects,
+        ["custom:account"]
     );
 }

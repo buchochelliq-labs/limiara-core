@@ -440,7 +440,7 @@ try {
   await page.getByRole('cell', {name: 'custom:regarding'}).waitFor();
   await page.getByText('Related to (custom:client, custom:project)').waitFor();
   await page.goto(`${origin}/o/custom:milestone`);
-  await page.getByRole('button', {name: 'New', exact: true}).click();
+  await page.getByRole('button', {name: 'New milestone'}).click();
   dialog = page.getByRole('dialog', {name: 'New milestone'});
   await dialog.getByLabel('Milestone name').fill('Engine review');
   await dialog.getByLabel('Regarding: object').selectOption({label: 'Client'});

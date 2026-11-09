@@ -307,10 +307,12 @@ A synced device takes its definitions from the routes above: `GET
 object, whenever a change page's `metadata_version` is newer than the one it
 applied. It reads each changed record with `include_deleted=true`, and pushes
 its queued changes as composite requests (ADR 0024). A related-to field
-keeps, on the device, only the objects of its allowlist the device holds,
-and is left out when it holds none of them; values to other objects are
-kept as the server sent them and new ones are refused offline, so the
-server decides them on push. Device clients ignore `related_objects` as
+keeps, on the device, only the objects of its allowlist the device holds.
+A field the device does not have yet is left out when it holds none of
+them; one it already has keeps an empty allowlist instead, so nothing can
+be chosen for it offline until an allowed object returns. Values to other
+objects are kept as the server sent them and new ones are refused
+offline, so the server decides them on push. Device clients ignore `related_objects` as
 they do `related`.
 
 ## Query
