@@ -757,6 +757,43 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         ["add_task", "close"]
     );
 
+    // A whole-number preset reads back as stored, so the action can be
+    // saved again (a scale-0 number normalises to 1.0).
+    let mut count = field("count", FieldType::Number);
+    count.scale = Some(0);
+    admin
+        .create_field("custom:other", count, context())
+        .await
+        .expect("count field");
+    let counted = admin
+        .create_quick_action(
+            "custom:other",
+            action(json!({
+                "name": "count_one", "label": "Count one", "kind": "update",
+                "fields": ["name"], "presets": {"custom:count": 1}
+            })),
+            context(),
+        )
+        .await
+        .expect("integer preset");
+    let relabelled = admin
+        .update_quick_action(
+            "custom:other",
+            "count_one",
+            change(json!({"expected_version": counted.version, "label": "Count it"})),
+            context(),
+        )
+        .await
+        .expect("an integer preset survives another save");
+    assert_eq!(relabelled.label, "Count it");
+    assert_eq!(
+        relabelled
+            .presets
+            .get("custom:count")
+            .and_then(Value::as_f64),
+        Some(1.0)
+    );
+
     // Deleting an object deletes its own actions, including create actions
     // through a lookup to itself.
     for body in [
