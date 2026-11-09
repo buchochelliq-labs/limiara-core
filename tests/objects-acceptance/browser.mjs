@@ -442,7 +442,7 @@ try {
   await page.goto(`${origin}/o/custom:milestone`);
   await page.getByRole('button', {name: 'New milestone'}).click();
   dialog = page.getByRole('dialog', {name: 'New milestone'});
-  await dialog.getByLabel('Milestone name').fill('Engine review');
+  await dialog.getByLabel('Name', {exact: true}).fill('Engine review');
   await dialog.getByLabel('Regarding: object').selectOption({label: 'Client'});
   await dialog.getByLabel('Regarding: Client', {exact: true}).selectOption({label: 'Analytical Engines'});
   await shot(page, '20-related-to-picker');
