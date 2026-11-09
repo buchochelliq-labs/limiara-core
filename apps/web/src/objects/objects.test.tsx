@@ -5,6 +5,7 @@ import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, recordFromApi, type ObjectDescription} from './api';
 import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists} from './ObjectPages';
+import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {MembersPage} from './MembersPage';
 import {HistoryPanel} from './HistoryPanel';
@@ -208,6 +209,32 @@ describe('workspace object pages', () => {
     expect(markup).toContain('<span>Cancel</span>');
     const readOnly = {...project, access: {...project.access, create: false}};
     expect(renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={readOnly} onCancel={noop} onSaved={noop} />)).not.toContain('Save &amp; New');
+  });
+
+  it('fills a related record\'s parent in and shows it read-only (ADR 0032 §1)', () => {
+    const task: ObjectDescription = {...project, apiName: 'custom:task', label: 'Task', pluralLabel: 'Tasks', nameLabel: 'Task name', fields: [
+      {apiName: 'custom:project', label: 'Project', description: null, type: 'lookup', origin: 'workspace', required: true, unique: false, indexed: true, options: [], referenceObject: 'custom:project', deleteBehaviour: 'restrict', trackHistory: false, version: 1},
+    ]};
+    const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={task} presets={{'custom:project': {value: '000abc', label: 'Apollo <b>'}}} onCancel={noop} onSaved={noop} />);
+    expect(markup).toMatch(/<input[^>]*readOnly=""[^>]*value="Apollo &lt;b&gt;"/);
+    expect(markup).toContain('Set to Apollo &lt;b&gt;.');
+    expect(markup).not.toContain('Search project');
+  });
+
+  it('offers New for engine objects in navigation the member may create', () => {
+    const summary = ({fields: _, ...rest}: ObjectDescription) => rest;
+    const objects = [
+      summary({...project, apiName: 'custom:zeta', label: 'Zeta'}),
+      summary(project),
+      summary({...project, apiName: 'custom:hidden', label: 'Hidden', inNavigation: false}),
+      summary({...project, apiName: 'custom:locked', label: 'Locked', access: {...project.access, create: false}}),
+      summary({...project, apiName: 'contacts:person', label: 'Person', origin: 'plugin'}),
+    ];
+    expect(creatable(objects).map(object => object.label)).toEqual(['Project', 'Zeta']);
+    const markup = renderToStaticMarkup(<GlobalNew client={createFixtureObjectsClient()} onNavigate={noop} />);
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-controls="global-new-panel"');
+    expect(markup).toContain('New</span>');
   });
 
   it('creates and edits in a labelled modal dialog', () => {

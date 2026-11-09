@@ -210,7 +210,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
         {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} onNavigate={onNavigate} /></dd></div>)}
       </dl>
     </section>
-    <RelatedLists client={client} apiName={object.apiName} recordId={record.id} onNavigate={onNavigate} />
+    <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} onNavigate={onNavigate} />
     <section aria-label="System information" className="object-section">
       <h2>System information</h2>
       <dl className="object-fields">
@@ -227,17 +227,30 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
 }
 
 /** The records of other objects that point at this one (ADR 0028), each list showing only what the member may see. */
-export function RelatedLists({client, apiName, recordId, onNavigate}: {client: ObjectsClient; apiName: string; recordId: string; onNavigate: Navigate}) {
+export function RelatedLists({client, apiName, recordId, recordName, onNavigate}: {client: ObjectsClient; apiName: string; recordId: string; recordName?: string; onNavigate: Navigate}) {
   const [load, setLoad] = useState<Load<RelatedList[]>>({status: 'loading'});
   const [more, setMore] = useState<Record<string, 'loading' | 'error'>>({});
+  const [attempt, setAttempt] = useState(0);
+  // The child objects, described to learn whether the member may create them (ADR 0032 §1).
+  const [children, setChildren] = useState<Record<string, ObjectDescription>>({});
+  const [creating, setCreating] = useState<RelatedList | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    setLoad({status: 'loading'});
+    if (attempt === 0) setLoad({status: 'loading'});
     client.relatedLists(apiName, recordId, controller.signal)
-      .then(value => { if (!controller.signal.aborted) setLoad({status: 'ready', value}); })
+      .then(value => {
+        if (controller.signal.aborted) return;
+        setLoad({status: 'ready', value});
+        for (const object of new Set(value.map(list => list.object))) {
+          client.describe(object, controller.signal)
+            .then(description => { if (!controller.signal.aborted) setChildren(known => ({...known, [object]: description})); })
+            // Without a description the list simply offers no New.
+            .catch(() => undefined);
+        }
+      })
       .catch(reason => { if (!controller.signal.aborted) setLoad(failed(reason)); });
     return () => controller.abort();
-  }, [client, apiName, recordId]);
+  }, [client, apiName, recordId, attempt]);
   if (load.status === 'loading') return <section aria-label="Related" className="object-section"><h2>Related</h2><Skeleton lines={3} /></section>;
   if (load.status !== 'ready') return <section aria-label="Related" className="object-section"><h2>Related</h2><p className="object-form__meta">Related records could not be loaded.</p></section>;
   if (load.value.length === 0) return null;
@@ -260,7 +273,10 @@ export function RelatedLists({client, apiName, recordId, onNavigate}: {client: O
     {load.value.map(list => {
       const headingId = `related-${list.object}-${list.field}`.replace(/[^a-zA-Z0-9_-]/g, '-');
       return <section key={key(list)} className="object-related" aria-labelledby={headingId}>
-        <h3 id={headingId}>{list.objectPluralLabel}{repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}</h3>
+        <div className="object-related__header">
+          <h3 id={headingId}>{list.objectPluralLabel}{repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}</h3>
+          {children[list.object]?.access.create && <Button size="small" variant="secondary" aria-haspopup="dialog" aria-label={`New ${children[list.object]?.label.toLowerCase()}${repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}`} onClick={() => setCreating(list)}>New</Button>}
+        </div>
         {list.records.length === 0
           ? <p className="object-form__meta">No {list.objectPluralLabel.toLowerCase()} you can see.</p>
           : <ul className="object-related__list">{list.records.map(item => <li key={item.id}><a href={recordRoute(list.object, item.id)} onClick={event => { event.preventDefault(); onNavigate(recordRoute(list.object, item.id)); }}>{item.name}</a></li>)}</ul>}
@@ -268,6 +284,9 @@ export function RelatedLists({client, apiName, recordId, onNavigate}: {client: O
         {more[key(list)] === 'error' && <Alert variant="danger" title={`More ${list.objectPluralLabel.toLowerCase()} could not be loaded. Try again.`} />}
       </section>;
     })}
+    {creating && children[creating.object] && <RecordModal client={client} object={children[creating.object] as ObjectDescription} presets={{[creating.field]: {value: recordId, label: recordName ?? recordId}}} onNavigate={onNavigate}
+      // The member stays on this record; the list shows what they added.
+      onClose={() => setCreating(null)} onSaved={(_, next) => { setAttempt(value => value + 1); if (next === 'close') setCreating(null); }} />}
   </section>;
 }
 
@@ -289,7 +308,7 @@ function Created({object, record, onNavigate}: {object: ObjectDescription; recor
  * (or, when editing, shows it updated); Save & New keeps the modal open on
  * a blank form for the next record.
  */
-export function RecordModal({client, object, record, onClose, onSaved, onNavigate}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate}) {
+export function RecordModal({client, object, record, presets, onClose, onSaved, onNavigate}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate}) {
   const sequence = useSaveAndNew();
   // After Save & New on an edit, the modal goes on to create a record.
   const [editing, setEditing] = useState(record);
@@ -299,7 +318,7 @@ export function RecordModal({client, object, record, onClose, onSaved, onNavigat
   return <Modal title={editing ? `Edit ${editing.name}` : `New ${noun}`} onClose={onClose} busy={saving}>
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {/* Each form after Save & New takes focus, since the one that had it is gone. */}
-    <RecordForm key={sequence.form} focusFirst={sequence.form > 0} onSavingChange={setSaving} client={client} object={object} record={editing} onCancel={onClose} onSaved={(saved, next) => {
+    <RecordForm key={sequence.form} focusFirst={sequence.form > 0} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} onCancel={onClose} onSaved={(saved, next) => {
       onSaved(saved, next);
       if (next === 'new') { setEditing(undefined); sequence.next(saved); }
     }} />
@@ -329,10 +348,14 @@ function editableFields(object: ObjectDescription) {
   return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup');
 }
 
-function initialDraft(object: ObjectDescription, record?: ObjectRecord): Draft {
+/** Values a new record starts with, such as the parent of a related record (ADR 0032). */
+export type Presets = Record<string, {value: string; label: string}>;
+
+function initialDraft(object: ObjectDescription, record?: ObjectRecord, presets: Presets = {}): Draft {
   const draft: Draft = {name: record?.name ?? ''};
   for (const field of editableFields(object)) {
-    const value = record ? record.values[field.apiName] : field.options.find(option => option.default)?.value;
+    const preset = record ? undefined : presets[field.apiName];
+    const value = preset ? preset.value : record ? record.values[field.apiName] : field.options.find(option => option.default)?.value;
     if (field.type === 'boolean') draft[field.apiName] = value === true;
     else if (field.type === 'multi_picklist') draft[field.apiName] = Array.isArray(value) ? value.map(String) : [];
     else if (field.type === 'date_time' && typeof value === 'string') draft[field.apiName] = toLocalInput(value);
@@ -401,8 +424,8 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
 export type AfterSave = 'close' | 'new';
 
 /** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
-export function RecordForm({client, object, record, onCancel, onSaved, onSavingChange, focusFirst = false}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean}) {
-  const [draft, setDraft] = useState<Draft>(() => initialDraft(object, record));
+export function RecordForm({client, object, record, presets = {}, onCancel, onSaved, onSavingChange, focusFirst = false}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean}) {
+  const [draft, setDraft] = useState<Draft>(() => initialDraft(object, record, presets));
   const [saving, setSavingState] = useState(false);
   const setSaving = (value: boolean) => { setSavingState(value); onSavingChange?.(value); };
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
@@ -462,6 +485,8 @@ export function RecordForm({client, object, record, onCancel, onSaved, onSavingC
         {field.options.filter(option => option.active).map(option => <label key={option.value} className="object-checkbox"><input type="checkbox" checked={Array.isArray(value) && value.includes(option.value)} onChange={event => set(field.apiName, event.target.checked ? [...(Array.isArray(value) ? value : []), option.value] : (Array.isArray(value) ? value : []).filter(item => item !== option.value))} />{option.label}</label>)}
         {fieldError && <span className="ui-field__error">{fieldError}</span>}
       </fieldset>;
+      const preset = record ? undefined : presets[field.apiName];
+      if (preset && isReference(field.type)) return <TextField key={field.apiName} label={field.label} value={preset.label} readOnly description={`Set to ${preset.label}.`} />;
       if (field.type === 'master_detail' && record) return <TextField key={field.apiName} label={field.label} value={record.related[String(value ?? '')] ?? String(value ?? '')} readOnly description="A record stays with its master." />;
       if (isReference(field.type)) return <LookupInput key={field.apiName} client={client} objectApiName={object.apiName} field={field} value={String(value ?? '')} currentName={record?.related[String(value ?? '')]} error={fieldError} onChange={next => set(field.apiName, next)} />;
       if (field.type === 'long_text') return <div key={field.apiName} className="ui-field">

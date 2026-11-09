@@ -120,6 +120,40 @@ try {
   await page.getByRole('link', {name: 'Analytical Engines'}).waitFor();
   await shot(page, '03-record');
 
+  step('New on a related list fills the parent in and stays on it (ADR 0032)');
+  await page.getByRole('link', {name: 'Analytical Engines'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
+  const related = page.getByRole('region', {name: 'Projects'});
+  await related.getByRole('link', {name: 'Browser project'}).waitFor();
+  await related.getByRole('button', {name: 'New project'}).click();
+  dialog = page.getByRole('dialog', {name: 'New project'});
+  if (await dialog.getByLabel('Client', {exact: true}).inputValue() !== 'Analytical Engines') throw new Error('the related form must name its parent');
+  if (!(await dialog.getByLabel('Client', {exact: true}).evaluate(element => element.readOnly))) throw new Error('the parent must not be changed from its related list');
+  await dialog.getByLabel('Project name').fill('Client project');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
+  await related.getByRole('link', {name: 'Client project'}).waitFor();
+  await shot(page, '03-related-new');
+
+  step('global New lists what the member may create and opens its form anywhere');
+  const globalNew = page.getByRole('button', {name: 'New', exact: true});
+  await globalNew.click();
+  const menu = page.getByRole('group', {name: 'Create a record'});
+  await menu.getByRole('button', {name: 'Project', exact: true}).waitFor();
+  if (await menu.getByRole('button', {name: 'Client', exact: true}).count()) throw new Error('objects outside navigation must not be offered');
+  await page.keyboard.press('Escape');
+  await menu.waitFor({state: 'detached'});
+  await globalNew.click();
+  await menu.getByRole('button', {name: 'Project', exact: true}).click();
+  dialog = page.getByRole('dialog', {name: 'New project'});
+  await dialog.getByLabel('Project name').fill('Global project');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await page.getByRole('heading', {level: 1, name: 'Global project'}).waitFor();
+  await page.goto(`${origin}/o/custom:project`);
+  await page.getByRole('link', {name: 'Browser project'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Browser project'}).waitFor();
+
   step('a duplicate unique value is explained, not lost');
   await page.goto(`${origin}/o/custom:project/new`);
   await page.getByLabel('Project name').fill('Copy');
