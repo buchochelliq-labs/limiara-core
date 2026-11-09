@@ -6,7 +6,7 @@
 export type FieldType =
   | 'text' | 'long_text' | 'email' | 'phone' | 'url' | 'number' | 'currency' | 'percent'
   | 'boolean' | 'date' | 'date_time' | 'picklist' | 'multi_picklist' | 'lookup' | 'formula'
-  | 'master_detail' | 'rollup';
+  | 'master_detail' | 'rollup' | 'related_to';
 
 export const fieldTypes: readonly {value: FieldType; label: string}[] = [
   {value: 'text', label: 'Text'},
@@ -24,6 +24,7 @@ export const fieldTypes: readonly {value: FieldType; label: string}[] = [
   {value: 'multi_picklist', label: 'Multi-select picklist'},
   {value: 'lookup', label: 'Lookup'},
   {value: 'master_detail', label: 'Master-detail'},
+  {value: 'related_to', label: 'Related to'},
   {value: 'formula', label: 'Formula'},
   {value: 'rollup', label: 'Roll-up summary'},
 ];
@@ -46,6 +47,20 @@ export function isReference(type: FieldType): boolean {
   return type === 'lookup' || type === 'master_detail';
 }
 
+/** Whether a field's value is a record id: a lookup, master-detail or related-to field (ADR 0033). */
+export function holdsReference(type: FieldType): boolean {
+  return isReference(type) || type === 'related_to';
+}
+
+/** The objects a reference field may point at: its allowlist, or its one target. */
+export function referenceTargets(field: ObjectField): string[] {
+  if (field.type === 'related_to') return field.referenceObjects ?? [];
+  return isReference(field.type) && field.referenceObject ? [field.referenceObject] : [];
+}
+
+/** The most objects a related-to field may allow (ADR 0033). */
+export const referenceObjectsMax = 10;
+
 export type PicklistOption = {value: string; label: string; active: boolean; default: boolean};
 
 export type ObjectField = {
@@ -64,6 +79,8 @@ export type ObjectField = {
   indexed: boolean;
   options: PicklistOption[];
   referenceObject: string | null;
+  /** For related-to fields (ADR 0033): the objects a value may point at, in order. */
+  referenceObjects?: string[] | null;
   deleteBehaviour: 'clear' | 'restrict' | null;
   /** A query condition new lookup values must meet (ADR 0028). */
   lookupFilter?: string | null;
@@ -147,6 +164,8 @@ export type ObjectRecord = {
   values: Record<string, unknown>;
   /** Names of lookup targets the caller can read, by record id. */
   related: Record<string, string>;
+  /** The object of each named target, by record id. */
+  relatedObjects?: Record<string, string>;
   /** What the caller may do with this record; only single-record reads carry it. */
   rights?: RecordRights;
 };
@@ -175,8 +194,8 @@ const messages: Record<ObjectsErrorReason, string> = {
 
 export type NewObject = {name: string; label: string; plural_label: string; description?: string; name_label?: string; in_navigation?: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean};
 export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean};
-export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null};
-export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}};
+export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]};
+export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}};
 export type RolePermission = {roleId: string; roleName: string; access: ObjectAccess};
 
 /** A validation rule (ADR 0021): the save is blocked when `condition` is true. */
@@ -285,8 +304,8 @@ export type ObjectsClient = {
   relatedLists(apiName: string, id: string, signal?: AbortSignal): Promise<RelatedList[]>;
   /** One more page of one related list. */
   relatedRecords(apiName: string, id: string, child: string, field: string, cursor: string, signal?: AbortSignal): Promise<RelatedList>;
-  /** The records a lookup may point at, within its filter. */
-  lookupCandidates(apiName: string, field: string, search: string, signal?: AbortSignal): Promise<{records: RecordLink[]; nextCursor: string | null}>;
+  /** The records a lookup may point at, within its filter; a related-to field names the `target` object to list. */
+  lookupCandidates(apiName: string, field: string, search: string, signal?: AbortSignal, target?: string): Promise<{records: RecordLink[]; nextCursor: string | null}>;
   share(apiName: string, id: string, kind: 'user' | 'role', granteeId: string, access: 'read' | 'edit'): Promise<void>;
   unshare(apiName: string, id: string, kind: 'user' | 'role', granteeId: string): Promise<void>;
   changeOwner(apiName: string, id: string, ownerId: string, version: number): Promise<ObjectRecord>;
@@ -315,13 +334,13 @@ export type ObjectsClient = {
   setManager(userId: string, managerId: string | null): Promise<void>;
 };
 
-type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; version: number};
+type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; version: number};
 type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference};
 type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; version: number; access?: ObjectAccess; fields?: ApiField[]};
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
 type ApiRecord = Record<string, unknown> & {id: string; name: string; owner: UserReference; created_at: string; created_by: UserReference; updated_at: string; updated_by: UserReference; version: number; is_deleted: boolean; related?: Record<string, string>; access?: RecordRights};
 
-const standardKeys = new Set(['id', 'object', 'name', 'owner', 'created_at', 'created_by', 'updated_at', 'updated_by', 'touched_at', 'version', 'archived_at', 'is_deleted', 'deleted_at', 'related', 'access']);
+const standardKeys = new Set(['id', 'object', 'name', 'owner', 'created_at', 'created_by', 'updated_at', 'updated_by', 'touched_at', 'version', 'archived_at', 'is_deleted', 'deleted_at', 'related', 'related_objects', 'access']);
 
 type ApiRule = {name: string; description: string | null; condition: string; message: string; error_field: string | null; active: boolean; version: number};
 export function ruleFromApi(rule: ApiRule): ValidationRule {
@@ -346,7 +365,13 @@ export function automationFromApi(automation: ApiAutomation): Automation {
   return {name: automation.name, description: automation.description ?? null, trigger: automation.trigger, timing: automation.timing, condition: automation.condition ?? null, actions: Array.isArray(automation.actions) ? automation.actions : [], schedule: automation.schedule ?? null, active: automation.active === true, version: automation.version};
 }
 export function fieldFromApi(field: ApiField): ObjectField {
-  return {apiName: field.api_name, label: field.label, description: field.description ?? null, type: field.field_type, origin: field.origin, required: field.required, unique: field.unique, indexed: field.indexed, options: Array.isArray(field.options) ? field.options : [], referenceObject: field.reference_object ?? null, deleteBehaviour: field.delete_behaviour ?? null, lookupFilter: field.lookup_filter ?? null, trackHistory: field.track_history === true, formula: field.formula ?? null, formulaType: field.formula_type ?? null, rollup: field.rollup ?? null, version: field.version};
+  return {apiName: field.api_name, label: field.label, description: field.description ?? null, type: field.field_type, origin: field.origin, required: field.required, unique: field.unique, indexed: field.indexed, options: Array.isArray(field.options) ? field.options : [], referenceObject: field.reference_object ?? null, referenceObjects: Array.isArray(field.reference_objects) ? field.reference_objects.filter(item => typeof item === 'string') : null, deleteBehaviour: field.delete_behaviour ?? null, lookupFilter: field.lookup_filter ?? null, trackHistory: field.track_history === true, formula: field.formula ?? null, formulaType: field.formula_type ?? null, rollup: field.rollup ?? null, version: field.version};
+}
+
+/** A JSON object of strings, dropping anything else. */
+function stringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
 export function objectFromApi(object: ApiObject): ObjectDescription {
@@ -376,7 +401,7 @@ function reportFromApi(report: ApiReport): Report {
 export function recordFromApi(record: ApiRecord): ObjectRecord {
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) if (!standardKeys.has(key)) values[key] = value;
-  return {id: record.id, name: record.name, owner: record.owner ?? null, createdAt: record.created_at, createdBy: record.created_by ?? null, updatedAt: record.updated_at, updatedBy: record.updated_by ?? null, version: record.version, isDeleted: record.is_deleted === true, values, related: record.related && typeof record.related === 'object' ? Object.fromEntries(Object.entries(record.related).filter(([, name]) => typeof name === 'string')) : {}, ...(isRights(record.access) ? {rights: record.access} : {})};
+  return {id: record.id, name: record.name, owner: record.owner ?? null, createdAt: record.created_at, createdBy: record.created_by ?? null, updatedAt: record.updated_at, updatedBy: record.updated_by ?? null, version: record.version, isDeleted: record.is_deleted === true, values, related: record.related && typeof record.related === 'object' ? Object.fromEntries(Object.entries(record.related).filter(([, name]) => typeof name === 'string')) : {}, relatedObjects: stringMap(record.related_objects), ...(isRights(record.access) ? {rights: record.access} : {})};
 }
 
 function isRights(value: unknown): value is RecordRights {
@@ -474,8 +499,11 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     async relatedRecords(apiName, id, child, field, cursor, signal) {
       return relatedFromApi(await request<ApiRelated>(`${object(apiName)}/records/${encodeURIComponent(id)}/related/${encodeURIComponent(child)}/${encodeURIComponent(field)}?cursor=${encodeURIComponent(cursor)}`, {signal}));
     },
-    async lookupCandidates(apiName, field, search, signal) {
-      const query = search.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
+    async lookupCandidates(apiName, field, search, signal, target) {
+      const params = new URLSearchParams();
+      if (target) params.set('object', target);
+      if (search.trim()) params.set('search', search.trim());
+      const query = params.toString() ? `?${params.toString()}` : '';
       const body = await request<{data: unknown[]; next_cursor: string | null}>(`${object(apiName)}/fields/${encodeURIComponent(field)}/candidates${query}`, {signal});
       return {records: linksFromApi(body.data ?? []), nextCursor: body.next_cursor ?? null};
     },
@@ -665,7 +693,7 @@ export function createFixtureObjectsClient(): ObjectsClient {
     },
     async createField(apiName, input) {
       const object = find(apiName);
-      const created = field(`custom:${input.name}`, input.label, input.field_type, {required: (input.required ?? false) || input.field_type === 'master_detail', unique: input.unique ?? false, indexed: input.indexed ?? false, options: (input.options ?? []).map(option => ({value: option.value, label: option.label, active: true, default: option.default ?? false})), referenceObject: input.reference_object ?? null, deleteBehaviour: input.field_type === 'lookup' ? input.delete_behaviour ?? 'clear' : null, lookupFilter: input.lookup_filter ?? null, rollup: input.rollup ? {...input.rollup, field: input.rollup.field ?? null} : null, formulaType: input.field_type === 'rollup' ? 'number' : input.formula_type ?? null});
+      const created = field(`custom:${input.name}`, input.label, input.field_type, {required: (input.required ?? false) || input.field_type === 'master_detail', unique: input.unique ?? false, indexed: input.indexed ?? false, options: (input.options ?? []).map(option => ({value: option.value, label: option.label, active: true, default: option.default ?? false})), referenceObject: input.reference_object ?? null, referenceObjects: input.field_type === 'related_to' ? input.reference_objects ?? [] : null, deleteBehaviour: input.field_type === 'lookup' || input.field_type === 'related_to' ? input.delete_behaviour ?? 'clear' : null, lookupFilter: input.lookup_filter ?? null, rollup: input.rollup ? {...input.rollup, field: input.rollup.field ?? null} : null, formulaType: input.field_type === 'rollup' ? 'number' : input.formula_type ?? null});
       object.fields.push(created);
       return structuredClone(created);
     },
@@ -724,12 +752,12 @@ export function createFixtureObjectsClient(): ObjectsClient {
       const target = find(apiName).fields.find(item => item.apiName === fieldName);
       if (!target) throw new ObjectsApiError('missing');
       if (target.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
-      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter});
+      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter}, changes.reference_objects === undefined ? {} : {referenceObjects: changes.reference_objects});
       return structuredClone(target);
     },
     async relatedLists(apiName, id) {
       record(apiName, id);
-      return objects.flatMap(child => child.fields.filter(item => (item.type === 'lookup' || item.type === 'master_detail') && item.referenceObject === apiName).map(item => {
+      return objects.flatMap(child => child.fields.filter(item => referenceTargets(item).includes(apiName)).map(item => {
         const pointing = (records[child.apiName] ?? []).filter(row => !row.isDeleted && row.values[item.apiName] === id).sort((a, b) => a.name.localeCompare(b.name));
         return {object: child.apiName, objectLabel: child.label, objectPluralLabel: child.pluralLabel, field: item.apiName, fieldLabel: item.label, masterDetail: item.type === 'master_detail', records: pointing.map(row => ({id: row.id, name: row.name})), nextCursor: null};
       }));
@@ -739,9 +767,12 @@ export function createFixtureObjectsClient(): ObjectsClient {
       if (!list) throw new ObjectsApiError('missing');
       return list;
     },
-    async lookupCandidates(apiName, fieldName, search) {
-      const target = find(apiName).fields.find(item => item.apiName === fieldName)?.referenceObject;
-      if (!target) throw new ObjectsApiError('missing');
+    async lookupCandidates(apiName, fieldName, search, _signal, object) {
+      const found = find(apiName).fields.find(item => item.apiName === fieldName);
+      const targets = found ? referenceTargets(found) : [];
+      const target = found?.type === 'related_to' ? object : targets[0];
+      if (!found || !target) throw new ObjectsApiError('missing');
+      if (!targets.includes(target)) throw new ObjectsApiError('invalid', 'records.reference_object_not_allowed');
       const term = search.trim().toLowerCase();
       const matching = (records[target] ?? []).filter(row => !row.isDeleted && row.name.toLowerCase().includes(term)).sort((a, b) => a.name.localeCompare(b.name));
       return {records: matching.map(row => ({id: row.id, name: row.name})), nextCursor: null};
@@ -928,7 +959,7 @@ export function formatValue(field: ObjectField, value: unknown, related: Record<
   if (value === undefined || value === null || value === '') return '';
   if (field.type === 'formula') return formatValue({...field, type: field.formulaType ?? 'text'}, value, related);
   if (field.type === 'rollup') return formatValue({...field, type: field.formulaType ?? 'number'}, value, related);
-  if (isReference(field.type) && typeof value === 'string') return related[value] ?? value;
+  if (holdsReference(field.type) && typeof value === 'string') return related[value] ?? value;
   if (field.type === 'boolean') return value === true ? 'Yes' : 'No';
   if (field.type === 'picklist') return field.options.find(option => option.value === value)?.label ?? String(value);
   if (field.type === 'multi_picklist' && Array.isArray(value)) return value.map(item => field.options.find(option => option.value === item)?.label ?? String(item)).join(', ');

@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {Alert, Badge, Button, Select, Skeleton, TextField} from '../components/ui';
-import {formatValue, isReference, quickActionsMax, type ObjectDescription, type ObjectField, type ObjectsClient, type QuickAction, type QuickActionKind, type ValidationIssue} from './api';
+import {formatValue, holdsReference, quickActionsMax, referenceTargets, type ObjectDescription, type ObjectField, type ObjectsClient, type QuickAction, type QuickActionKind, type ValidationIssue} from './api';
 import {editableFields, inputTypes, toApiValue, toDraftValue, type DraftValue} from './ObjectPages';
 import {Issues, issuesText} from './issues';
 import {suggestName} from './names';
@@ -15,9 +15,9 @@ const targetKey = (object: string, field: string) => `${object}/${field}`;
 /** How a target reads in a choice, such as “Contact (Account)”. */
 export const targetLabel = (target: ActionTarget) => `${target.object.label} (${target.field.label})`;
 
-/** The lookup and master-detail fields of other objects that point at `apiName`. */
+/** The lookup, master-detail and related-to fields of other objects that may point at `apiName`. */
 export function actionTargets(objects: ObjectDescription[], apiName: string): ActionTarget[] {
-  return objects.flatMap(object => object.fields.filter(field => isReference(field.type) && field.referenceObject === apiName).map(field => ({object, field})))
+  return objects.flatMap(object => object.fields.filter(field => referenceTargets(field).includes(apiName)).map(field => ({object, field})))
     .sort((left, right) => targetLabel(left).localeCompare(targetLabel(right)));
 }
 
@@ -232,6 +232,6 @@ function PresetInput({label, field, value, error, onChange}: {label: string; fie
       {error && <span className="ui-field__error">{error}</span>}
     </fieldset>;
   }
-  const reference = field && isReference(field.type);
-  return <TextField label={label} type={field ? inputTypes[field.type] ?? 'text' : 'text'} step={field?.type === 'currency' ? '0.01' : field && ['number', 'percent'].includes(field.type) ? 'any' : undefined} description={reference ? `The ID of the ${field.referenceObject ?? 'related'} record.` : undefined} value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
+  const targets = field && holdsReference(field.type) ? referenceTargets(field) : [];
+  return <TextField label={label} type={field ? inputTypes[field.type] ?? 'text' : 'text'} step={field?.type === 'currency' ? '0.01' : field && ['number', 'percent'].includes(field.type) ? 'any' : undefined} description={field && holdsReference(field.type) ? `The ID of a ${targets.join(' or ') || 'related'} record.` : undefined} value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
 }

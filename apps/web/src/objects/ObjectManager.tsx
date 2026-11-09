@@ -1,6 +1,6 @@
 import React, {useEffect, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../components/ui';
-import {fieldTypes, isReference, ObjectsApiError, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
+import {fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
 import {failed, objectRoute, useObject, type Load} from './ObjectPages';
 import {Automations} from './Automations';
 import {QuickActions} from './QuickActions';
@@ -188,8 +188,8 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
             {object.fields.map(field => <tr key={field.apiName}>
               <th scope="row">{field.label}</th>
               <td><code>{field.apiName}</code></td>
-              <td>{fieldTypes.find(type => type.value === field.type)?.label ?? field.type}{field.referenceObject ? ` (${field.referenceObject})` : ''}{field.type === 'formula' && field.formulaType ? ` (${fieldTypes.find(type => type.value === field.formulaType)?.label ?? field.formulaType})` : ''}{field.type === 'formula' && field.formula && <><br /><code>{field.formula}</code></>}{field.lookupFilter && <><br />Only records where <code>{field.lookupFilter}</code></>}</td>
-              <td className="object-badges">{field.required && <Badge>Required</Badge>}{field.unique && <Badge>Unique</Badge>}{field.indexed && <Badge>Indexed</Badge>}{field.type === 'lookup' && <Badge>{field.deleteBehaviour === 'restrict' ? 'Restrict delete' : 'Clear on delete'}</Badge>}{field.type === 'master_detail' && <Badge>Deleted with its master</Badge>}{field.lookupFilter && <Badge>Filtered</Badge>}{field.type === 'rollup' && field.rollup && <Badge>{`${rollupFunctions.find(option => option.value === field.rollup?.function)?.label ?? field.rollup.function} of ${field.rollup.object}${field.rollup.field ? ` ${field.rollup.field}` : ''}`}</Badge>}</td>
+              <td>{fieldTypes.find(type => type.value === field.type)?.label ?? field.type}{field.referenceObject ? ` (${field.referenceObject})` : ''}{field.type === 'related_to' && field.referenceObjects?.length ? ` (${field.referenceObjects.join(', ')})` : ''}{field.type === 'formula' && field.formulaType ? ` (${fieldTypes.find(type => type.value === field.formulaType)?.label ?? field.formulaType})` : ''}{field.type === 'formula' && field.formula && <><br /><code>{field.formula}</code></>}{field.lookupFilter && <><br />Only records where <code>{field.lookupFilter}</code></>}</td>
+              <td className="object-badges">{field.required && <Badge>Required</Badge>}{field.unique && <Badge>Unique</Badge>}{field.indexed && <Badge>Indexed</Badge>}{field.type === 'related_to' && <Badge>Clear on delete</Badge>}{field.type === 'lookup' && <Badge>{field.deleteBehaviour === 'restrict' ? 'Restrict delete' : 'Clear on delete'}</Badge>}{field.type === 'master_detail' && <Badge>Deleted with its master</Badge>}{field.lookupFilter && <Badge>Filtered</Badge>}{field.type === 'rollup' && field.rollup && <Badge>{`${rollupFunctions.find(option => option.value === field.rollup?.function)?.label ?? field.rollup.function} of ${field.rollup.object}${field.rollup.field ? ` ${field.rollup.field}` : ''}`}</Badge>}</td>
               {object.trackHistory && <td>{canManage
                 ? <input type="checkbox" aria-label={`Track history of ${field.label}`} checked={field.trackHistory} onChange={event => void toggleHistory(field, event.target.checked)} />
                 : field.trackHistory ? 'Tracked' : 'Not tracked'}</td>}
@@ -328,6 +328,8 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
   const [reference, setReference] = useState('');
   const [behaviour, setBehaviour] = useState<'clear' | 'restrict'>('clear');
   const [lookupFilter, setLookupFilter] = useState('');
+  // A related-to field's allowlist (ADR 0033), in the order chosen.
+  const [allowed, setAllowed] = useState<string[]>([]);
   const [targets, setTargets] = useState<ObjectSummary[]>([]);
   const [rollupObject, setRollupObject] = useState('');
   const [rollupDetail, setRollupDetail] = useState<ObjectDescription | null>(null);
@@ -337,7 +339,7 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<{message: string; issues: ValidationIssue[]} | null>(null);
   useEffect(() => {
-    if (!isReference(type) && type !== 'rollup') return;
+    if (!holdsReference(type) && type !== 'rollup') return;
     const controller = new AbortController();
     client.listObjects(controller.signal).then(value => { if (!controller.signal.aborted) setTargets(value.objects); }).catch(() => undefined);
     return () => controller.abort();
@@ -375,6 +377,7 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
       input.options = options.split('\n').map(line => line.trim()).filter(Boolean).map((line, index) => ({value: suggestName(line) || `option_${index + 1}`, label: line}));
     }
     if (isReference(type)) input.reference_object = reference;
+    if (type === 'related_to') { input.reference_objects = allowed; input.indexed = false; }
     if (isReference(type) && lookupFilter.trim()) input.lookup_filter = lookupFilter.trim();
     if (type === 'lookup') input.delete_behaviour = behaviour;
     if (type === 'master_detail') input.required = true;
@@ -420,6 +423,11 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
       <span className="ui-field__description" id="new-field-lookup-filter-help">{lookupFilterHelp}</span>
       <textarea id="new-field-lookup-filter" className="ui-field__control object-textarea query-console__text" aria-describedby="new-field-lookup-filter-help" spellCheck={false} maxLength={1000} value={lookupFilter} onChange={event => setLookupFilter(event.target.value)} />
     </div>}
+    {type === 'related_to' && <fieldset className="object-multi">
+      <legend>Objects it can point to</legend>
+      <span className="ui-field__description">Choose up to {referenceObjectsMax}. Deleting a related record clears this field.</span>
+      {targets.map(target => <label key={target.apiName} className="object-checkbox"><input type="checkbox" checked={allowed.includes(target.apiName)} disabled={!allowed.includes(target.apiName) && allowed.length >= referenceObjectsMax} onChange={event => setAllowed(current => event.target.checked ? [...current, target.apiName] : current.filter(item => item !== target.apiName))} />{target.label}</label>)}
+    </fieldset>}
     {type === 'master_detail' && <p className="object-form__meta">Every record needs a master and stays with it. The master controls who can see and edit the record, and deleting or restoring the master deletes or restores the record with it. Only an object without records can get a master.</p>}
     {type === 'lookup' && <>
       <Select label="When the related record is deleted" value={behaviour} onChange={event => setBehaviour(event.target.value as 'clear' | 'restrict')}>
@@ -457,9 +465,9 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
     </>}
     {!derived && type !== 'master_detail' && <label className="object-checkbox"><input type="checkbox" checked={required} onChange={event => setRequired(event.target.checked)} />Required</label>}
     {mayBeUnique && <label className="object-checkbox"><input type="checkbox" checked={unique} onChange={event => setUnique(event.target.checked)} />Unique (ignores case)</label>}
-    {!isReference(type) && !derived && <label className="object-checkbox"><input type="checkbox" checked={indexed} onChange={event => setIndexed(event.target.checked)} />Indexed for filters and sorting</label>}
+    {!holdsReference(type) && !derived && <label className="object-checkbox"><input type="checkbox" checked={indexed} onChange={event => setIndexed(event.target.checked)} />Indexed for filters and sorting</label>}
     {object.trackHistory && !derived && <label className="object-checkbox"><input type="checkbox" checked={trackHistory} onChange={event => setTrackHistory(event.target.checked)} />Track history</label>}
-    <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!label.trim() || (isReference(type) && !reference) || (computed && !formula.trim()) || !rollupReady}>Add field</Button><Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>
+    <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!label.trim() || (isReference(type) && !reference) || (type === 'related_to' && allowed.length === 0) || (computed && !formula.trim()) || !rollupReady}>Add field</Button><Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button></div>
   </form>;
 }
 
