@@ -21,6 +21,7 @@ export function creatable(objects: readonly ObjectSummary[]): ObjectSummary[] {
  */
 export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNavigate: Navigate}) {
   const [open, setOpen] = useState(false);
+  // Null until loaded; shown as loading while the menu is open.
   const [objects, setObjects] = useState<Load<ObjectSummary[]> | null>(null);
   const [chosen, setChosen] = useState<Load<ObjectDescription> | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -28,8 +29,8 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
 
   useEffect(() => {
     if (!open || objects) return;
+    // No loading state is stored: it would re-run this effect and abort the request.
     const controller = new AbortController();
-    setObjects({status: 'loading'});
     client.listObjects(controller.signal)
       .then(value => { if (!controller.signal.aborted) setObjects({status: 'ready', value: creatable(value.objects)}); })
       .catch(reason => { if (!controller.signal.aborted) setObjects(failed(reason)); });
