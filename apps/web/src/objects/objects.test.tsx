@@ -4,7 +4,7 @@ import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
 import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
-import {RecordForm, RecordModal, RelatedLists} from './ObjectPages';
+import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
@@ -248,6 +248,31 @@ describe('workspace object pages', () => {
     const edit = renderToStaticMarkup(<RecordModal client={createFixtureObjectsClient()} object={project} record={record} onClose={noop} onSaved={noop} onNavigate={noop} />);
     expect(edit).toContain('Edit Apollo &lt;b&gt;');
     expect(edit).toContain('value="Apollo &lt;b&gt;"');
+  });
+});
+
+
+describe('quick action values (ADR 0032)', () => {
+  const [status, code] = project.fields;
+  const shown = [status, code].filter((field): field is NonNullable<typeof field> => field !== undefined);
+
+  it('sends a shown preset field as submitted, even unchanged, so the member wins', () => {
+    const initial = {name: 'Apollo', 'custom:status': 'open', 'custom:code': 'AP-1'};
+    // The record is open; the action presets won; the member chose open again.
+    const sent = valuesToSend({record: true, draft: {...initial}, initial, shown, showsName: false, always: {'custom:status': 'won'}});
+    expect(sent).toEqual({'custom:status': 'open'});
+  });
+
+  it('sends a cleared preset field on create instead of the preset', () => {
+    const draft = {name: 'New', 'custom:status': '', 'custom:code': ''};
+    const sent = valuesToSend({record: false, draft, initial: draft, shown, showsName: true, always: {'custom:status': 'won', 'custom:code': 'X-1'}});
+    expect(sent).toEqual({name: 'New', 'custom:status': null, 'custom:code': null});
+  });
+
+  it('still sends hidden presets and leaves untouched fields out of edits', () => {
+    const initial = {name: 'Apollo', 'custom:status': 'open', 'custom:code': 'AP-1'};
+    const sent = valuesToSend({record: true, draft: {...initial, 'custom:code': 'AP-2'}, initial, shown: shown.filter(field => field.apiName === 'custom:code'), showsName: false, always: {'custom:status': 'won'}});
+    expect(sent).toEqual({'custom:status': 'won', 'custom:code': 'AP-2'});
   });
 });
 

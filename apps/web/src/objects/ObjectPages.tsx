@@ -498,6 +498,26 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
   </div>;
 }
 
+/**
+ * The values a save sends. Edits send only what changed, so untouched values
+ * are never re-checked, and a new record leaves empty fields out. An action's
+ * presets (ADR 0032) go with every save, but a shown preset field always sends
+ * what the member submitted, even unchanged or empty, so their input wins.
+ */
+export function valuesToSend({record, draft, initial, shown, showsName, always = {}}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>}): Record<string, unknown> {
+  const overrides = (apiName: string) => Object.prototype.hasOwnProperty.call(always, apiName);
+  const values: Record<string, unknown> = {};
+  if (showsName && (!record || draft.name !== initial.name || overrides('name'))) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
+  for (const field of shown) {
+    const value = draft[field.apiName];
+    if (record && !overrides(field.apiName) && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
+    const apiValue = toApiValue(field, value ?? '');
+    if (!record && apiValue === null && !overrides(field.apiName)) continue;
+    values[field.apiName] = apiValue;
+  }
+  return {...always, ...values};
+}
+
 /** What to do once a record is saved: close the form, or start a new record. */
 export type AfterSave = 'close' | 'new';
 
@@ -522,19 +542,8 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     setSaving(true);
     setIssues([]);
     setError('');
-    const values: Record<string, unknown> = {};
-    if (showsName && (!record || draft.name !== initial.name)) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
-    for (const field of shown) {
-      const value = draft[field.apiName];
-      // Edits send only what changed, so untouched values are never re-checked.
-      if (record && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
-      const apiValue = toApiValue(field, value ?? '');
-      if (!record && apiValue === null) continue;
-      values[field.apiName] = apiValue;
-    }
     try {
-      // An action's presets go with every save; what the member typed in a shown field wins.
-      const sent = {...always, ...values};
+      const sent = valuesToSend({record: !!record, draft, initial, shown, showsName, always});
       const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, sent) : await client.createRecord(object.apiName, sent);
       onSaved(saved, next.current);
     } catch (reason) {
