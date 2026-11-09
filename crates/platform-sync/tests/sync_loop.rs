@@ -625,6 +625,7 @@ fn field(name: &str, kind: FieldType) -> CreateField {
         options: Vec::new(),
         default_value: None,
         reference_object: None,
+        reference_objects: None,
         delete_behaviour: None,
         formula: None,
         formula_type: None,

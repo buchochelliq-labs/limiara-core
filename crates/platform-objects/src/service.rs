@@ -15,7 +15,7 @@ use crate::{
     FieldType, HistoryEntry, HistoryKind, HistoryPage, ObjectAccess, ObjectCaller,
     ObjectDefinition, ObjectError, ObjectStore, ObjectTx, Origin, Record, RecordChange,
     RecordCursor, RecordFilter, RecordIndex, RecordPage, RecordQuery, RecordSort, RecordStatus,
-    RolePermission, SortDirection, UpdateField, UpdateObject, ValidationIssue,
+    RelatedTarget, RolePermission, SortDirection, UpdateField, UpdateObject, ValidationIssue,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -461,7 +461,9 @@ impl ObjectService {
     }
 
     /// Deletes an object definition. Its records leave every list and read;
-    /// lookups from other objects must be removed first.
+    /// lookups from other objects must be removed first. Related-to fields
+    /// of other objects stop allowing it and lose their values that point
+    /// to its records.
     pub async fn delete_object(
         &self,
         api_name: &str,
@@ -474,7 +476,13 @@ impl ObjectService {
         tx.lock_metadata().await?;
         let mut object = self.active_object(tx.as_mut(), api_name).await?;
         let referencing = tx.fields_referencing_object(object.id).await?;
-        if referencing.iter().any(|field| field.object_id != object.id) {
+        // A lookup from another object keeps it, and so does a related-to
+        // field that allows nothing else; other related-to fields let go
+        // of it below (ADR 0033 §1).
+        if referencing.iter().any(|field| {
+            field.object_id != object.id
+                && (field.field_type.is_reference() || field.reference_object_ids == [object.id])
+        }) {
             return Err(ObjectError::Conflict("objects.object_referenced"));
         }
         // A master's roll-up summary of its records keeps it (ADR 0026).
@@ -493,6 +501,12 @@ impl ObjectService {
         }
         self.record_change(tx.as_mut(), context, Change::ObjectDeleted(&object))
             .await?;
+        for field in referencing.iter().filter(|field| {
+            field.field_type == FieldType::RelatedTo && field.object_id != object.id
+        }) {
+            self.release_allowlist(tx.as_mut(), field, &object, context)
+                .await?;
+        }
         // Its quick actions, and the create actions making its records, go
         // with it (ADR 0032 §4).
         self.quick_actions_after_object_deleted(tx.as_mut(), &object, context)
@@ -553,6 +567,16 @@ impl ObjectService {
             },
             None => None,
         };
+        let allowed = match &shape {
+            Some(shape) => match allowed_objects(tx.as_mut(), &shape.reference_objects).await? {
+                Ok(allowed) => allowed,
+                Err(issue) => {
+                    issues.push(issue);
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
         let (Some(field_api), Some(label), Some(shape)) = (field_api, label, shape) else {
             return Err(ObjectError::Validation(issues));
         };
@@ -596,6 +620,8 @@ impl ObjectService {
             default_value: None,
             reference_object_id: reference.as_ref().map(|target| target.id),
             reference_object: reference.map(|target| target.api_name),
+            reference_object_ids: allowed.iter().map(|target| target.id).collect(),
+            reference_objects: allowed.into_iter().map(|target| target.api_name).collect(),
             delete_behaviour: shape.delete_behaviour,
             lookup_filter,
             formula: shape.formula,
@@ -686,6 +712,7 @@ impl ObjectService {
             return Err(ObjectError::VersionConflict);
         }
         let reindex_before = (field.is_indexed(), field.searchable, field.options.clone());
+        let allowlist_before = field.reference_object_ids.clone();
         let mut issues = Vec::new();
         if let Some(label) = input.label.as_deref() {
             match values::label("label", label, LABEL_MAX) {
@@ -726,6 +753,20 @@ impl ObjectService {
                     }
                 }
                 Ok(None) => field.lookup_filter = None,
+                Err(issue) => issues.push(issue),
+            }
+        }
+        if let Some(names) = input.reference_objects.as_deref() {
+            match values::reference_objects(field.field_type, Some(names)) {
+                Ok(names) => match allowed_objects(tx.as_mut(), &names).await? {
+                    Ok(allowed) => {
+                        field.reference_object_ids =
+                            allowed.iter().map(|target| target.id).collect();
+                        field.reference_objects =
+                            allowed.into_iter().map(|target| target.api_name).collect();
+                    }
+                    Err(issue) => issues.push(issue),
+                },
                 Err(issue) => issues.push(issue),
             }
         }
@@ -859,6 +900,12 @@ impl ObjectService {
         }
         self.record_change(tx.as_mut(), context, Change::FieldUpdated(&object, &field))
             .await?;
+        if allowlist_before != field.reference_object_ids {
+            // Create actions of an object taken out can no longer fill the
+            // field (ADR 0032 §4).
+            self.quick_actions_after_allowlist_changed(tx.as_mut(), &object, &field, context)
+                .await?;
+        }
         tx.commit().await?;
         Ok(field)
     }
@@ -1097,7 +1144,7 @@ impl ObjectService {
         for field in object
             .fields
             .iter()
-            .filter(|field| field.is_active() && field.field_type.is_reference())
+            .filter(|field| field.is_active() && field.field_type.holds_reference())
         {
             let master = field.field_type == FieldType::MasterDetail;
             let before = previous.get(&field.api_name).and_then(Value::as_str);
@@ -1135,8 +1182,13 @@ impl ObjectService {
             }
             // A target the caller cannot see is reported exactly like a
             // missing one.
+            let related_to = field.field_type == FieldType::RelatedTo;
             let visible = match (&target, access) {
-                (Some(target), _) if Some(target.object_id) != field.reference_object_id => false,
+                (Some(target), _)
+                    if !related_to && Some(target.object_id) != field.reference_object_id =>
+                {
+                    false
+                }
                 (Some(target), Some(access)) if !trusted.contains(&field.api_name) => {
                     self.can_see(tx, access, &mut objects, target).await?
                 }
@@ -1170,7 +1222,21 @@ impl ObjectService {
                 }
                 _ => true,
             };
+            // A related-to value must point to an object its allowlist
+            // names now; one taken out keeps the values it had (ADR 0033).
+            // Only a target the writer sees is told apart from a missing one.
+            let allowed = match &target {
+                Some(target) if related_to => {
+                    field.reference_object_ids.contains(&target.object_id)
+                }
+                _ => true,
+            };
             match target {
+                Some(_) if visible && !allowed => issues.push(ValidationIssue::new(
+                    field.api_name.clone(),
+                    "records.reference_object_not_allowed",
+                    "choose a record of one of the objects this field allows",
+                )),
                 Some(_) if visible && !filtered => issues.push(ValidationIssue::new(
                     field.api_name.clone(),
                     "records.lookup_filter_mismatch",
@@ -1427,13 +1493,31 @@ impl ObjectService {
         api_name: &str,
         records: &[Record],
     ) -> Result<BTreeMap<String, String>, ObjectError> {
+        Ok(self
+            .related_targets(api_name, records)
+            .await?
+            .into_iter()
+            .map(|(id, target)| (id, target.name))
+            .collect())
+    }
+
+    /// The records the given records' lookup, master-detail and related-to
+    /// fields point to, keyed by the target's public id: each one's name and
+    /// object, so callers can show and link to it. A target the caller
+    /// cannot read, or one in the recycle bin, is left out, exactly as if it
+    /// were missing.
+    pub async fn related_targets(
+        &self,
+        api_name: &str,
+        records: &[Record],
+    ) -> Result<BTreeMap<String, RelatedTarget>, ObjectError> {
         let mut tx = self.begin().await?;
         let access = self.access(tx.as_mut()).await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
         let lookups: Vec<&FieldDefinition> = object
             .fields
             .iter()
-            .filter(|field| field.is_active() && field.field_type.is_reference())
+            .filter(|field| field.is_active() && field.field_type.holds_reference())
             .collect();
         let mut names = BTreeMap::new();
         let mut objects = BTreeMap::new();
@@ -1449,12 +1533,23 @@ impl ObjectService {
                 let Some(target) = tx.record_by_public_id(public_id).await? else {
                     continue;
                 };
-                if self
+                if !self
                     .can_see(tx.as_mut(), &access, &mut objects, &target)
                     .await?
                 {
-                    names.insert(public_id.to_owned(), target.name);
+                    continue;
                 }
+                // `can_see` cached the target's active object.
+                let Some(Some(target_object)) = objects.get(&target.object_id) else {
+                    continue;
+                };
+                names.insert(
+                    public_id.to_owned(),
+                    RelatedTarget {
+                        name: target.name,
+                        object: target_object.api_name.clone(),
+                    },
+                );
             }
         }
         tx.commit().await?;
@@ -2104,38 +2199,10 @@ impl ObjectService {
             }
             clears.push((child, field.api_name.clone()));
         }
-        for (mut child, field_api) in clears {
+        for (child, field_api) in clears {
             let owner = owners.get(&child.object_id).ok_or(ObjectError::Invariant)?;
-            let child_before = child.clone();
-            let child_version = child.version;
-            child.values.remove(&field_api);
-            self.stamp(&mut child);
-            if !tx.update_record(&child, child_version).await? {
-                return Err(ObjectError::VersionConflict);
-            }
-            let child_references = current_references(tx, owner, &child).await?;
-            tx.replace_index(
-                child.id,
-                &stored_index(
-                    owner,
-                    &child,
-                    &child_references,
-                    &crate::formula_fields::stored_formulas(owner),
-                ),
-            )
-            .await?;
-            let changed = [field_api];
-            self.record_change(tx, context, Change::RecordUpdated(owner, &child, &changed))
+            self.clear_reference(tx, owner, child, field_api, context)
                 .await?;
-            self.track(
-                tx,
-                owner,
-                Some(&child_before),
-                &child,
-                HistoryKind::Changed,
-                context,
-            )
-            .await?;
         }
         let mut found = Vec::new();
         for detail in details {
@@ -2153,6 +2220,95 @@ impl ObjectService {
             found.push((owner, detail));
         }
         Ok(found)
+    }
+
+    /// Clears one reference field of `child` whose target is going, as a
+    /// member's edit with its own event and history.
+    async fn clear_reference(
+        &self,
+        tx: &mut dyn ObjectTx,
+        owner: &ObjectDefinition,
+        mut child: Record,
+        field_api: String,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let child_before = child.clone();
+        let child_version = child.version;
+        child.values.remove(&field_api);
+        self.stamp(&mut child);
+        if !tx.update_record(&child, child_version).await? {
+            return Err(ObjectError::VersionConflict);
+        }
+        let child_references = current_references(tx, owner, &child).await?;
+        tx.replace_index(
+            child.id,
+            &stored_index(
+                owner,
+                &child,
+                &child_references,
+                &crate::formula_fields::stored_formulas(owner),
+            ),
+        )
+        .await?;
+        let changed = [field_api];
+        self.record_change(tx, context, Change::RecordUpdated(owner, &child, &changed))
+            .await?;
+        self.track(
+            tx,
+            owner,
+            Some(&child_before),
+            &child,
+            HistoryKind::Changed,
+            context,
+        )
+        .await
+    }
+
+    /// Takes a deleted object out of a related-to field's allowlist, and
+    /// clears the field's values that point to the object's records, as
+    /// deleting each target would (ADR 0033 §1).
+    async fn release_allowlist(
+        &self,
+        tx: &mut dyn ObjectTx,
+        field: &FieldDefinition,
+        deleted: &ObjectDefinition,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let owner = tx
+            .object_by_id(field.object_id)
+            .await?
+            .ok_or(ObjectError::Invariant)?;
+        let mut changed = field.clone();
+        let expected_version = changed.version;
+        let kept: Vec<(Uuid, String)> = field
+            .reference_object_ids
+            .iter()
+            .copied()
+            .zip(field.reference_objects.iter().cloned())
+            .filter(|(id, _)| *id != deleted.id)
+            .collect();
+        changed.reference_object_ids = kept.iter().map(|(id, _)| *id).collect();
+        changed.reference_objects = kept.into_iter().map(|(_, name)| name).collect();
+        changed.version += 1;
+        changed.updated_at = Utc::now();
+        changed.updated_by = Some(self.caller.user_id());
+        if !tx.update_field(&changed, expected_version).await? {
+            return Err(ObjectError::VersionConflict);
+        }
+        self.record_change(tx, context, Change::FieldUpdated(&owner, &changed))
+            .await?;
+        let owner = tx
+            .object_by_id(owner.id)
+            .await?
+            .ok_or(ObjectError::Invariant)?;
+        for id in tx.referencing_object_records(field.id, deleted.id).await? {
+            let Some(child) = tx.record_by_id(id).await? else {
+                continue;
+            };
+            self.clear_reference(tx, &owner, child, field.api_name.clone(), context)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Takes a detail to the recycle bin with its master `root`: no
@@ -2715,7 +2871,7 @@ impl ObjectService {
             let Some(field) = entry.field.as_deref().and_then(|field| object.field(field)) else {
                 continue;
             };
-            if !field.field_type.is_reference() {
+            if !field.field_type.holds_reference() {
                 continue;
             }
             for id in [&entry.old_value, &entry.new_value]
@@ -3209,6 +3365,28 @@ async fn masters_live(
     Ok(true)
 }
 
+/// The active objects a related-to field's allowlist names, in its order,
+/// or the issue naming the first that is unknown or deleted.
+async fn allowed_objects(
+    tx: &mut dyn ObjectTx,
+    names: &[String],
+) -> Result<Result<Vec<ObjectDefinition>, ValidationIssue>, ObjectError> {
+    let mut allowed = Vec::with_capacity(names.len());
+    for name in names {
+        match tx.object_by_api_name(name).await? {
+            Some(target) if target.is_active() => allowed.push(target),
+            _ => {
+                return Ok(Err(ValidationIssue::new(
+                    "reference_objects",
+                    "objects.reference_object_unknown",
+                    format!("{name} is not an existing object"),
+                )))
+            }
+        }
+    }
+    Ok(Ok(allowed))
+}
+
 /// Whether `object` may gain a master-detail field to `master` (ADR 0025):
 /// one level only, at most two masters, and no records yet, since every
 /// existing record would need a master.
@@ -3259,11 +3437,11 @@ fn default_value(
     let Some(value) = value else {
         return Ok(None);
     };
-    if field.field_type.is_reference() {
+    if field.field_type.holds_reference() {
         return Err(ObjectError::invalid(
             "default_value",
             "objects.default_not_allowed",
-            "lookup fields have no default value",
+            "lookup and related-to fields have no default value",
         ));
     }
     values::normalise(field, value).map_err(|issue| {
@@ -3285,7 +3463,7 @@ async fn current_references(
     for field in object
         .fields
         .iter()
-        .filter(|field| field.is_active() && field.field_type.is_reference())
+        .filter(|field| field.is_active() && field.field_type.holds_reference())
     {
         if let Some(public_id) = record.values.get(&field.api_name).and_then(Value::as_str) {
             if let Some(target) = tx.record_by_public_id(public_id).await? {

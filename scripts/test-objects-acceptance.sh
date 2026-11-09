@@ -4,7 +4,7 @@
 # runtime and members work with their records through the generic engine.
 #
 # The journey covers object and field definition, naming, key prefixes,
-# picklists, uniqueness, lookups, record create/read/update with optimistic
+# picklists, uniqueness, lookups, related-to fields, record create/read/update with optimistic
 # versions, filters and search, the recycle bin, object permissions per role,
 # forced RLS on the engine tables, and evidence that names changes without
 # carrying record values.
@@ -663,7 +663,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -826,6 +826,71 @@ expect 200 "$(call "$member_cookie" PATCH "$workspace/objects/custom:deal_line/f
 expect 200 "$(call "$manager_cookie" GET "$workspace/objects/custom:deal_line/fields/custom:deal/candidates")" "candidates without a filter"
 [[ "$(field "any(.data[]; .id == \"$deal\")")" == true ]] || fail "the deal is offered: $(cat "$body")"
 
+log "related-to fields (ADR 0033 §1): a reference to a record of any allowed object"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects" \
+  '{"name":"activity","label":"Activity","plural_label":"Activities","sharing_model":"private"}')" "activity object"
+expect 200 "$(call "$member_cookie" PUT "$workspace/objects/custom:activity/permissions/$sales_role" '{"create":true,"edit":true,"delete":true}')" "sales access to activities"
+activity_fields="$workspace/objects/custom:activity/fields"
+expect 400 "$(call "$member_cookie" POST "$activity_fields" '{"name":"regarding","label":"Regarding","field_type":"related_to"}')" "a related-to field needs its objects"
+[[ "$(field '.errors[0].code')" == objects.reference_objects_invalid && "$(field '.errors[0].field')" == reference_objects ]] || fail "allowlist required: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$activity_fields" '{"name":"regarding","label":"Regarding","field_type":"related_to","reference_objects":["custom:deal","custom:deal"]}')" "objects are distinct"
+[[ "$(field '.errors[0].code')" == objects.reference_objects_invalid ]] || fail "duplicate objects: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$activity_fields" '{"name":"regarding","label":"Regarding","field_type":"related_to","reference_objects":["custom:deal","custom:nope"]}')" "objects exist"
+[[ "$(field '.errors[0].code')" == objects.reference_object_unknown ]] || fail "unknown object: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$activity_fields" '{"name":"regarding","label":"Regarding","field_type":"related_to","reference_objects":["custom:deal"],"lookup_filter":"name = '"'x'"'"}')" "no lookup filter yet"
+[[ "$(field '.errors[0].code')" == objects.lookup_filter_not_supported ]] || fail "lookup filter refused: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$activity_fields" '{"name":"regarding","label":"Regarding","field_type":"related_to","reference_objects":["custom:deal","custom:client"]}')" "related-to field"
+[[ "$(field '.field_type')" == related_to && "$(field '.reference_objects | join(",")')" == custom:deal,custom:client && "$(field '.reference_object')" == null && "$(field '.delete_behaviour')" == clear ]] || fail "related-to shape: $(cat "$body")"
+regarding_version=$(field '.version')
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:activity")" "describe the activity"
+[[ "$(field '[.fields[] | select(.api_name == "custom:regarding") | .reference_objects | join(",")] | first')" == custom:deal,custom:client ]] || fail "described allowlist: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$activity_fields" '{"name":"about","label":"About","field_type":"formula","formula":"custom:regarding","formula_type":"text"}')" "formulas cannot use it"
+[[ "$(field '.errors[0].code')" == objects.formula_invalid ]] || fail "formula refused: $(cat "$body")"
+
+expect 201 "$(call "$manager_cookie" POST "$workspace/objects/custom:activity/records" "{\"name\":\"Call about the deal\",\"custom:regarding\":\"$deal\"}")" "the deal's owner logs an activity"
+activity=$(field '.id')
+[[ "$(field '."custom:regarding"')" == "$deal" && "$(field ".related[\"$deal\"]")" == "Rep deal" && "$(field ".related_objects[\"$deal\"]")" == custom:deal ]] || fail "related-to target named with its object: $(cat "$body")"
+expect 400 "$(call "$rep_cookie" POST "$workspace/objects/custom:activity/records" "{\"name\":\"Sneaky\",\"custom:regarding\":\"$deal\"}")" "a target the writer cannot see"
+[[ "$(field '.errors[0].code')" == records.reference_not_found ]] || fail "hidden target code: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:activity/records" "{\"name\":\"Project call\",\"custom:regarding\":\"$apollo\"}")" "an object the field does not allow"
+[[ "$(field '.errors[0].code')" == records.reference_object_not_allowed ]] || fail "disallowed object code: $(cat "$body")"
+expect 200 "$(call "$manager_cookie" GET "$(query "SELECT name FROM custom:activity WHERE custom:regarding IN ('$deal', '$client')")")" "filter a related-to field"
+[[ "$(field '[.data[].id] | join(",")')" == "$activity" ]] || fail "related-to filter: $(cat "$body")"
+expect 400 "$(call "$manager_cookie" GET "$(query "SELECT name FROM custom:activity WHERE custom:regarding.name = 'x'")")" "no traversal through a related-to field"
+[[ "$(field '.errors[0].code')" == query.relationship_unsupported ]] || fail "traversal code: $(cat "$body")"
+expect 200 "$(call "$manager_cookie" GET "$workspace/objects/custom:deal/records/$deal/related")" "the deal's related lists"
+[[ "$(field '[.data[] | select(.object == "custom:activity" and .field == "custom:regarding" and .field_type == "related_to") | .data[].name] | join(",")')" == "Call about the deal" ]] || fail "the deal lists its activities: $(cat "$body")"
+expect 200 "$(call "$manager_cookie" GET "$workspace/objects/custom:activity/fields/custom:regarding/candidates?object=custom:deal")" "candidates of one allowed object"
+[[ "$(field "any(.data[]; .id == \"$deal\")")" == true ]] || fail "the deal is offered: $(cat "$body")"
+expect 400 "$(call "$manager_cookie" GET "$workspace/objects/custom:activity/fields/custom:regarding/candidates")" "candidates need an allowed object"
+[[ "$(field '.errors[0].code')" == records.reference_object_not_allowed ]] || fail "candidates code: $(cat "$body")"
+
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:deal/quick-actions" '{"name":"log_call","label":"Log a call","kind":"create","target_object":"custom:activity","target_field":"custom:regarding","fields":["name"]}')" "a quick action fills a related-to field"
+expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:project/quick-actions" '{"name":"log_call","label":"Log a call","kind":"create","target_object":"custom:activity","target_field":"custom:regarding","fields":["name"]}')" "only from an allowed object"
+[[ "$(field '.errors[0].code')" == quick_actions.target_field_invalid ]] || fail "quick action target code: $(cat "$body")"
+expect 200 "$(call "$member_cookie" PATCH "$activity_fields/custom:regarding" "{\"expected_version\":$regarding_version,\"reference_objects\":[\"custom:client\"]}")" "take deals out of the allowlist"
+[[ "$(field '.reference_objects | join(",")')" == custom:client ]] || fail "narrowed allowlist: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:deal/quick-actions")" "the deal's quick actions"
+[[ "$(field '.data | length')" == 0 ]] || fail "the action of a removed object went with it: $(cat "$body")"
+expect 200 "$(call "$manager_cookie" GET "$workspace/objects/custom:activity/records/$activity")" "a value to a removed object stays"
+[[ "$(field '."custom:regarding"')" == "$deal" ]] || fail "value kept: $(cat "$body")"
+expect 400 "$(call "$manager_cookie" POST "$workspace/objects/custom:activity/records" "{\"name\":\"Another call\",\"custom:regarding\":\"$deal\"}")" "no new values to a removed object"
+[[ "$(field '.errors[0].code')" == records.reference_object_not_allowed ]] || fail "removed object code: $(cat "$body")"
+
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:client/records" '{"name":"Short-lived client"}')" "a client to delete"
+short_lived=$(field '.id')
+short_lived_version=$(field '.version')
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:activity/records" "{\"name\":\"Client call\",\"custom:regarding\":\"$short_lived\"}")" "an activity about the client"
+client_activity=$(field '.id')
+expect 200 "$(call "$member_cookie" DELETE "$workspace/objects/custom:client/records/$short_lived?expected_version=$short_lived_version")" "delete the target"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:activity/records/$client_activity")" "the activity after its target went"
+[[ "$(field '."custom:regarding"')" == null && "$(field '.version')" == 2 ]] || fail "deleting the target clears the value: $(cat "$body")"
+leaks=$(sql --command="SELECT count(*) FROM outbox WHERE (envelope::text LIKE '%$activity%' OR envelope::text LIKE '%$client_activity%') AND (envelope::text LIKE '%$deal%' OR envelope::text LIKE '%$short_lived%');")
+[[ "$leaks" == 0 ]] || fail "related-to values leaked into events"
+allowlists=$(sql --command="SELECT count(*) FROM field_reference_objects WHERE tenant_id = '$tenant';")
+(( allowlists == 1 )) || fail "the allowlist is stored per field: $allowlists"
+[[ "$(app_sql --command="SELECT count(*) FROM field_reference_objects;")" == 0 ]] || fail "field_reference_objects leaks rows without tenant context"
+
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
 grant_code code-sync "$verifier"
 expect 200 "$(redeem code-sync "$verifier" "Viewer's synced phone")" "a device for the sync loop"
@@ -845,4 +910,4 @@ API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/sc
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'

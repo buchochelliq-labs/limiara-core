@@ -86,6 +86,7 @@ impl RemoteObject {
                     options: field.options.clone(),
                     default_value: field.default_value.clone(),
                     reference_object: field.reference_object.clone(),
+                    reference_objects: field.reference_objects.clone(),
                     delete_behaviour: field.delete_behaviour,
                     lookup_filter: field.lookup_filter.clone(),
                     formula: field.formula.clone(),
@@ -144,6 +145,8 @@ pub struct RemoteField {
     pub options: Vec<PicklistOption>,
     pub default_value: Option<Value>,
     pub reference_object: Option<String>,
+    /// A related-to field's allowlist, by API name.
+    pub reference_objects: Vec<String>,
     pub delete_behaviour: Option<DeleteBehaviour>,
     pub lookup_filter: Option<String>,
     pub formula: Option<String>,
@@ -411,6 +414,20 @@ async fn put_field(
         },
         None => None,
     };
+    // A related-to field allows, on the device, the objects of its
+    // allowlist the replica holds. One that allows none of them is left
+    // out like a lookup to an object the member cannot read; the server
+    // decides any other target on push (ADR 0033 §1).
+    let allowed: Vec<(Uuid, String)> = remote
+        .reference_objects
+        .iter()
+        .filter_map(|name| ids.get(name).map(|id| (*id, name.clone())))
+        .collect();
+    if remote.field_type == FieldType::RelatedTo && allowed.is_empty() {
+        return Ok(false);
+    }
+    let reference_object_ids: Vec<Uuid> = allowed.iter().map(|(id, _)| *id).collect();
+    let reference_objects: Vec<String> = allowed.into_iter().map(|(_, name)| name).collect();
     let rollup = match &remote.rollup {
         Some(rollup) => match resolve_rollup(tx, rollup, ids).await? {
             Some(rollup) => Some(rollup),
@@ -440,6 +457,8 @@ async fn put_field(
                 default_value: remote.default_value.clone(),
                 reference_object_id,
                 reference_object: remote.reference_object.clone(),
+                reference_object_ids,
+                reference_objects,
                 delete_behaviour: remote.delete_behaviour,
                 lookup_filter: remote.lookup_filter.clone(),
                 formula: remote.formula.clone(),
@@ -472,6 +491,8 @@ async fn put_field(
             field.options = remote.options.clone();
             field.default_value = remote.default_value.clone();
             field.lookup_filter = remote.lookup_filter.clone();
+            field.reference_object_ids = reference_object_ids;
+            field.reference_objects = reference_objects;
             field.formula = remote.formula.clone();
             field.position = remote.position;
             field.version = remote.version.max(1);

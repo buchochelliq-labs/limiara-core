@@ -48,7 +48,7 @@ can read returns `403 auth.permission_denied`.
 | `POST /objects` | Create an object: `name`, `label`, `plural_label`, optional `description`, `name_label`, `sharing_model` (`private`, `read`, `read_write`), `grant_hierarchy`, `searchable`, `in_navigation` |
 | `GET /objects/{api_name}` | Describe an object with its active fields in order |
 | `PATCH /objects/{api_name}` | Change labels and settings; send `expected_version` |
-| `DELETE /objects/{api_name}?expected_version=` | Delete an object; refused with `409 objects.object_referenced` while lookups point to it, and `409 objects.object_in_use` while an automation creates its records |
+| `DELETE /objects/{api_name}?expected_version=` | Delete an object; refused with `409 objects.object_referenced` while lookups, or related-to fields that allow nothing else, point to it, and `409 objects.object_in_use` while an automation creates its records |
 | `POST /objects/{api_name}/fields` | Create a field |
 | `PATCH /objects/{api_name}/fields/{field}` | Change a field; send `expected_version` |
 | `DELETE /objects/{api_name}/fields/{field}?expected_version=` | Retire a field; its values disappear from records |
@@ -57,7 +57,8 @@ can read returns `403 auth.permission_denied`.
 
 Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,
 `currency`, `percent`, `boolean`, `date`, `date_time`, `picklist`,
-`multi_picklist`, `lookup`, `formula`, `master_detail` and `rollup`. A field may be `required`, `unique` (text,
+`multi_picklist`, `lookup`, `formula`, `master_detail`, `rollup` and
+`related_to`. A field may be `required`, `unique` (text,
 email, phone, URL and number types; case-insensitive), `indexed` (for filters
 and sorting) and `searchable`. Picklists take `options` with `value`, `label`,
 `active` and `default`. Lookups take `reference_object` and a
@@ -90,6 +91,49 @@ was not, and turning its index off fails with `objects.rollup_needs_index`.
 Deleting the summarised field, the master-detail field or the detail object
 fails with `409 objects.field_in_use` or `objects.object_in_use`.
 
+### Related-to fields
+
+A `related_to` field (ADR 0033 §1) points to a record of any object in an
+allowlist set on the field, such as an activity about an account, a deal or
+a case. It takes `reference_objects`, 1 to 10 distinct API names of active
+objects, kept in the order given; `reference_object` stays `null`. Its
+delete behaviour is always `clear`; it has no default, is never unique and
+takes no lookup filter yet.
+
+```json
+{"name": "regarding", "label": "Regarding", "field_type": "related_to",
+ "reference_objects": ["custom:account", "custom:deal"]}
+```
+
+Describing the object returns the field with
+`"reference_objects": ["custom:account", "custom:deal"]`,
+`"reference_object": null` and `"delete_behaviour": "clear"`; other field
+types return `"reference_objects": null`. Creating one fails with:
+- `objects.reference_objects_invalid` when the list is missing, empty, longer
+  than 10 or names an object twice, or when another type sends one;
+- `objects.reference_object_unknown` when it names an unknown or deleted
+  object;
+- `objects.reference_object_invalid` when it also sends `reference_object`;
+- `objects.delete_behaviour_not_allowed` for `restrict`;
+- `objects.lookup_filter_not_supported` for a `lookup_filter`, also on
+  `PATCH`;
+- `objects.unique_not_allowed` and `objects.default_not_allowed`.
+
+`PATCH .../fields/{field}` takes a new `reference_objects`, which replaces
+the allowlist and is checked the same way. Taking an object out clears
+nothing: values that point to its records stay and are still named in
+`related`, but new values to it are refused, its records lose the field's
+related list, and create quick actions on it that fill the field are
+deleted. Deleting an allowed object takes it out of every allowlist, as a
+field change with its own event, and clears the values that point to its
+records outside the recycle bin, each as a record update. An object that
+is the only one a related-to field of another object allows cannot be
+deleted (`409 objects.object_referenced`), as for a lookup's target.
+
+Formulas, validation rules and automation formulas cannot use a related-to
+field (`objects.formula_invalid`, `rules.condition_invalid`), and it cannot
+be a roll-up's relationship (`objects.rollup_relationship_invalid`).
+
 ## Records
 
 | Method and path | Purpose |
@@ -105,8 +149,18 @@ A record carries the standard fields of ADR 0014 (`id`, `object`, `name`,
 `owner`, `created_at`, `created_by`, `updated_at`, `updated_by`,
 `touched_at`, `version`, `archived_at`, `is_deleted`, `deleted_at`) followed by
 its values keyed by field API name, then `related`, which maps the id of
-each lookup target the caller can read to that record's name. Targets the
-caller cannot read are left out of `related`, so a lookup shows only its id.
+each lookup, master-detail or related-to target the caller can read to that
+record's name, and `related_objects`, which maps the same ids to the
+target's object API name, so a client can link to a related-to target.
+Targets the caller cannot read are left out of both, so a lookup shows only
+its id.
+
+```json
+{"id": "0a2000000000001AB", "object": "custom:task", "name": "Call Acme",
+ "custom:regarding": "0a0000000000003CD",
+ "related": {"0a0000000000003CD": "Acme"},
+ "related_objects": {"0a0000000000003CD": "custom:account"}}
+```
 `owner`, `created_by` and `updated_by` are references to the member's user
 record with their display name.
 
@@ -153,6 +207,16 @@ or, for `restrict` lookups, fails with `409 records.delete_restricted`. A
 record in the recycle bin releases its unique values; undeleting it fails with
 `409 records.duplicate_value` if another record took one meanwhile.
 
+Related-to values are record ids too, checked like lookups: the target must
+exist and be visible to the writer (`records.reference_not_found`), and be a
+record of an object the field allows now
+(`records.reference_object_not_allowed`, only for a target the writer can
+see). A value a change leaves as it was is kept, even if its object was
+taken out of the allowlist. Deleting the target always clears the value.
+The query language filters a related-to field by `=`, `!=`, `IN` and
+`NOT IN` on record ids, and `= null` or `!= null`; following it, as in
+`custom:regarding.name`, fails with `query.relationship_unsupported`.
+
 ### Related lists and lookup filters
 
 Related lists and lookup filters are described in ADR 0028.
@@ -161,12 +225,14 @@ Related lists and lookup filters are described in ADR 0028.
 | --- | --- |
 | `GET /objects/{api_name}/records/{id}/related` | The first 5 records of each related list |
 | `GET /objects/{api_name}/records/{id}/related/{object}/{field}?cursor=` | The next 50 records of one related list |
-| `GET /objects/{api_name}/fields/{field}/candidates` | The records a lookup may take, with optional `search` and `cursor` |
+| `GET /objects/{api_name}/fields/{field}/candidates` | The records a lookup may take, with optional `search` and `cursor`; a related-to field needs `object`, one its allowlist names |
 
 A record has one related list for each lookup or master-detail field that
-points at its object, from an object the caller can read, up to 20 lists.
-Each list has `object`, `object_label`, `object_plural_label`, `field`,
-`field_label`, `master_detail`, `data` (`id` and `name` of records, by name)
+points at its object, and each related-to field whose allowlist names it,
+from an object the caller can read, up to 20 lists. Each list has `object`,
+`object_label`, `object_plural_label`, `field`, `field_label`,
+`master_detail`, `field_type` (`lookup`, `master_detail` or `related_to`),
+`data` (`id` and `name` of records, by name)
 and `next_cursor`. The lists are read as the caller, like a query, so each
 member sees only the related records they may see. An unknown relationship
 is `404`.
@@ -186,7 +252,10 @@ were are kept. Automation writes are not bound by the filter. A filter that
 no longer runs, for example after a field it names was deleted, refuses new
 values with `records.lookup_filter_invalid` until it is fixed. Candidates are
 the target records the caller sees that meet the filter, by name, 50 to a
-page. `search` matches text the name contains, at most 80 characters.
+page. `search` matches text the name contains, at most 80 characters. A
+related-to field's candidates are those of the object named by `object`;
+leaving it out, or naming an object the field does not allow, fails with
+`records.reference_object_not_allowed` on `object`.
 
 ## Change data capture
 
@@ -237,7 +306,12 @@ A synced device takes its definitions from the routes above: `GET
 /objects`, then `GET /objects/{api_name}` and its validation rules for each
 object, whenever a change page's `metadata_version` is newer than the one it
 applied. It reads each changed record with `include_deleted=true`, and pushes
-its queued changes as composite requests (ADR 0024).
+its queued changes as composite requests (ADR 0024). A related-to field
+keeps, on the device, only the objects of its allowlist the device holds,
+and is left out when it holds none of them; values to other objects are
+kept as the server sent them and new ones are refused offline, so the
+server decides them on push. Device clients ignore `related_objects` as
+they do `related`.
 
 ## Query
 
@@ -348,7 +422,8 @@ nothing: running it uses the normal record create and update APIs.
 - `kind` is `update` (a short form of this object's fields) or `create` (a
   form for a child record). A create action names its `target_object` and
   `target_field`, an active lookup or master-detail field on that object
-  pointing to this one, which is set to the current record; an update
+  pointing to this one, or a related-to field whose allowlist names this
+  object, which is set to the current record; an update
   action has neither. `kind`, `target_object` and `target_field` cannot
   change; `PATCH` takes `label`, `position`, `fields` and `presets`.
 - `name` is `[a-z][a-z0-9_]{0,62}` and unique per object; `label` is 1 to
@@ -382,7 +457,8 @@ nothing: running it uses the normal record create and update APIs.
 - Deleting a field removes it from the `fields` and `presets` of the
   actions that use it; an action left with no fields is deleted. Deleting
   a create action's `target_field` or target object deletes the action,
-  and deleting an object deletes its own actions. Each change publishes
+  as does taking this object out of a related-to `target_field`'s
+  allowlist, and deleting an object deletes its own actions. Each change publishes
   its quick-action event in the same transaction.
 
 ## Formula fields
@@ -771,4 +847,5 @@ report, chart and visibility but not the query), and quick actions created,
 updated and deleted (`platform.objects.quick-action-created.v1`,
 `-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
 target, its fields and the fields it presets, never the preset values). Payloads name the object, record and
-changed fields, never field values.
+changed fields, never field values; lookup and related-to values, which
+are record ids, are no exception.

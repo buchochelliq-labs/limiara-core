@@ -111,10 +111,13 @@ pub enum FieldType {
     /// A summary of the master's detail records, kept on the master
     /// (ADR 0026).
     Rollup,
+    /// A reference to a record of any object in the field's allowlist
+    /// (ADR 0033 §1).
+    RelatedTo,
 }
 
 impl FieldType {
-    pub const ALL: [FieldType; 17] = [
+    pub const ALL: [FieldType; 18] = [
         Self::Text,
         Self::LongText,
         Self::Email,
@@ -132,6 +135,7 @@ impl FieldType {
         Self::Formula,
         Self::MasterDetail,
         Self::Rollup,
+        Self::RelatedTo,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -153,6 +157,7 @@ impl FieldType {
             Self::Formula => "formula",
             Self::MasterDetail => "master_detail",
             Self::Rollup => "rollup",
+            Self::RelatedTo => "related_to",
         }
     }
 
@@ -160,10 +165,18 @@ impl FieldType {
         Self::ALL.into_iter().find(|kind| kind.as_str() == value)
     }
 
-    /// Whether the field points to another record: a lookup or a
-    /// master-detail field.
+    /// Whether the field points to a record of one object: a lookup or a
+    /// master-detail field. Only these can be followed by formulas and
+    /// queries, and only these have a `reference_object`.
     pub fn is_reference(self) -> bool {
         matches!(self, Self::Lookup | Self::MasterDetail)
+    }
+
+    /// Whether the field's value is a reference to another record kept in
+    /// the references index: a lookup, a master-detail or a related-to
+    /// field.
+    pub fn holds_reference(self) -> bool {
+        matches!(self, Self::Lookup | Self::MasterDetail | Self::RelatedTo)
     }
 
     pub fn is_textual(self) -> bool {
@@ -318,6 +331,12 @@ pub struct FieldDefinition {
     pub reference_object_id: Option<Uuid>,
     /// API name of the object a lookup points to, resolved for callers.
     pub reference_object: Option<String>,
+    /// The objects a related-to field may point to, in the order given
+    /// (ADR 0033 §1); empty for every other type.
+    #[serde(skip)]
+    pub reference_object_ids: Vec<Uuid>,
+    /// Their API names, resolved for callers, in the same order.
+    pub reference_objects: Vec<String>,
     pub delete_behaviour: Option<DeleteBehaviour>,
     /// A query-language condition on the target object that a lookup's
     /// new values must meet (ADR 0028).
@@ -346,7 +365,7 @@ impl FieldDefinition {
         }
         !matches!(
             self.field_type,
-            FieldType::Lookup | FieldType::MasterDetail | FieldType::Formula
+            FieldType::Lookup | FieldType::MasterDetail | FieldType::RelatedTo | FieldType::Formula
         ) && (self.indexed || self.unique || self.field_type.always_indexed())
     }
 
@@ -527,6 +546,10 @@ pub struct CreateField {
     /// The API name of the object a lookup points to.
     #[serde(default)]
     pub reference_object: Option<String>,
+    /// The API names of the objects a related-to field may point to: 1 to
+    /// 10 distinct active objects (ADR 0033 §1).
+    #[serde(default)]
+    pub reference_objects: Option<Vec<String>>,
     #[serde(default)]
     pub delete_behaviour: Option<DeleteBehaviour>,
     /// A condition on the target object that a lookup's values must meet,
@@ -577,6 +600,11 @@ pub struct UpdateField {
     /// A new lookup filter, or `null` to remove it (ADR 0028).
     #[serde(default, deserialize_with = "crate::model::present")]
     pub lookup_filter: Option<Option<String>>,
+    /// A new allowlist for a related-to field, replacing the old one. An
+    /// object taken out keeps the values that point to it; new values to
+    /// it are refused (ADR 0033 §1).
+    #[serde(default)]
+    pub reference_objects: Option<Vec<String>>,
 }
 
 /// Effective access to one object, from object permissions and system

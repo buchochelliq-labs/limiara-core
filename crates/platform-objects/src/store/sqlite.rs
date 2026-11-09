@@ -670,6 +670,24 @@ CREATE INDEX quick_actions_target_idx ON quick_actions (tenant_id, target_object
   WHERE target_object_id IS NOT NULL;
 "#,
     },
+    // Related-to fields (ADR 0033 §1): the objects each one allows, in
+    // order. Values and their target index are those of lookups.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0026_related_to",
+        sql: r#"
+CREATE TABLE field_reference_objects (
+  tenant_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 9),
+  PRIMARY KEY (tenant_id, field_id, object_id),
+  UNIQUE (tenant_id, field_id, position)
+);
+CREATE INDEX field_reference_objects_object_idx
+  ON field_reference_objects (tenant_id, object_id, field_id);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -714,6 +732,35 @@ struct SqliteObjectTx {
 }
 
 impl SqliteObjectTx {
+    /// Replaces a related-to field's allowlist rows with its current list;
+    /// other fields keep none.
+    async fn write_reference_objects(
+        &mut self,
+        field: &FieldDefinition,
+    ) -> Result<(), ObjectError> {
+        if field.field_type != FieldType::RelatedTo {
+            return Ok(());
+        }
+        sqlx::query("DELETE FROM field_reference_objects WHERE tenant_id = ?1 AND field_id = ?2")
+            .bind(&self.tenant)
+            .bind(field.id.to_string())
+            .execute(&mut *self.tx)
+            .await?;
+        for (position, object_id) in field.reference_object_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO field_reference_objects (tenant_id, field_id, object_id, position) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(&self.tenant)
+            .bind(field.id.to_string())
+            .bind(object_id.to_string())
+            .bind(i64::try_from(position).map_err(|_| ObjectError::Invariant)?)
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Runs a rendered query. UUIDs and times are stored as text.
     async fn run_query(&mut self, rendered: &Rendered) -> Result<Vec<SqliteRow>, ObjectError> {
         let mut query = sqlx::query(&rendered.sql);
@@ -740,7 +787,12 @@ const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.descripti
      f.delete_behaviour, f.position, f.status, f.version, f.created_at, f.created_by, \
      f.updated_at, f.updated_by, f.track_history, f.formula, f.formula_type, f.lookup_filter, \
      f.rollup_function, f.rollup_relationship_id, f.rollup_field_id, \
-     ro.api_name AS rollup_object, rr.api_name AS rollup_relationship, rf.api_name AS rollup_field";
+     ro.api_name AS rollup_object, rr.api_name AS rollup_relationship, rf.api_name AS rollup_field, \
+     (SELECT json_group_array(json_array(a.object_id, a.api_name)) FROM ( \
+        SELECT fa.object_id, oa.api_name FROM field_reference_objects fa \
+        JOIN object_definitions oa ON oa.tenant_id = fa.tenant_id AND oa.id = fa.object_id \
+        WHERE fa.tenant_id = f.tenant_id AND fa.field_id = f.id ORDER BY fa.position) a) \
+       AS reference_objects";
 const FIELD_FROM: &str = "FROM field_definitions f LEFT JOIN object_definitions r \
      ON r.tenant_id = f.tenant_id AND r.id = f.reference_object_id \
      LEFT JOIN field_definitions rr ON rr.tenant_id = f.tenant_id AND rr.id = f.rollup_relationship_id \
@@ -859,6 +911,10 @@ fn field_from_row(row: &SqliteRow) -> Result<FieldDefinition, ObjectError> {
         .map(|value| serde_json::from_str::<Value>(&value).map_err(|_| ObjectError::Invariant))
         .transpose()?;
     let delete_behaviour: Option<String> = row.try_get("delete_behaviour")?;
+    let (reference_object_ids, reference_objects) = super::reference_objects(
+        &serde_json::from_str::<Value>(&row.try_get::<String, _>("reference_objects")?)
+            .map_err(|_| ObjectError::Invariant)?,
+    )?;
     Ok(FieldDefinition {
         id: uuid(row, "id")?,
         object_id: uuid(row, "object_id")?,
@@ -878,6 +934,8 @@ fn field_from_row(row: &SqliteRow) -> Result<FieldDefinition, ObjectError> {
         default_value,
         reference_object_id: optional_uuid(row, "reference_object_id")?,
         reference_object: row.try_get("reference_api")?,
+        reference_object_ids,
+        reference_objects,
         delete_behaviour: delete_behaviour
             .map(|value| parse(DeleteBehaviour::parse(&value)))
             .transpose()?,
@@ -1307,7 +1365,9 @@ impl ObjectTx for SqliteObjectTx {
     ) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = ?1 AND f.reference_object_id = ?2 AND f.status = 'active'"
+             WHERE f.tenant_id = ?1 AND f.status = 'active' AND (f.reference_object_id = ?2 \
+               OR EXISTS (SELECT 1 FROM field_reference_objects fo WHERE fo.tenant_id = f.tenant_id \
+                 AND fo.field_id = f.id AND fo.object_id = ?2))"
         ))
         .bind(&self.tenant)
         .bind(object_id.to_string())
@@ -1430,7 +1490,7 @@ impl ObjectTx for SqliteObjectTx {
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
-        Ok(())
+        self.write_reference_objects(field).await
     }
 
     async fn update_field(
@@ -1468,6 +1528,9 @@ impl ObjectTx for SqliteObjectTx {
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
+        if updated == 1 {
+            self.write_reference_objects(field).await?;
+        }
         Ok(updated == 1)
     }
 
@@ -1790,6 +1853,29 @@ impl ObjectTx for SqliteObjectTx {
                     Uuid::parse_str(&record).map_err(|_| ObjectError::Invariant)?,
                 ))
             })
+            .collect()
+    }
+
+    async fn referencing_object_records(
+        &mut self,
+        field_id: Uuid,
+        object_id: Uuid,
+    ) -> Result<Vec<Uuid>, ObjectError> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT rr.record_id FROM record_references rr \
+             JOIN records r ON r.tenant_id = rr.tenant_id AND r.id = rr.record_id \
+             JOIN records t ON t.tenant_id = rr.tenant_id AND t.id = rr.target_id \
+             WHERE rr.tenant_id = ?1 AND rr.field_id = ?2 AND t.object_id = ?3 \
+               AND r.deleted_at IS NULL \
+             ORDER BY rr.record_id",
+        )
+        .bind(&self.tenant)
+        .bind(field_id.to_string())
+        .bind(object_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter()
+            .map(|id| Uuid::parse_str(id).map_err(|_| ObjectError::Invariant))
             .collect()
     }
 

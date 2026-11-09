@@ -329,6 +329,8 @@ mod tests {
             default_value: None,
             reference_object_id: None,
             reference_object: None,
+            reference_object_ids: Vec::new(),
+            reference_objects: Vec::new(),
             delete_behaviour: None,
             formula: None,
             formula_type: None,

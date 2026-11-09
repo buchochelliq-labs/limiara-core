@@ -14,8 +14,8 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 /// Keys of a record that are not field values: the standard fields of ADR
-/// 0014, lookup names and the caller's rights.
-const RECORD_KEYS: [&str; 15] = [
+/// 0014, reference names and objects, and the caller's rights.
+const RECORD_KEYS: [&str; 16] = [
     "id",
     "object",
     "name",
@@ -30,6 +30,7 @@ const RECORD_KEYS: [&str; 15] = [
     "is_deleted",
     "deleted_at",
     "related",
+    "related_objects",
     "access",
 ];
 
@@ -140,6 +141,8 @@ struct FieldBody {
     #[serde(default)]
     reference_object: Option<String>,
     #[serde(default)]
+    reference_objects: Option<Vec<String>>,
+    #[serde(default)]
     delete_behaviour: Option<DeleteBehaviour>,
     #[serde(default)]
     lookup_filter: Option<String>,
@@ -239,6 +242,7 @@ pub fn remote_object(
                 options: field.options,
                 default_value: field.default_value,
                 reference_object: field.reference_object,
+                reference_objects: field.reference_objects.unwrap_or_default(),
                 delete_behaviour: field.delete_behaviour,
                 lookup_filter: field.lookup_filter,
                 formula: field.formula,

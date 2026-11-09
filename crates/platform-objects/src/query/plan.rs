@@ -436,6 +436,15 @@ impl<'a> Catalog<'a> {
                     format!("{} has no field {segment}", object.api_name),
                 ));
             };
+            if field.field_type == FieldType::RelatedTo {
+                return Err(error(
+                    "query.relationship_unsupported",
+                    path.position,
+                    format!(
+                        "{segment} is a related-to field, which may point to several objects, so it cannot be followed"
+                    ),
+                ));
+            }
             if !field.field_type.is_reference() {
                 return Err(error(
                     "query.relationship_unknown",
@@ -533,7 +542,7 @@ fn category(
             (category, Source::Column(standard.column()))
         }
         Leaf::Field(field) => {
-            if field.field_type.is_reference() {
+            if field.field_type.holds_reference() {
                 return Ok((
                     Category::Reference,
                     Source::Reference { field_id: field.id },
@@ -1351,6 +1360,8 @@ mod tests {
             default_value: None,
             reference_object_id: None,
             reference_object: None,
+            reference_object_ids: Vec::new(),
+            reference_objects: Vec::new(),
             delete_behaviour: None,
             formula: None,
             formula_type: None,

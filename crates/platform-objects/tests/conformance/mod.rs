@@ -16,6 +16,7 @@ pub mod push;
 pub mod query;
 pub mod quick_actions;
 pub mod related;
+pub mod related_to;
 pub mod relationships;
 pub mod replica;
 pub mod reports;
@@ -95,6 +96,7 @@ fn field(name: &str, kind: FieldType) -> CreateField {
         options: Vec::new(),
         default_value: None,
         reference_object: None,
+        reference_objects: None,
         delete_behaviour: None,
         formula: None,
         formula_type: None,
@@ -494,6 +496,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
                 position: None,
                 formula: None,
                 lookup_filter: None,
+                reference_objects: None,
             },
             context(),
         )

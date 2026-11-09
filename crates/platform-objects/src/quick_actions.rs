@@ -68,6 +68,16 @@ fn field_problem(
     None
 }
 
+/// Whether a create action on `object_id` may set `field` to its current
+/// record: a lookup or master-detail field to it, or a related-to field
+/// whose allowlist names it (ADR 0033 §1).
+fn points_to(field: &FieldDefinition, object_id: Uuid) -> bool {
+    match field.field_type {
+        FieldType::RelatedTo => field.reference_object_ids.contains(&object_id),
+        kind => kind.is_reference() && field.reference_object_id == Some(object_id),
+    }
+}
+
 /// Checks an action against the object it belongs to and, for a create
 /// action, the child object its form writes to. Presets are normalised in
 /// place, as record values are.
@@ -106,15 +116,15 @@ fn check_action(
     if let (QuickActionKind::Create, Some(target), Some(target_field)) =
         (action.kind, target, action.target_field.as_deref())
     {
-        let points_here = target.field(target_field).is_some_and(|field| {
-            field.field_type.is_reference() && field.reference_object_id == Some(object.id)
-        });
+        let points_here = target
+            .field(target_field)
+            .is_some_and(|field| points_to(field, object.id));
         if !points_here {
             issues.push(issue(
                 "target_field",
                 "quick_actions.target_field_invalid",
                 format!(
-                    "use a lookup or master-detail field on {} that points to {}",
+                    "use a lookup or master-detail field on {} that points to {}, or a related-to field that allows it",
                     target.api_name, object.api_name
                 ),
             ));
@@ -472,6 +482,40 @@ impl ObjectService {
                 self.record_change(tx, context, Change::QuickActionUpdated(&owner, &action))
                     .await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Deletes, in the transaction that changed it, the create actions
+    /// whose reference field is the related-to `field` of `object` and that
+    /// belong to an object its allowlist no longer names (ADR 0033 §1).
+    pub(crate) async fn quick_actions_after_allowlist_changed(
+        &self,
+        tx: &mut dyn ObjectTx,
+        object: &ObjectDefinition,
+        field: &FieldDefinition,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let stale: Vec<QuickAction> = tx
+            .quick_actions_targeting(object.id)
+            .await?
+            .into_iter()
+            .filter(|action| {
+                action.kind == QuickActionKind::Create
+                    && action.target_field.as_deref() == Some(field.api_name.as_str())
+                    && !points_to(field, action.object_id)
+            })
+            .collect();
+        for action in stale {
+            let owner = tx
+                .object_by_id(action.object_id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            if !tx.delete_quick_action(action.id, action.version).await? {
+                return Err(ObjectError::VersionConflict);
+            }
+            self.record_change(tx, context, Change::QuickActionDeleted(&owner, &action))
+                .await?;
         }
         Ok(())
     }

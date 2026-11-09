@@ -221,6 +221,52 @@ async fn sqlite_store_passes_the_related_list_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_related_to_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::related_to::run(store, tenant).await;
+
+    // The events of records holding related-to values name what changed,
+    // never the values (ADR 0015 §5).
+    let pool = databases.pool(tenant).await.expect("pool");
+    let envelopes: Vec<String> = sqlx::query_scalar("SELECT envelope FROM outbox")
+        .fetch_all(&pool)
+        .await
+        .expect("events");
+    let about_tasks: Vec<&String> = envelopes
+        .iter()
+        .filter(|envelope| {
+            report
+                .task_ids
+                .iter()
+                .any(|id| envelope.contains(id.as_str()))
+        })
+        .collect();
+    assert!(about_tasks.len() >= report.task_ids.len());
+    for envelope in about_tasks {
+        for target in &report.target_ids {
+            assert!(!envelope.contains(target.as_str()), "{envelope}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn sqlite_store_keeps_related_to_fields_in_a_replica() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::related_to::replica(store).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_sync_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(
