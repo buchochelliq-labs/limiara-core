@@ -74,6 +74,11 @@ pnpm --filter web build
 (
   cd apps/device-shell/src-tauri
   [[ -d gen/apple ]] || cargo tauri ios init --ci
+  # Tauri's configuration has no iOS entitlements, so the committed file
+  # replaces the generated project's own.
+  entitlements=$(find gen/apple -maxdepth 2 -name '*.entitlements' | head -n 1)
+  [[ -n "$entitlements" ]] || { echo "the generated iOS project has no entitlements file" >&2; exit 1; }
+  cp Entitlements.ios.plist "$entitlements"
   cargo tauri ios build --ci --debug --target aarch64-sim
 )
 app=$(find apps/device-shell/src-tauri/gen/apple/build -type d -name '*.app' -path '*sim*' | head -n 1)
@@ -120,6 +125,8 @@ if ! grep -q "wake finished: no_data" <<<"$push_log"; then
   echo "--- the app's own log"
   xcrun simctl spawn "$simulator" log show --last 10m --style compact \
     --predicate "process == \"$executable\"" 2>/dev/null | tail -n 60 || true
+  echo "--- the app's entitlements"
+  codesign -d --entitlements - "$app" 2>&1 || true
   echo "--- the push daemon on this app"
   xcrun simctl spawn "$simulator" log show --last 10m --style compact \
     --predicate "process == \"apsd\" AND eventMessage CONTAINS \"$bundle_id\"" 2>/dev/null |

@@ -112,6 +112,9 @@ plugin's redirect activity and that a stray redirect leaves the app running.
 On iOS the `device-push` plugin (`push/`) registers for APNs and hands each
 content-free push to the controller's wake, which completes the push for
 iOS (ADR 0030 §5). `Info.ios.plist` declares the `remote-notification`
-background mode. A real device token needs a build signed with the
-`aps-environment` entitlement; the `ios` workflow delivers a simulated push
+background mode, and `Entitlements.ios.plist` the `aps-environment`
+entitlement, which Tauri's configuration cannot express: copy it over the
+`.entitlements` file in `gen/apple` after `cargo tauri ios init`, as
+`scripts/test-device-ios.sh` does. A real device token also needs a build
+signed with the Apple team; the `ios` workflow delivers a simulated push
 with `xcrun simctl push` instead. Android's FCM half is still to come.
