@@ -45,7 +45,12 @@ pub const REPORT_CREATED_V1: &str = "platform.objects.report-created.v1";
 pub const REPORT_UPDATED_V1: &str = "platform.objects.report-updated.v1";
 pub const REPORT_DELETED_V1: &str = "platform.objects.report-deleted.v1";
 
-pub const ENGINE_EVENT_TYPES: [&str; 28] = [
+/// Quick actions (ADR 0032): definitions only, never preset values.
+pub const QUICK_ACTION_CREATED_V1: &str = "platform.objects.quick-action-created.v1";
+pub const QUICK_ACTION_UPDATED_V1: &str = "platform.objects.quick-action-updated.v1";
+pub const QUICK_ACTION_DELETED_V1: &str = "platform.objects.quick-action-deleted.v1";
+
+pub const ENGINE_EVENT_TYPES: [&str; 31] = [
     OBJECT_CREATED_V1,
     OBJECT_UPDATED_V1,
     OBJECT_DELETED_V1,
@@ -74,6 +79,9 @@ pub const ENGINE_EVENT_TYPES: [&str; 28] = [
     REPORT_CREATED_V1,
     REPORT_UPDATED_V1,
     REPORT_DELETED_V1,
+    QUICK_ACTION_CREATED_V1,
+    QUICK_ACTION_UPDATED_V1,
+    QUICK_ACTION_DELETED_V1,
 ];
 
 /// Who and why, for every piece of evidence in one request.
@@ -137,6 +145,9 @@ pub enum Change<'a> {
     ReportCreated(&'a crate::Report),
     ReportUpdated(&'a crate::Report),
     ReportDeleted(&'a crate::Report),
+    QuickActionCreated(&'a ObjectDefinition, &'a crate::QuickAction),
+    QuickActionUpdated(&'a ObjectDefinition, &'a crate::QuickAction),
+    QuickActionDeleted(&'a ObjectDefinition, &'a crate::QuickAction),
 }
 
 impl Change<'_> {
@@ -306,6 +317,24 @@ impl Change<'_> {
                 report_target(report),
                 report_payload(report),
             ),
+            Self::QuickActionCreated(object, action) => (
+                QUICK_ACTION_CREATED_V1,
+                "objects.quick_action.created",
+                quick_action_target(object, action),
+                quick_action_payload(object, action),
+            ),
+            Self::QuickActionUpdated(object, action) => (
+                QUICK_ACTION_UPDATED_V1,
+                "objects.quick_action.updated",
+                quick_action_target(object, action),
+                quick_action_payload(object, action),
+            ),
+            Self::QuickActionDeleted(object, action) => (
+                QUICK_ACTION_DELETED_V1,
+                "objects.quick_action.deleted",
+                quick_action_target(object, action),
+                quick_action_payload(object, action),
+            ),
             Self::SharingChanged(object, record, kind, grantee, access) => (
                 RECORD_SHARING_CHANGED_V1,
                 if access.is_some() {
@@ -430,6 +459,25 @@ fn rule_payload(object: &ObjectDefinition, rule: &crate::ValidationRule) -> Valu
         "rule": rule.name,
         "active": rule.active,
         "version": rule.version,
+    })
+}
+
+fn quick_action_target(object: &ObjectDefinition, action: &crate::QuickAction) -> String {
+    format!("quick_action:{}/{}", object.api_name, action.name)
+}
+
+/// Names the action, its kind and target, the fields its form asks for and
+/// the fields it presets; preset values and the label stay out of events.
+fn quick_action_payload(object: &ObjectDefinition, action: &crate::QuickAction) -> Value {
+    json!({
+        "object": object.api_name,
+        "action": action.name,
+        "kind": action.kind.as_str(),
+        "target_object": action.target_object,
+        "target_field": action.target_field,
+        "fields": action.fields,
+        "preset_fields": action.presets.keys().collect::<Vec<_>>(),
+        "version": action.version,
     })
 }
 

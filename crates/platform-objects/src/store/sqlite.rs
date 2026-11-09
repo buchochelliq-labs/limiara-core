@@ -638,6 +638,38 @@ ALTER TABLE replica_sync ADD COLUMN contact_since_boot_ms INTEGER
   CHECK (contact_since_boot_ms IS NULL OR contact_since_boot_ms >= 0);
 "#,
     },
+    // Quick actions (ADR 0032): per-object shortcuts to the record forms.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0025_quick_actions",
+        sql: r#"
+CREATE TABLE quick_actions (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 63),
+  label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 80),
+  kind TEXT NOT NULL CHECK (kind IN ('update', 'create')),
+  position INTEGER NOT NULL CHECK (position >= 0),
+  target_object_id TEXT,
+  target_field TEXT,
+  fields TEXT NOT NULL CHECK (json_valid(fields) AND json_type(fields) = 'array'
+    AND json_array_length(fields) BETWEEN 1 AND 20),
+  presets TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(presets) AND json_type(presets) = 'object'),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  CHECK ((kind = 'create') = (target_object_id IS NOT NULL AND target_field IS NOT NULL)),
+  CHECK ((target_object_id IS NULL) = (target_field IS NULL)),
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, object_id, name)
+);
+CREATE INDEX quick_actions_target_idx ON quick_actions (tenant_id, target_object_id)
+  WHERE target_object_id IS NOT NULL;
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1036,6 +1068,36 @@ fn bulk_row_from_row(row: &SqliteRow) -> Result<crate::BulkRow, ObjectError> {
 
 fn actions_text(automation: &crate::Automation) -> Result<String, ObjectError> {
     serde_json::to_string(&automation.actions).map_err(|_| ObjectError::Invariant)
+}
+
+const QUICK_ACTION_COLUMNS: &str = "q.id, q.object_id, q.name, q.label, q.kind, q.position, \
+     q.target_object_id, t.api_name AS target_object, q.target_field, q.fields, q.presets, \
+     q.version, q.created_at, q.created_by, q.updated_at, q.updated_by";
+const QUICK_ACTION_FROM: &str = "FROM quick_actions q LEFT JOIN object_definitions t \
+     ON t.tenant_id = q.tenant_id AND t.id = q.target_object_id";
+
+fn quick_action_from_row(row: &SqliteRow) -> Result<crate::QuickAction, ObjectError> {
+    let fields: String = row.try_get("fields")?;
+    let presets: String = row.try_get("presets")?;
+    Ok(crate::QuickAction {
+        id: uuid(row, "id")?,
+        object_id: uuid(row, "object_id")?,
+        name: row.try_get("name")?,
+        label: row.try_get("label")?,
+        kind: crate::QuickActionKind::parse(&row.try_get::<String, _>("kind")?)
+            .ok_or(ObjectError::Invariant)?,
+        position: row.try_get("position")?,
+        target_object_id: optional_uuid(row, "target_object_id")?,
+        target_object: row.try_get("target_object")?,
+        target_field: row.try_get("target_field")?,
+        fields: serde_json::from_str(&fields).map_err(|_| ObjectError::Invariant)?,
+        presets: serde_json::from_str(&presets).map_err(|_| ObjectError::Invariant)?,
+        version: row.try_get("version")?,
+        created_at: time(row, "created_at")?,
+        created_by: optional_uuid(row, "created_by")?,
+        updated_at: time(row, "updated_at")?,
+        updated_by: optional_uuid(row, "updated_by")?,
+    })
 }
 
 fn rule_from_row(row: &SqliteRow) -> Result<ValidationRule, ObjectError> {
@@ -2295,6 +2357,110 @@ impl ObjectTx for SqliteObjectTx {
         )
         .bind(&self.tenant)
         .bind(rule_id.to_string())
+        .bind(expected_version)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn quick_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {QUICK_ACTION_COLUMNS} {QUICK_ACTION_FROM} \
+             WHERE q.tenant_id = ?1 AND q.object_id = ?2 ORDER BY q.position, q.name"
+        ))
+        .bind(&self.tenant)
+        .bind(object_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(quick_action_from_row).collect()
+    }
+
+    async fn quick_actions_targeting(
+        &mut self,
+        target_object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {QUICK_ACTION_COLUMNS} {QUICK_ACTION_FROM} \
+             WHERE q.tenant_id = ?1 AND q.target_object_id = ?2 \
+             ORDER BY q.object_id, q.position, q.name"
+        ))
+        .bind(&self.tenant)
+        .bind(target_object_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(quick_action_from_row).collect()
+    }
+
+    async fn insert_quick_action(
+        &mut self,
+        action: &crate::QuickAction,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO quick_actions (tenant_id, id, object_id, name, label, kind, position, \
+             target_object_id, target_field, fields, presets, version, created_at, created_by, \
+             updated_at, updated_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        )
+        .bind(&self.tenant)
+        .bind(action.id.to_string())
+        .bind(action.object_id.to_string())
+        .bind(&action.name)
+        .bind(&action.label)
+        .bind(action.kind.as_str())
+        .bind(action.position)
+        .bind(text(action.target_object_id))
+        .bind(&action.target_field)
+        .bind(encode(&action.fields)?)
+        .bind(encode(&action.presets)?)
+        .bind(action.version)
+        .bind(timestamp(action.created_at))
+        .bind(text(action.created_by))
+        .bind(timestamp(action.updated_at))
+        .bind(text(action.updated_by))
+        .execute(&mut *self.tx)
+        .await
+        .map_err(|error| conflict_on_unique(error, "quick_actions.duplicate_name"))?;
+        Ok(())
+    }
+
+    async fn update_quick_action(
+        &mut self,
+        action: &crate::QuickAction,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let result = sqlx::query(
+            "UPDATE quick_actions SET label = ?1, position = ?2, fields = ?3, presets = ?4, \
+             version = ?5, updated_at = ?6, updated_by = ?7 \
+             WHERE tenant_id = ?8 AND id = ?9 AND version = ?10",
+        )
+        .bind(&action.label)
+        .bind(action.position)
+        .bind(encode(&action.fields)?)
+        .bind(encode(&action.presets)?)
+        .bind(action.version)
+        .bind(timestamp(action.updated_at))
+        .bind(text(action.updated_by))
+        .bind(&self.tenant)
+        .bind(action.id.to_string())
+        .bind(expected_version)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn delete_quick_action(
+        &mut self,
+        action_id: Uuid,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let result = sqlx::query(
+            "DELETE FROM quick_actions WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
+        )
+        .bind(&self.tenant)
+        .bind(action_id.to_string())
         .bind(expected_version)
         .execute(&mut *self.tx)
         .await?;

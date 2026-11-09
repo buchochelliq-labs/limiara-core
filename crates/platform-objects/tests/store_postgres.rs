@@ -172,6 +172,46 @@ async fn postgres_store_passes_the_validation_rule_conformance_suite() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_quick_action_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Quick action conformance')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::quick_actions::run(store, tenant).await;
+
+    // Every change left its event; none carries a preset value.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT event_type, envelope::text FROM outbox \
+         WHERE tenant_id = $1 AND event_type LIKE 'platform.objects.quick-action-%'",
+    )
+    .bind(tenant)
+    .fetch_all(&migrator)
+    .await
+    .expect("events");
+    for kind in ["created", "updated", "deleted"] {
+        let event = format!("platform.objects.quick-action-{kind}.v1");
+        assert!(rows.iter().any(|(found, _)| *found == event), "{event}");
+    }
+    assert!(rows
+        .iter()
+        .all(|(_, envelope)| !envelope.contains(conformance::quick_actions::SECRET_PRESET)));
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action LIKE 'objects.quick_action.%'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(audited, i64::try_from(rows.len()).expect("count"));
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_passes_the_search_conformance_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
@@ -246,6 +286,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "change_counters",
         "record_search_terms",
         "validation_rules",
+        "quick_actions",
         "automations",
         "automation_runs",
         "automation_jobs",

@@ -329,6 +329,53 @@ remove one with `PATCH` / `DELETE …/validation-rules/{name}` and
 - Deleting a field an active rule needs fails with
   `409 objects.field_in_use`.
 
+## Quick actions
+
+Per-object shortcuts (ADR 0032) live at `/objects/{object}/quick-actions`.
+`GET` lists them by `position`, then `name`, to anyone who can read the
+object; to anyone else the object is unknown. Administrators with
+`objects.manage` create one with `POST`, and change or remove one with
+`PATCH` / `DELETE …/quick-actions/{name}` and `expected_version` (in the
+body for `PATCH`, as a query parameter for `DELETE`). An action grants
+nothing: running it uses the normal record create and update APIs.
+
+```json
+{"name": "add_contact", "label": "Add contact", "kind": "create", "position": 1,
+ "target_object": "custom:contact", "target_field": "custom:account",
+ "fields": ["name", "custom:email"], "presets": {"custom:role": "buyer"}}
+```
+
+- `kind` is `update` (a short form of this object's fields) or `create` (a
+  form for a child record). A create action names its `target_object` and
+  `target_field`, an active lookup or master-detail field on that object
+  pointing to this one, which is set to the current record; an update
+  action has neither. `kind`, `target_object` and `target_field` cannot
+  change; `PATCH` takes `label`, `position`, `fields` and `presets`.
+- `name` is `[a-z][a-z0-9_]{0,62}` and unique per object; `label` is 1 to
+  80 characters; `position` is 0 or more and defaults to after the
+  existing actions.
+- `fields` lists 1 to 20 distinct field API names, the record name as
+  `name`, of this object for `update` and of the target object for
+  `create`. `presets` maps up to 20 such fields to constant values, checked
+  and normalised as record values are; a preset need not be in `fields`.
+  Formula and roll-up summary fields, and a create action's `target_field`,
+  cannot be chosen or preset.
+- Problems are `400` with `quick_actions.name_invalid`,
+  `quick_actions.label_invalid`, `quick_actions.position_invalid`,
+  `quick_actions.target_required`, `quick_actions.target_not_allowed`,
+  `quick_actions.target_object_unknown`,
+  `quick_actions.target_field_invalid`, `quick_actions.fields_invalid`,
+  `quick_actions.presets_invalid`, `quick_actions.field_duplicate`,
+  `quick_actions.field_unknown`, `quick_actions.field_not_allowed` (on
+  `fields.{field}` or `presets.{field}`), a record value code such as
+  `records.value_type` on `presets.{field}`, `quick_actions.limit_reached`
+  (10 per object) and `409 quick_actions.duplicate_name`.
+- Deleting a field removes it from the `fields` and `presets` of the
+  actions that use it; an action left with no fields is deleted. Deleting
+  a create action's `target_field` or target object deletes the action,
+  and deleting an object deletes its own actions. Each change publishes
+  its quick-action event in the same transaction.
+
 ## Formula fields
 
 A field with `"field_type": "formula"` takes a `formula` and a
@@ -711,5 +758,8 @@ Every mutation writes an audit record and a `platform.objects.*.v1` event in
 the same transaction: object, field and object-permission changes, record
 created, updated, deleted and undeleted, and reports created, updated and
 deleted (`report-created`, `report-updated`, `report-deleted`, naming the
-report, chart and visibility but not the query). Payloads name the object, record and
+report, chart and visibility but not the query), and quick actions created,
+updated and deleted (`platform.objects.quick-action-created.v1`,
+`-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
+target, its fields and the fields it presets, never the preset values). Payloads name the object, record and
 changed fields, never field values.

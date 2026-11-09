@@ -2,10 +2,14 @@
 
 ## Status
 
-Proposed (2026-11-09). Builds on ADR 0011 (platform UX direction: the
+Accepted (2026-11-09). Builds on ADR 0011 (platform UX direction: the
 record form and the `global-new` slot), ADR 0015 (metadata-driven objects),
 ADR 0021 (validation rules, whose metadata model this follows) and ADR 0028
-(related lists). Part of issue #179.
+(related lists). Part of issue #179. The quick-action metadata is
+implemented in `platform_objects::quick_actions`, the API's
+`/objects/{object}/quick-actions` routes, PostgreSQL migration 0035 and
+SQLite tenant step 0025; sending actions to device replicas (§5) is a
+follow-up in the roadmap.
 
 ## Context
 

@@ -222,6 +222,34 @@ pub trait ObjectTx: Send {
         rule_id: Uuid,
         expected_version: i64,
     ) -> Result<bool, ObjectError>;
+    /// An object's quick actions, by position then name (ADR 0032).
+    async fn quick_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError>;
+    /// The create actions of any object whose child object is
+    /// `target_object_id`, for cascades.
+    async fn quick_actions_targeting(
+        &mut self,
+        target_object_id: Uuid,
+    ) -> Result<Vec<crate::QuickAction>, ObjectError>;
+    /// Inserts an action; a duplicate name on the object is
+    /// `Conflict("quick_actions.duplicate_name")`.
+    async fn insert_quick_action(&mut self, action: &crate::QuickAction)
+        -> Result<(), ObjectError>;
+    /// Writes an action's label, position, fields and presets if it is
+    /// still at `expected_version`.
+    async fn update_quick_action(
+        &mut self,
+        action: &crate::QuickAction,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError>;
+    /// Removes an action if it is still at `expected_version`.
+    async fn delete_quick_action(
+        &mut self,
+        action_id: Uuid,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError>;
     /// An object's automations, by name (ADR 0022).
     async fn automations(&mut self, object_id: Uuid)
         -> Result<Vec<crate::Automation>, ObjectError>;

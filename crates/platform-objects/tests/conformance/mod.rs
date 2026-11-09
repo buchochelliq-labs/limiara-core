@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod lease;
 pub mod push;
 pub mod query;
+pub mod quick_actions;
 pub mod related;
 pub mod relationships;
 pub mod replica;
