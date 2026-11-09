@@ -1,4 +1,4 @@
-import React, {useId} from 'react';
+import React, {useEffect, useId, useRef} from 'react';
 import {
   CheckCircle,
   Info,
@@ -6,6 +6,7 @@ import {
   Warning,
   WarningCircle,
   UsersThree,
+  X,
 } from '@phosphor-icons/react';
 import './primitives.css';
 
@@ -134,5 +135,68 @@ export function Skeleton({label = 'Loading content', lines = 3}: SkeletonProps) 
     <span className="ui-skeleton__content" aria-hidden="true">
       {Array.from({length: lines}, (_, index) => <span className="ui-skeleton__line" key={index} />)}
     </span>
+  </div>;
+}
+
+export type ModalProps = {
+  title: string;
+  /** Called on Escape, the close button or a click on the backdrop. */
+  onClose: () => void;
+  /** Ignores closing while work is in flight, such as a save. */
+  busy?: boolean;
+  children: React.ReactNode;
+};
+
+const focusable = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * A modal dialog: focus moves to its first control, Tab stays inside it,
+ * Escape closes it, and focus returns to whatever opened it.
+ */
+export function Modal({title, onClose, busy = false, children}: ModalProps) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const closable = useRef(!busy);
+  closable.current = !busy;
+
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const panel = panelRef.current;
+    const first = panel?.querySelector('.ui-modal__body')?.querySelector<HTMLElement>(focusable) ?? panel;
+    first?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (closable.current) close.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !panel) return;
+      const items = Array.from(panel.querySelectorAll<HTMLElement>(focusable));
+      if (!items.length) { event.preventDefault(); return; }
+      const head = items[0];
+      const tail = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === head || document.activeElement === panel)) { event.preventDefault(); tail?.focus(); }
+      else if (!event.shiftKey && document.activeElement === tail) { event.preventDefault(); head?.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
+
+  return <div className="ui-modal" onMouseDown={event => { if (event.target === event.currentTarget && closable.current) close.current(); }}>
+    <div ref={panelRef} className="ui-modal__panel" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <header className="ui-modal__header">
+        <h2 id={titleId}>{title}</h2>
+        <button type="button" className="ui-modal__close" aria-label="Close" title="Close" onClick={() => { if (closable.current) close.current(); }} disabled={busy}><X aria-hidden="true" /></button>
+      </header>
+      <div className="ui-modal__body">{children}</div>
+    </div>
   </div>;
 }

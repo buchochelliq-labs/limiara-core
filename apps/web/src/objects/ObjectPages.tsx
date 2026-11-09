@@ -1,5 +1,5 @@
-import React, {useEffect, useMemo, useState, type RefObject} from 'react';
-import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../components/ui';
+import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
+import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
 import {formatValue, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
@@ -59,6 +59,7 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
   const [page, setPage] = useState<Load<RecordPage>>({status: 'loading'});
   const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState('');
+  const [creating, setCreating] = useState(false);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
 
   useEffect(() => {
@@ -91,8 +92,12 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
 
   return <div className="content-canvas object-page">
     <PageHeader breadcrumb={`Objects / ${object.label}`} title={bin ? `${object.pluralLabel} recycle bin` : object.pluralLabel} headingRef={headingRef}>
-      {object.access.create && !bin && <Button onClick={() => onNavigate(`${objectRoute(object.apiName)}/new`)}>New {object.label.toLowerCase()}</Button>}
+      {object.access.create && !bin && <Button aria-haspopup="dialog" onClick={() => setCreating(true)}>New {object.label.toLowerCase()}</Button>}
     </PageHeader>
+    {creating && <RecordModal client={client} object={object} onNavigate={onNavigate} onClose={() => setCreating(false)} onSaved={(saved, next) => {
+      if (next === 'close') onNavigate(recordRoute(object.apiName, saved.id));
+      else setAttempt(value => value + 1);
+    }} />}
     <div className="sr-only" aria-live="polite">{notice}</div>
     {notice && <Alert variant="info" title={notice} />}
     <form className="object-toolbar" role="search" onSubmit={event => { event.preventDefault(); setCursor(undefined); setSubmitted(search.trim()); }}>
@@ -184,38 +189,40 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
 
   return <div className="content-canvas object-page">
     <PageHeader breadcrumb={`Objects / ${object.label}`} title={record.name} headingRef={headingRef}>
-      {!editing && canEdit && <Button variant="secondary" onClick={() => { setError(''); setEditing(true); }}>Edit</Button>}
-      {!editing && canDelete && <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>}
+      {canEdit && <Button variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setEditing(true); }}>Edit</Button>}
+      {canDelete && <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>}
     </PageHeader>
     {error && <Alert variant="danger" title={error} />}
     {confirmDelete && <div className="object-confirm" role="alertdialog" aria-labelledby="object-confirm-title">
       <p id="object-confirm-title"><strong>Delete {record.name}?</strong> It moves to the recycle bin, where it can be restored.</p>
       <div className="object-page__actions"><Button variant="danger" onClick={() => void remove()} autoFocus>Delete</Button><Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button></div>
     </div>}
-    {editing
-      ? <RecordForm client={client} object={object} record={record} onCancel={() => setEditing(false)} onSaved={saved => { setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}}); setEditing(false); }} />
-      : <>
-        <section aria-label="Details" className="object-section">
-          <h2>Details</h2>
-          <dl className="object-fields">
-            <div><dt>{object.nameLabel}</dt><dd>{record.name}</dd></div>
-            {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} onNavigate={onNavigate} /></dd></div>)}
-          </dl>
-        </section>
-        <RelatedLists client={client} apiName={object.apiName} recordId={record.id} onNavigate={onNavigate} />
-        <section aria-label="System information" className="object-section">
-          <h2>System information</h2>
-          <dl className="object-fields">
-            <div><dt>Owner</dt><dd><UserLink user={record.owner} onNavigate={onNavigate} /></dd></div>
-            <div><dt>Created by</dt><dd><UserLink user={record.createdBy} onNavigate={onNavigate} />, {formatRecordTimestamp(record.createdAt)}</dd></div>
-            <div><dt>Last modified by</dt><dd><UserLink user={record.updatedBy} onNavigate={onNavigate} />, {formatRecordTimestamp(record.updatedAt)}</dd></div>
-            <div><dt>Record ID</dt><dd><code>{record.id}</code></dd></div>
-          </dl>
-        </section>
-        {/* After a transfer the caller may no longer see the record; reload to find out. */}
-        <SharingPanel client={client} object={object} record={record} onTransferred={() => setAttempt(value => value + 1)} />
-        <HistoryPanel client={client} object={object} record={record} onNavigate={onNavigate} />
-      </>}
+    {editing && <RecordModal client={client} object={object} record={record} onNavigate={onNavigate} onClose={() => setEditing(false)} onSaved={(saved, next) => {
+      // The first save is this record's edit; after Save & New, saves create others.
+      if (saved.id === record.id) setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      else if (next === 'close') onNavigate(recordRoute(object.apiName, saved.id));
+      if (next === 'close') setEditing(false);
+    }} />}
+    <section aria-label="Details" className="object-section">
+      <h2>Details</h2>
+      <dl className="object-fields">
+        <div><dt>{object.nameLabel}</dt><dd>{record.name}</dd></div>
+        {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} onNavigate={onNavigate} /></dd></div>)}
+      </dl>
+    </section>
+    <RelatedLists client={client} apiName={object.apiName} recordId={record.id} onNavigate={onNavigate} />
+    <section aria-label="System information" className="object-section">
+      <h2>System information</h2>
+      <dl className="object-fields">
+        <div><dt>Owner</dt><dd><UserLink user={record.owner} onNavigate={onNavigate} /></dd></div>
+        <div><dt>Created by</dt><dd><UserLink user={record.createdBy} onNavigate={onNavigate} />, {formatRecordTimestamp(record.createdAt)}</dd></div>
+        <div><dt>Last modified by</dt><dd><UserLink user={record.updatedBy} onNavigate={onNavigate} />, {formatRecordTimestamp(record.updatedAt)}</dd></div>
+        <div><dt>Record ID</dt><dd><code>{record.id}</code></dd></div>
+      </dl>
+    </section>
+    {/* After a transfer the caller may no longer see the record; reload to find out. */}
+    <SharingPanel client={client} object={object} record={record} onTransferred={() => setAttempt(value => value + 1)} />
+    <HistoryPanel client={client} object={object} record={record} onNavigate={onNavigate} />
   </div>;
 }
 
@@ -264,16 +271,50 @@ export function RelatedLists({client, apiName, recordId, onNavigate}: {client: O
   </section>;
 }
 
-/** Create page for an engine object. */
+/** Tracks Save & New: each new record gets a fresh form, and the last one saved is announced. */
+function useSaveAndNew() {
+  const [form, setForm] = useState(0);
+  const [created, setCreated] = useState<ObjectRecord | null>(null);
+  return {form, created, next: (saved: ObjectRecord) => { setCreated(saved); setForm(value => value + 1); }, reset: () => setCreated(null)};
+}
+
+function Created({object, record, onNavigate}: {object: ObjectDescription; record: ObjectRecord; onNavigate: Navigate}) {
+  return <Alert variant="success" title={`${record.name} was saved.`}>
+    Enter the next {object.label.toLowerCase()}, or <a href={recordRoute(object.apiName, record.id)} onClick={event => { event.preventDefault(); onNavigate(recordRoute(object.apiName, record.id)); }}>open {record.name}</a>.
+  </Alert>;
+}
+
+/**
+ * Create or edit in a modal over the current page. Save opens the record
+ * (or, when editing, shows it updated); Save & New keeps the modal open on
+ * a blank form for the next record.
+ */
+export function RecordModal({client, object, record, onClose, onSaved, onNavigate}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate}) {
+  const sequence = useSaveAndNew();
+  // After Save & New on an edit, the modal goes on to create a record.
+  const [editing, setEditing] = useState(record);
+  const noun = object.label.toLowerCase();
+  return <Modal title={editing ? `Edit ${editing.name}` : `New ${noun}`} onClose={onClose}>
+    {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
+    <RecordForm key={sequence.form} client={client} object={object} record={editing} onCancel={onClose} onSaved={(saved, next) => {
+      onSaved(saved, next);
+      if (next === 'new') { setEditing(undefined); sequence.next(saved); }
+    }} />
+  </Modal>;
+}
+
+/** Create page for an engine object, for links straight to a new record. */
 export function NewRecordPage({client, apiName, onNavigate, headingRef}: {client: ObjectsClient; apiName: string; onNavigate: Navigate; headingRef?: RefObject<HTMLHeadingElement | null>}) {
   const [objectLoad, retryObject] = useObject(client, apiName);
+  const sequence = useSaveAndNew();
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
   useEffect(() => { if (object) document.title = `New ${object.label.toLowerCase()} - Limiara`; }, [object]);
   if (!object) return <div className="content-canvas object-page"><PageHeader breadcrumb="Objects" title="New record" headingRef={headingRef} /><LoadState load={objectLoad} noun="object" onRetry={retryObject} /></div>;
   return <div className="content-canvas object-page">
     <PageHeader breadcrumb={`Objects / ${object.label}`} title={`New ${object.label.toLowerCase()}`} headingRef={headingRef} />
+    {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {object.access.create
-      ? <RecordForm client={client} object={object} onCancel={() => onNavigate(objectRoute(object.apiName))} onSaved={saved => onNavigate(recordRoute(object.apiName, saved.id))} />
+      ? <RecordForm key={sequence.form} client={client} object={object} onCancel={() => onNavigate(objectRoute(object.apiName))} onSaved={(saved, next) => next === 'new' ? sequence.next(saved) : onNavigate(recordRoute(object.apiName, saved.id))} />
       : <Alert variant="warning" title="Permission needed">You do not have permission to create {object.pluralLabel.toLowerCase()}.</Alert>}
   </div>;
 }
@@ -353,12 +394,17 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
   </div>;
 }
 
-/** The create and edit form, built from field metadata. */
-export function RecordForm({client, object, record, onCancel, onSaved}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onCancel: () => void; onSaved: (record: ObjectRecord) => void}) {
+/** What to do once a record is saved: close the form, or start a new record. */
+export type AfterSave = 'close' | 'new';
+
+/** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
+export function RecordForm({client, object, record, onCancel, onSaved}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void}) {
   const [draft, setDraft] = useState<Draft>(() => initialDraft(object, record));
   const [saving, setSaving] = useState(false);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [error, setError] = useState('');
+  // Both buttons submit the form; the one pressed says what comes next.
+  const next = useRef<AfterSave>('close');
   const initial = useMemo(() => initialDraft(object, record), [object, record]);
   const issueFor = (field: string) => issues.find(issue => issue.field === field)?.detail;
   const set = (key: string, value: Draft[string]) => setDraft(current => ({...current, [key]: value}));
@@ -380,7 +426,7 @@ export function RecordForm({client, object, record, onCancel, onSaved}: {client:
     }
     try {
       const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, values) : await client.createRecord(object.apiName, values);
-      onSaved(saved);
+      onSaved(saved, next.current);
     } catch (reason) {
       if (reason instanceof ObjectsApiError && reason.reason === 'invalid' && reason.issues.length) {
         setIssues(reason.issues);
@@ -422,8 +468,9 @@ export function RecordForm({client, object, record, onCancel, onSaved}: {client:
       return <TextField key={field.apiName} label={field.label} type={inputTypes[field.type] ?? 'text'} step={field.type === 'currency' ? '0.01' : field.type === 'number' || field.type === 'percent' ? 'any' : undefined} required={field.required} value={String(value ?? '')} error={fieldError} description={field.unique ? 'Must be unique' : undefined} onChange={event => set(field.apiName, event.target.value)} />;
     })}
     <div className="object-page__actions">
-      <Button type="submit" loading={saving}>Save</Button>
-      <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Button>
+      <Button type="submit" loading={saving} onClick={() => { next.current = 'close'; }}>Save</Button>
+      {object.access.create && <Button type="submit" variant="secondary" disabled={saving} onClick={() => { next.current = 'new'; }}>Save &amp; New</Button>}
+      <Button type="button" variant="quiet" onClick={onCancel} disabled={saving}>Cancel</Button>
     </div>
     {record && <p className="object-form__meta"><Badge variant="neutral">Version {record.version}</Badge></p>}
   </form>;

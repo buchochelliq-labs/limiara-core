@@ -91,6 +91,17 @@
 @keyframes ui-spin { to { transform: rotate(360deg); } }
 @keyframes ui-pulse { 50% { opacity: .45; } }
 
+.ui-modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: start center; padding: var(--space-10) var(--space-4); overflow-y: auto; background: rgb(20 28 24 / .45); }
+.ui-modal__panel { width: min(100%, 44rem); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.ui-modal__panel:focus { outline: none; }
+.ui-modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border-subtle); }
+.ui-modal__header h2 { margin: 0; font-size: var(--text-lg); }
+.ui-modal__close { display: inline-grid; place-items: center; width: var(--control-height-sm); height: var(--control-height-sm); border: 0; border-radius: var(--radius-md); color: var(--text-secondary); background: transparent; cursor: pointer; }
+.ui-modal__close:hover { background: var(--surface-subtle); }
+.ui-modal__close:focus-visible { outline: 2px solid var(--border-selected); outline-offset: 2px; }
+.ui-modal__body { padding: var(--space-5); }
+@media (max-width: 40rem) { .ui-modal { padding: 0; } .ui-modal__panel { min-height: 100%; border-radius: 0; } }
+
 @media (prefers-reduced-motion: reduce) {
   .ui-skeleton__avatar, .ui-skeleton__line, .ui-spin { animation: none; }
 }

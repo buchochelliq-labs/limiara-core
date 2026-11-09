@@ -4,7 +4,7 @@ import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, recordFromApi, type ObjectDescription} from './api';
 import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
-import {RecordForm, RelatedLists} from './ObjectPages';
+import {RecordForm, RecordModal, RelatedLists} from './ObjectPages';
 import {SharingPanel} from './SharingPanel';
 import {MembersPage} from './MembersPage';
 import {HistoryPanel} from './HistoryPanel';
@@ -198,6 +198,28 @@ describe('workspace object pages', () => {
     expect(markup).toContain('Must be unique');
     expect(markup).toContain('Notes &lt;i&gt;');
     expect(markup).toContain('<textarea');
+  });
+
+  it('offers Save, Save & New and Cancel, with Save & New only for those who may create', () => {
+    const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={project} onCancel={noop} onSaved={noop} />);
+    expect(markup.match(/type="submit"/g)).toHaveLength(2);
+    expect(markup).toContain('<span>Save</span>');
+    expect(markup).toContain('<span>Save &amp; New</span>');
+    expect(markup).toContain('<span>Cancel</span>');
+    const readOnly = {...project, access: {...project.access, create: false}};
+    expect(renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={readOnly} onCancel={noop} onSaved={noop} />)).not.toContain('Save &amp; New');
+  });
+
+  it('creates and edits in a labelled modal dialog', () => {
+    const create = renderToStaticMarkup(<RecordModal client={createFixtureObjectsClient()} object={project} onClose={noop} onSaved={noop} onNavigate={noop} />);
+    expect(create).toMatch(/role="dialog" aria-modal="true" aria-labelledby="([^"]+)"/);
+    const titleId = /aria-labelledby="([^"]+)"/.exec(create)?.[1];
+    expect(create).toContain(`<h2 id="${titleId}">New project</h2>`);
+    expect(create).toContain('aria-label="Close"');
+    const record = recordFromApi({id: '000abc', name: 'Apollo <b>', owner: null, created_at: '', created_by: null, updated_at: '', updated_by: null, version: 2, is_deleted: false});
+    const edit = renderToStaticMarkup(<RecordModal client={createFixtureObjectsClient()} object={project} record={record} onClose={noop} onSaved={noop} onNavigate={noop} />);
+    expect(edit).toContain('Edit Apollo &lt;b&gt;');
+    expect(edit).toContain('value="Apollo &lt;b&gt;"');
   });
 });
 

@@ -81,16 +81,39 @@ try {
   if (await page.getByRole('link', {name: 'Clients'}).count()) throw new Error('objects outside navigation must not appear in the rail');
   await shot(page, '01-object-home');
 
+  step('the new-record modal opens on its first field and Escape returns to the list');
+  const newProject = page.getByRole('button', {name: 'New project'});
+  await newProject.click();
+  let dialog = page.getByRole('dialog', {name: 'New project'});
+  await dialog.waitFor();
+  if (!(await dialog.getByLabel('Project name').evaluate(element => element === document.activeElement))) throw new Error('the modal must focus its first field');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({state: 'detached'});
+  if (!(await newProject.evaluate(element => element === document.activeElement))) throw new Error('closing the modal must return focus to New project');
+
+  step('Save & New keeps the modal open on a blank form for the next record');
+  await newProject.click();
+  await dialog.getByLabel('Project name').fill('Batch one');
+  await dialog.getByRole('button', {name: 'Save & New'}).click();
+  await dialog.getByText('Batch one was saved.').waitFor();
+  if (await dialog.getByLabel('Project name').inputValue() !== '') throw new Error('Save & New must start a blank form');
+  await dialog.getByLabel('Project name').fill('Batch two');
+  await shot(page, '02-save-and-new');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await page.getByRole('heading', {level: 1, name: 'Batch two'}).waitFor();
+  await page.goto(`${origin}/o/custom:project`);
+  await page.getByRole('link', {name: 'Batch one'}).waitFor();
+
   step('create a record from field metadata');
   await page.getByRole('button', {name: 'New project'}).click();
-  await page.getByRole('heading', {level: 1, name: 'New project'}).waitFor();
-  await page.getByLabel('Project name').fill('Browser project');
-  await page.getByLabel('Code').fill('BR-1');
-  await page.getByLabel('Status').selectOption('won');
-  await page.getByLabel('Starts on').fill('2026-12-01');
-  await page.getByLabel('Client', {exact: true}).selectOption({label: 'Analytical Engines'});
+  dialog = page.getByRole('dialog', {name: 'New project'});
+  await dialog.getByLabel('Project name').fill('Browser project');
+  await dialog.getByLabel('Code').fill('BR-1');
+  await dialog.getByLabel('Status').selectOption('won');
+  await dialog.getByLabel('Starts on').fill('2026-12-01');
+  await dialog.getByLabel('Client', {exact: true}).selectOption({label: 'Analytical Engines'});
   await shot(page, '02-new-record');
-  await page.getByRole('button', {name: 'Save'}).click();
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
   await page.getByRole('heading', {level: 1, name: 'Browser project'}).waitFor();
   await page.getByText('Won', {exact: true}).waitFor();
   await page.getByRole('link', {name: 'Analytical Engines'}).waitFor();
@@ -100,15 +123,17 @@ try {
   await page.goto(`${origin}/o/custom:project/new`);
   await page.getByLabel('Project name').fill('Copy');
   await page.getByLabel('Code').fill('br-1');
-  await page.getByRole('button', {name: 'Save'}).click();
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
   await page.getByText('Another record already uses one of these unique values.').waitFor();
   await page.getByRole('button', {name: 'Cancel'}).click();
 
   step('edit sends only the changed values');
   await page.getByRole('link', {name: 'Browser project'}).click();
   await page.getByRole('button', {name: 'Edit'}).click();
-  await page.getByLabel('Code').fill('BR-2');
-  await page.getByRole('button', {name: 'Save'}).click();
+  dialog = page.getByRole('dialog', {name: 'Edit Browser project'});
+  await dialog.getByLabel('Code').fill('BR-2');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
   await page.getByText('BR-2', {exact: true}).waitFor();
 
   step('delete moves the record to the recycle bin; restore brings it back');
@@ -226,7 +251,7 @@ try {
   await page.goto(`${origin}/o/custom:project/new`);
   await page.getByLabel('Project name').fill('Rule check');
   await page.getByLabel('Code').fill('x-7');
-  await page.getByRole('button', {name: 'Save'}).click();
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
   await page.getByText('Codes cannot start with X-').first().waitFor();
   await shot(page, '12-rule-blocks-save');
   await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:project')}`);
@@ -265,7 +290,7 @@ try {
   await shot(page, '14-automations');
   await page.goto(`${origin}/o/custom:project/new`);
   await page.getByLabel('Project name').fill('Automated in the browser');
-  await page.getByRole('button', {name: 'Save'}).click();
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
   await page.getByRole('heading', {level: 1, name: 'Automated in the browser'}).waitFor();
   await page.getByText(/^AUTO-/).first().waitFor();
   await shot(page, '15-automation-ran');
