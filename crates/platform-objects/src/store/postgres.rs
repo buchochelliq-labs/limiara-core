@@ -649,6 +649,24 @@ impl ObjectTx for PostgresObjectTx {
         rows.iter().map(field_from_row).collect()
     }
 
+    async fn related_to_fields_holding(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<FieldDefinition>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
+             WHERE f.tenant_id = $1 AND f.status = 'active' AND f.field_type = 'related_to' \
+               AND EXISTS (SELECT 1 FROM record_references rr JOIN records t \
+                 ON t.tenant_id = rr.tenant_id AND t.id = rr.target_id \
+                 WHERE rr.tenant_id = f.tenant_id AND rr.field_id = f.id AND t.object_id = $2)"
+        ))
+        .bind(self.tenant_id)
+        .bind(object_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(field_from_row).collect()
+    }
+
     async fn insert_object(&mut self, object: &ObjectDefinition) -> Result<(), ObjectError> {
         sqlx::query(
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
