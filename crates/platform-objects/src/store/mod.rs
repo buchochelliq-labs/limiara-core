@@ -83,6 +83,13 @@ pub trait ObjectTx: Send {
         &mut self,
         object_id: Uuid,
     ) -> Result<Vec<FieldDefinition>, ObjectError>;
+    /// Active related-to fields holding a value that points to a record of
+    /// `object_id`, whether or not their allowlist still names it: values
+    /// outlive their object's removal from the allowlist (ADR 0033 §1).
+    async fn related_to_fields_holding(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<FieldDefinition>, ObjectError>;
     /// Inserts a definition; a duplicate API name is
     /// `Conflict("objects.duplicate_api_name")`.
     async fn insert_object(&mut self, object: &ObjectDefinition) -> Result<(), ObjectError>;

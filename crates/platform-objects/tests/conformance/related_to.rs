@@ -664,6 +664,37 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .delete_object("custom:other", other.version, context())
         .await
         .expect("unrelated object");
+    // Deleting an object taken out of the allowlist earlier still clears
+    // the values kept from before.
+    let (deal_object, _) = admin.describe("custom:deal").await.expect("deal");
+    admin
+        .delete_object("custom:deal", deal_object.version, context())
+        .await
+        .expect("delete a formerly allowed object");
+    let cleared = member
+        .get_record("custom:task", &on_deal.public_id, false)
+        .await
+        .expect("deal task");
+    assert!(!cleared.values.contains_key("custom:regarding"));
+    let (task_after, _) = admin.describe("custom:task").await.expect("task");
+    assert_eq!(
+        task_after
+            .field("custom:regarding")
+            .expect("field")
+            .reference_objects,
+        ["custom:account"],
+        "an allowlist without the object is left as it is"
+    );
+    let unindexed = query(
+        &admin,
+        &format!(
+            "SELECT id FROM custom:task WHERE custom:regarding = '{}'",
+            own_deal.public_id
+        ),
+    )
+    .await
+    .expect("deal value cleared from the index");
+    assert!(unindexed.rows.is_empty());
 
     Report {
         target_ids: vec![
@@ -848,4 +879,36 @@ pub async fn replica(store: Arc<dyn ObjectStore>) {
         .expect("query")
         .rows
         .is_empty());
+
+    // When the allowlist comes to hold nothing the device has, the field
+    // the device already kept retires.
+    let (task, _) = server.describe("custom:task").await.expect("task");
+    let regarding_version = task.field("custom:regarding").expect("field").version;
+    server
+        .update_field(
+            "custom:task",
+            "custom:regarding",
+            serde_json::from_value(json!({
+                "expected_version": regarding_version,
+                "reference_objects": ["custom:case"],
+            }))
+            .expect("update"),
+            context(),
+        )
+        .await
+        .expect("cases only");
+    let mut described = Vec::new();
+    for api in ["custom:account", "custom:task"] {
+        let (definition, _) = server.describe(api).await.expect("describe");
+        described.push(RemoteObject::from_definition(&definition, access, None));
+    }
+    device
+        .apply_remote_definitions(&described)
+        .await
+        .expect("narrowed definitions");
+    let (task, _) = device.describe("custom:task").await.expect("device task");
+    assert!(
+        task.field("custom:regarding").is_none(),
+        "a field now allowing nothing the device holds retires"
+    );
 }

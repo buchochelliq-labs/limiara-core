@@ -266,8 +266,19 @@ impl ObjectService {
                 .object_by_id(object_id)
                 .await?
                 .ok_or(ObjectError::Invariant)?;
-            let described: BTreeSet<&str> =
-                remote.fields.iter().map(|f| f.api_name.as_str()).collect();
+            // A related-to field that now allows none of the objects the
+            // replica holds is left out, so a copy already here retires.
+            let described: BTreeSet<&str> = remote
+                .fields
+                .iter()
+                .filter(|f| {
+                    f.field_type != FieldType::RelatedTo
+                        || f.reference_objects
+                            .iter()
+                            .any(|name| ids.contains_key(name))
+                })
+                .map(|f| f.api_name.as_str())
+                .collect();
             for field in &local.fields {
                 if described.contains(field.api_name.as_str()) {
                     continue;
