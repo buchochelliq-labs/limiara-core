@@ -61,8 +61,33 @@ class PushPlugin: Plugin {
             PushPlugin.install(on: type(of: delegate))
             say("listening for pushes")
             UIApplication.shared.registerForRemoteNotifications()
+            #if DEBUG && targetEnvironment(simulator)
+                PushPlugin.watchForSimulatedPushes(delegate)
+            #endif
         }
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+        /// The simulator hands pushes to an app only once APNs has given it
+        /// a token, which a CI runner never gets. In debug simulator builds
+        /// the CI check asks for a push by creating `simulate-push` in the
+        /// app's temporary directory, and the plugin delivers it through
+        /// the delegate's callback, as iOS would.
+        private static func watchForSimulatedPushes(_ delegate: UIApplicationDelegate) {
+            let request = FileManager.default.temporaryDirectory
+                .appendingPathComponent("simulate-push")
+            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                guard (try? FileManager.default.removeItem(at: request)) != nil else { return }
+                say("delivering a simulated push")
+                delegate.application?(
+                    UIApplication.shared,
+                    didReceiveRemoteNotification: ["aps": ["content-available": 1]],
+                    fetchCompletionHandler: { result in
+                        say("iOS told: \(result.rawValue)")
+                    })
+            }
+        }
+    #endif
 
     /// Answers with the next event, now or when one arrives.
     @objc public func next(_ invoke: Invoke) {

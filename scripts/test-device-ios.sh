@@ -109,38 +109,29 @@ log "delivering a simulated push"
 # the simulator's containers sit on the Mac's own file system.
 container=$(xcrun simctl get_app_container "$simulator" "$bundle_id" data)
 trail="$container/tmp/device-push.log"
-# iOS delivers pushes once registration settles, with a token or a refusal.
+# The simulator hands a push to an app only once APNs has given it a
+# token, which a CI runner never gets, so `simctl push` cannot reach it.
+# A debug simulator build delivers a push through the delegate's callback
+# when this file appears (the plugin's `watchForSimulatedPushes`).
+touch "$container/tmp/simulate-push"
 push_log=""
-for _ in $(seq 1 60); do
-  push_log=$(cat "$trail" 2>/dev/null || true)
-  grep -Eq "registered for remote notifications|remote notifications unavailable" <<<"$push_log" && break
-  sleep 1
-done
-echo "--- registration"
-printf '%s\n' "${push_log:-(none: the plugin never started)}"
-pushed_at=$(date '+%Y-%m-%d %H:%M:%S')
-payload="$work_root/push.json"
-echo '{"aps": {"content-available": 1}}' >"$payload"
-xcrun simctl push "$simulator" "$bundle_id" "$payload"
+# The plugin records the result it handed iOS: 1 is `.noData`.
+done_line="iOS told: 1"
 for _ in $(seq 1 30); do
   sleep 1
   push_log=$(cat "$trail" 2>/dev/null || true)
-  grep -q "wake finished: no_data" <<<"$push_log" && break
+  grep -q "$done_line" <<<"$push_log" && break
 done
 echo "--- the push plugin's trail"
 printf '%s\n' "${push_log:-(none: the plugin never started)}"
-if ! grep -q "wake finished: no_data" <<<"$push_log"; then
+if ! grep -q "$done_line" <<<"$push_log"; then
   executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
   echo "--- the app's own log"
   xcrun simctl spawn "$simulator" log show --last 10m --style compact \
     --predicate "process == \"$executable\"" 2>/dev/null | tail -n 60 || true
-  echo "--- the app's entitlements"
-  codesign -d --entitlements - "$app" 2>&1 || true
-  echo "--- the system on this app since the push"
-  xcrun simctl spawn "$simulator" log show --start "$pushed_at" --style compact \
-    --predicate "eventMessage CONTAINS \"$bundle_id\" OR process == \"apsd\"" 2>/dev/null |
-    tail -n 60 || true
-  grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the app" >&2; exit 1; }
+  grep -q "delivering a simulated push" <<<"$push_log" ||
+    { echo "the debug build did not pick up the simulated push" >&2; exit 1; }
+  grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the plugin" >&2; exit 1; }
   echo "the push did not complete through the controller's wake" >&2
   exit 1
 fi

@@ -116,5 +116,7 @@ background mode, and `Entitlements.ios.plist` the `aps-environment`
 entitlement, which Tauri's configuration cannot express: copy it over the
 `.entitlements` file in `gen/apple` after `cargo tauri ios init`, as
 `scripts/test-device-ios.sh` does. A real device token also needs a build
-signed with the Apple team; the `ios` workflow delivers a simulated push
-with `xcrun simctl push` instead. Android's FCM half is still to come.
+signed with the Apple team. The simulator delivers pushes only to an app
+APNs has given a token, so the `ios` workflow has a debug simulator build
+deliver a simulated push through the delegate's callback instead
+(ADR 0030 §5). Android's FCM half is still to come.
