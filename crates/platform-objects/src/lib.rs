@@ -15,6 +15,8 @@
 //! - [`quick_actions`] holds administrator-defined record shortcuts
 //!   (ADR 0032).
 //! - [`service`] authorises, validates and records evidence for every change.
+//! - [`plugin_objects`] installs, upgrades, suspends and resumes the objects
+//!   a plugin declares (ADR 0033 §2).
 
 pub mod access;
 pub mod automation;
@@ -25,6 +27,7 @@ pub mod formula;
 pub mod formula_fields;
 pub mod model;
 pub mod naming;
+pub mod plugin_objects;
 pub mod push;
 pub mod query;
 pub mod quick_actions;
@@ -42,6 +45,7 @@ pub mod values;
 
 pub use access::{ObjectAccess, ObjectCaller};
 pub use model::*;
+pub use plugin_objects::PluginObjectsInstalled;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};
 pub use query::{QueryColumn, QueryRequest, QueryResult};
 pub use related::{RelatedList, RelatedTarget, Relationship};

@@ -18,7 +18,7 @@ const largest = sizes.slice().sort((a, b) => b.bytes - a.bytes)[0];
 // reader opens search, so it has its own budget. Every other asset keeps the
 // stricter per-asset budget that protects first-page load.
 const ASSET_BUDGET = 300_000;
-const SEARCH_INDEX_BUDGET = 600_000;
+const SEARCH_INDEX_BUDGET = 640_000;
 const isSearchIndex = (file) => /(^|[\\/])@localSearchIndex[^\\/]*\.js$/.test(file);
 // The whole site grows with every page (about 30-60 KB per ADR including its
 // search entries); the per-asset budgets below keep first-page load in check,

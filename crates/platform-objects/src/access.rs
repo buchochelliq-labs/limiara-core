@@ -21,6 +21,8 @@ pub struct ObjectCaller {
     role_ids: Vec<Uuid>,
     /// Members below the caller in the reporting line (ADR 0016).
     reports: Vec<Uuid>,
+    /// The plugin whose installation this caller performs (ADR 0033 §2).
+    installer: Option<String>,
 }
 
 impl ObjectCaller {
@@ -36,7 +38,31 @@ impl ObjectCaller {
             system_permissions,
             role_ids,
             reports: Vec::new(),
+            installer: None,
         }
+    }
+
+    /// The kernel installing, upgrading, suspending or resuming a plugin's
+    /// declared objects in one workspace (ADR 0033 §2). It holds no member
+    /// permissions: it may change only the definitions `plugin_id` owns,
+    /// through the plugin installation entry points of the engine. `actor_id`
+    /// is the member who changed the plugin's state, so evidence names who
+    /// asked as well as which plugin acted. Built by the kernel after it has
+    /// authorised that member's plugin transition; never from request input.
+    pub fn plugin_installer(tenant_id: Uuid, actor_id: Uuid, plugin_id: impl Into<String>) -> Self {
+        Self {
+            tenant_id,
+            user_id: actor_id,
+            system_permissions: BTreeSet::new(),
+            role_ids: Vec::new(),
+            reports: Vec::new(),
+            installer: Some(plugin_id.into()),
+        }
+    }
+
+    /// The plugin this caller installs, if it is a plugin installer.
+    pub fn installer(&self) -> Option<&str> {
+        self.installer.as_deref()
     }
 
     /// The members below the caller in the reporting line, resolved by the

@@ -6,11 +6,15 @@ use axum::{
     Extension, Json,
 };
 use platform_db::{PluginCandidateRecord, PluginDesiredState, PluginLifecycleError};
+use platform_objects::service::MutationContext;
+use platform_objects::store::PostgresObjectStore;
+use platform_objects::{ObjectCaller, ObjectError, ObjectService};
 use plugin_registry::{activation::ActivationInputs, DiscoveryFailure, RegistryPolicy};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tower_http::request_id::RequestId;
 use uuid::Uuid;
@@ -373,10 +377,22 @@ async fn transition(
     let Some(pool) = state.pool.as_ref() else {
         return unavailable();
     };
+    let actor_id = principal.session.user.id;
+    // Engine objects the plugin declares (ADR 0033 §2) are installed before
+    // the plugin is enabled, so a refused installation leaves it as it was.
+    let installed_version = if desired == PluginDesiredState::Enabled {
+        match install_plugin_objects(pool, workspace_id, actor_id, plugin_id, correlation_id).await
+        {
+            Ok(version) => version,
+            Err(response) => return response,
+        }
+    } else {
+        None
+    };
     match platform_db::transition_tenant_plugin(
         pool,
         workspace_id,
-        principal.session.user.id,
+        actor_id,
         plugin_id,
         desired,
         Some(correlation_id),
@@ -384,6 +400,32 @@ async fn transition(
     .await
     {
         Ok(plugin) => {
+            // A newer candidate may have been activated meanwhile; its
+            // objects are installed before they come into service.
+            if desired == PluginDesiredState::Enabled
+                && installed_version
+                    .as_deref()
+                    .is_some_and(|version| version != plugin.version)
+            {
+                if let Err(response) =
+                    install_plugin_objects(pool, workspace_id, actor_id, plugin_id, correlation_id)
+                        .await
+                {
+                    return response;
+                }
+            }
+            if let Err(response) = settle_plugin_objects(
+                pool,
+                workspace_id,
+                actor_id,
+                plugin_id,
+                desired,
+                correlation_id,
+            )
+            .await
+            {
+                return response;
+            }
             state
                 .ui_delivery
                 .invalidate_workspace(&workspace_id.to_string());
@@ -439,6 +481,152 @@ async fn transition(
         Err(PluginLifecycleError::InvalidRecoveryCount) => {
             tracing::error!("plugin transition returned an invalid recovery result");
             unavailable()
+        }
+    }
+}
+
+/// The object engine acting as `plugin_id`'s installer in one workspace,
+/// on behalf of the member who changed the plugin's state (ADR 0033 §2).
+fn plugin_installer(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    plugin_id: &str,
+) -> ObjectService {
+    ObjectService::new(
+        Arc::new(PostgresObjectStore::new(pool.clone())),
+        ObjectCaller::plugin_installer(workspace_id, actor_id, plugin_id),
+    )
+}
+
+/// Creates or migrates the engine objects the plugin's usable candidate
+/// declares, and returns that candidate's version. A refused installation
+/// is audited and answered with its stable code; the plugin is not enabled.
+///
+/// Transaction boundary: the installation is one object-engine
+/// transaction, separate from the plugin registry's transition. The engine
+/// opens its own transactions through its storage port, which keeps it
+/// independent of the registry's tables. The steps are ordered so every
+/// state in between is safe and every step is idempotent: new objects are
+/// created suspended, the transition enables the plugin, and only then are
+/// they resumed (`settle_plugin_objects`). A failure at any point leaves the
+/// plugin not enabled or its objects hidden, and repeating the request
+/// finishes the work.
+async fn install_plugin_objects(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    plugin_id: &str,
+    correlation_id: Uuid,
+) -> Result<Option<String>, axum::response::Response> {
+    let candidate = match platform_db::usable_plugin_candidate(pool, workspace_id, plugin_id).await
+    {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            tracing::error!(error_type = %std::any::type_name_of_val(&error), "plugin candidate query failed");
+            return Err(unavailable());
+        }
+    };
+    // Without a usable candidate the transition reports why.
+    let Some((version, manifest)) = candidate else {
+        return Ok(None);
+    };
+    let manifest: plugin_contract::Manifest = match serde_json::from_value(manifest) {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            tracing::error!(plugin_id, "stored plugin manifest could not be read");
+            return Err(unavailable());
+        }
+    };
+    if manifest.objects.is_empty() {
+        return Ok(Some(version));
+    }
+    let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
+    match engine
+        .install_plugin_objects(&manifest, MutationContext::new(correlation_id))
+        .await
+    {
+        Ok(installed) => {
+            if !installed.is_empty() {
+                tracing::info!(
+                    plugin_id,
+                    created_objects = installed.created_objects.len(),
+                    updated_objects = installed.updated_objects.len(),
+                    created_fields = installed.created_fields.len(),
+                    updated_fields = installed.updated_fields.len(),
+                    "plugin objects installed"
+                );
+            }
+            Ok(Some(version))
+        }
+        Err(error) => {
+            let (code, detail) = match &error {
+                ObjectError::Conflict(code) => (
+                    *code,
+                    "the plugin's objects cannot be installed in this workspace",
+                ),
+                ObjectError::Validation(issues) => {
+                    for issue in issues {
+                        tracing::warn!(plugin_id, field = %issue.field, code = issue.code, "plugin object refused");
+                    }
+                    (
+                        platform_objects::plugin_objects::PLUGIN_OBJECTS_INVALID,
+                        "the plugin declares objects the object engine refuses",
+                    )
+                }
+                other => {
+                    tracing::error!(error_type = %std::any::type_name_of_val(other), "plugin object installation failed");
+                    return Err(unavailable());
+                }
+            };
+            if let Err(error) = platform_db::record_plugin_transition_rejected(
+                pool,
+                workspace_id,
+                actor_id,
+                plugin_id,
+                PluginDesiredState::Enabled,
+                code,
+                Some(correlation_id),
+            )
+            .await
+            {
+                tracing::error!(error_type = %std::any::type_name_of_val(&error), "plugin installation refusal could not be audited");
+            }
+            Err(problem(StatusCode::CONFLICT, code, detail).into_response())
+        }
+    }
+}
+
+/// Brings the plugin's objects in line with its new state: in service when
+/// it is enabled, suspended otherwise. Both directions are idempotent, so a
+/// failure here is answered with a retryable error and the same request
+/// settles it.
+async fn settle_plugin_objects(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    plugin_id: &str,
+    desired: PluginDesiredState,
+    correlation_id: Uuid,
+) -> Result<(), axum::response::Response> {
+    let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
+    let context = MutationContext::new(correlation_id);
+    let settled = match desired {
+        PluginDesiredState::Enabled => engine.resume_plugin_objects(plugin_id, context).await,
+        PluginDesiredState::Disabled | PluginDesiredState::Removed => {
+            engine.suspend_plugin_objects(plugin_id, context).await
+        }
+    };
+    match settled {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::error!(error_type = %std::any::type_name_of_val(&error), "plugin objects could not follow the plugin's state");
+            Err(problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "plugin.objects_unavailable",
+                "the plugin's state changed but its objects did not follow; repeat the request",
+            )
+            .into_response())
         }
     }
 }

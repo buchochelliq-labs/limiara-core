@@ -688,6 +688,18 @@ CREATE INDEX field_reference_objects_object_idx
   ON field_reference_objects (tenant_id, object_id, field_id);
 "#,
     },
+    // Plugin-declared objects (ADR 0033 §2): suspended while their plugin
+    // is not enabled, and found by their owner when it is enabled again.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0027_plugin_objects",
+        sql: r#"
+ALTER TABLE object_definitions ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0
+  CHECK (suspended IN (0, 1));
+CREATE INDEX object_definitions_owner_plugin_idx
+  ON object_definitions (tenant_id, owner_plugin) WHERE owner_plugin IS NOT NULL;
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -780,7 +792,7 @@ impl SqliteObjectTx {
 const OBJECT_COLUMNS: &str =
     "id, api_name, label, plural_label, description, origin, owner_plugin, \
      key_prefix, name_label, sharing_model, searchable, in_navigation, status, version, \
-     created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history";
+     created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended";
 const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.description, f.field_type, \
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
@@ -868,6 +880,7 @@ fn object_from_row(row: &SqliteRow) -> Result<ObjectDefinition, ObjectError> {
         status: parse(DefinitionStatus::parse(
             &row.try_get::<String, _>("status")?,
         ))?,
+        suspended: flag(row, "suspended")?,
         version: row.try_get("version")?,
         created_at: time(row, "created_at")?,
         created_by: optional_uuid(row, "created_by")?,
@@ -1331,7 +1344,7 @@ impl ObjectTx for SqliteObjectTx {
     async fn list_objects(&mut self) -> Result<Vec<ObjectDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {OBJECT_COLUMNS} FROM object_definitions \
-             WHERE tenant_id = ?1 AND status = 'active' ORDER BY label, api_name"
+             WHERE tenant_id = ?1 AND status = 'active' AND suspended = 0 ORDER BY label, api_name"
         ))
         .bind(&self.tenant)
         .fetch_all(&mut *self.tx)
@@ -1357,6 +1370,21 @@ impl ObjectTx for SqliteObjectTx {
                 .fetch_all(&mut *self.tx)
                 .await?,
         )
+    }
+
+    async fn objects_owned_by(
+        &mut self,
+        plugin_id: &str,
+    ) -> Result<Vec<ObjectDefinition>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {OBJECT_COLUMNS} FROM object_definitions \
+             WHERE tenant_id = ?1 AND owner_plugin = ?2 AND status = 'active' ORDER BY api_name"
+        ))
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(object_from_row).collect()
     }
 
     async fn fields_referencing_object(
@@ -1398,8 +1426,9 @@ impl ObjectTx for SqliteObjectTx {
         sqlx::query(
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
                origin, owner_plugin, key_prefix, name_label, sharing_model, searchable, in_navigation, \
-               status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+               status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, \
+               suspended) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         )
         .bind(&self.tenant)
         .bind(object.id.to_string())
@@ -1422,6 +1451,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(text(object.updated_by))
         .bind(object.grant_hierarchy)
         .bind(object.track_history)
+        .bind(object.suspended)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -1437,7 +1467,7 @@ impl ObjectTx for SqliteObjectTx {
             "UPDATE object_definitions SET label = ?4, plural_label = ?5, description = ?6, \
                name_label = ?7, sharing_model = ?8, searchable = ?9, in_navigation = ?10, \
                status = ?11, version = ?12, updated_at = ?13, updated_by = ?14, \
-               grant_hierarchy = ?15, track_history = ?16, \
+               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, \
                deleted_at = CASE WHEN ?11 = 'deleted' THEN coalesce(deleted_at, ?13) END \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
         )
@@ -1457,6 +1487,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(text(object.updated_by))
         .bind(object.grant_hierarchy)
         .bind(object.track_history)
+        .bind(object.suspended)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();

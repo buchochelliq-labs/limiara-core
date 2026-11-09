@@ -127,8 +127,10 @@ Hosts expose their own write routes. For Contacts see
 
 ## Not yet supported
 
-- Related lists, actions and new objects contributed through the same
-  contract; today they use `[[ui.extensions]]` and your own API.
+- Related lists and actions contributed through the same contract; today
+  they use `[[ui.extensions]]` and your own API. New objects are declared
+  as engine objects under `[[objects]]`: see
+  [Declaring objects](objects.md).
 - Sorting host lists by extension fields, and extension fields in search.
 - Dropping your plugin's own tables when it is removed.
 - Administration screens for the extension plan, removal and export.

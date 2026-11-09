@@ -12,7 +12,14 @@ replica definitions), the API's field and record routes with
 `reference_objects`, `related_objects` and the candidates route's `object`
 parameter, PostgreSQL migration 0036 and SQLite tenant step 0026. Lookup
 filters on related-to fields and the web form follow (see
-`docs/roadmap/README.md`).
+`docs/roadmap/README.md`). Slice 2's plugin-declared objects are
+implemented by the manifest's `[[objects]]` declaration
+(`plugin_contract::objects`), the engine's installer
+(`platform_objects::plugin_objects`, `ObjectCaller::plugin_installer`), the
+`objects.plugin_owned` guards in `platform_objects::service`, the enable,
+disable and remove routes in `apps/api/src/plugins.rs`, PostgreSQL
+migration 0037 and SQLite tenant step 0027, with the fixture
+`fixtures/plugins/tracker`.
 
 ## Context
 
@@ -64,15 +71,57 @@ are governed like every engine object:
 - disabling the plugin hides its objects, and removing it follows the
   plugin removal rules, keeping records for export.
 
+API names follow ADR 0015: the namespace is the plugin id, so the
+Activities plugin's Task is `platform.activities:task`. The plugin id must
+therefore be a valid namespace, and plugin objects take letter-first key
+prefixes. How slice 2 implements this:
+
+- **Install and upgrade.** The kernel installs a plugin's declared objects
+  through the object engine as a *plugin installer* caller: it holds no
+  member permissions, may change only what that plugin owns, and names the
+  plugin (`"plugin"`) in every audit entry and event it causes, with the
+  member who changed the plugin's state as actor. Installing is
+  idempotent: it adds missing objects and fields and brings labels,
+  descriptions, options and flags in line with the manifest. It never
+  deletes a field the manifest dropped, which keeps its data; a dropped
+  picklist option stays, inactive. A new field type, uniqueness, scale,
+  lookup target or delete behaviour, or a new key prefix, is refused with a
+  stable `plugin.objects_*` code, and the plugin is not enabled.
+- **Transaction boundary.** The installation is one object-engine
+  transaction and the plugin registry's transition another: the engine
+  opens transactions through its storage port and stays independent of the
+  registry's tables. The steps are ordered so every state in between is
+  safe: install (new objects start suspended), then enable the plugin, then
+  resume its objects. Disabling and removing transition first and suspend
+  after. Every step is idempotent, so a failure leaves the plugin not
+  enabled or its objects hidden, and repeating the request finishes it.
+- **Disabling** sets a per-workspace `suspended` flag on the plugin's object
+  definitions. A suspended object is not active, so every engine read
+  (describe, lists, records, query, search, related lists, global New,
+  navigation and device replicas) treats it as missing, without a check of
+  its own. Lookup and related-to values pointing at its records stay and
+  are saved again unchanged, but are not followed, and new values to them
+  are refused. Enabling clears the flag and everything returns unchanged.
+- **Governance.** Administrators may add `custom` fields, rules,
+  automations, quick actions and object permissions, and choose the
+  object's sharing model and hierarchy grant, which are the workspace's
+  security posture; the manifest's sharing model is only the starting
+  value. They cannot relabel, change or delete the plugin's fields or
+  object (`objects.plugin_owned`): relabelling is the plugin's, through a
+  new version. Role permissions start empty, as for a new workspace object.
+- **Removal** leaves the objects suspended with their records, for export;
+  reinstalling resumes them. Purging them after the retention window is a
+  follow-up (`docs/roadmap/README.md`).
+
 ### 3. An Activities plugin
 
 A first-party plugin, `platform.activities`, declares:
 
-- **Task** (`activities:task`): subject, due date, status (open,
+- **Task** (`platform.activities:task`): subject, due date, status (open,
   completed), priority, type (to do, call, email, meeting or other),
   description, *related to*, and *who*. *Who* is a related-to reference
   whose allowlist is people-like objects such as Contacts' Person.
-- **Event** (`activities:event`): subject, start, end, location,
+- **Event** (`platform.activities:event`): subject, start, end, location,
   description, *related to* and *who*.
 
 The plugin also ships a default **Log a call** quick action (ADR 0032)

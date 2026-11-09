@@ -99,6 +99,10 @@ pub enum Change<'a> {
     ObjectCreated(&'a ObjectDefinition),
     ObjectUpdated(&'a ObjectDefinition),
     ObjectDeleted(&'a ObjectDefinition),
+    /// A plugin object went out of service with its plugin (`true`) or
+    /// came back when the plugin was enabled again (ADR 0033 §2). Its
+    /// event is an `object-updated` one; the audit action says which.
+    ObjectSuspended(&'a ObjectDefinition, bool),
     FieldCreated(&'a ObjectDefinition, &'a FieldDefinition),
     FieldUpdated(&'a ObjectDefinition, &'a FieldDefinition),
     FieldDeleted(&'a ObjectDefinition, &'a FieldDefinition),
@@ -170,6 +174,20 @@ impl Change<'_> {
                 "objects.object.deleted",
                 object_target(object),
                 object_payload(object),
+            ),
+            Self::ObjectSuspended(object, suspended) => (
+                OBJECT_UPDATED_V1,
+                if *suspended {
+                    "objects.object.suspended"
+                } else {
+                    "objects.object.resumed"
+                },
+                object_target(object),
+                json!({
+                    "object": object.api_name,
+                    "version": object.version,
+                    "suspended": suspended,
+                }),
             ),
             Self::FieldCreated(object, field) => (
                 FIELD_CREATED_V1,
@@ -364,6 +382,7 @@ impl Change<'_> {
             Self::ObjectCreated(..)
                 | Self::ObjectUpdated(..)
                 | Self::ObjectDeleted(..)
+                | Self::ObjectSuspended(..)
                 | Self::FieldCreated(..)
                 | Self::FieldUpdated(..)
                 | Self::FieldDeleted(..)

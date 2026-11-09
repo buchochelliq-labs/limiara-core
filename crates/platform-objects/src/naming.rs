@@ -42,6 +42,56 @@ pub fn valid_namespace(namespace: &str) -> bool {
             }))
 }
 
+/// Where a word that starts a dotted plugin namespace ends, for the query
+/// and formula lexers. `chars[start..end]` is a word just read; when it is
+/// followed, without spaces, by more dotted words and then `:`, as in
+/// `example.tracker:summary`, the whole namespace is one word and this
+/// returns its end, before the `:`. Otherwise it returns `end`, and dots
+/// keep meaning relationship traversal. A word read right after `:` is a
+/// name, never a namespace, and `custom` ends no plugin namespace, so
+/// `custom:ticket.example.tracker:summary` and `owner.custom:region`
+/// traverse as before. `after_colon` says whether the previous token was a
+/// `:`.
+pub(crate) fn namespace_word_end(
+    chars: &[char],
+    start: usize,
+    end: usize,
+    after_colon: bool,
+) -> usize {
+    if after_colon {
+        return end;
+    }
+    let mut at = end;
+    let mut last = end;
+    while chars.get(at) == Some(&'.') && chars.get(at + 1).is_some_and(char::is_ascii_lowercase) {
+        let mut next = at + 1;
+        while chars
+            .get(next)
+            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+        {
+            next += 1;
+        }
+        at = next;
+        if chars.get(at) == Some(&':') {
+            last = at;
+            break;
+        }
+    }
+    if last == end {
+        return end;
+    }
+    let namespace: String = chars[start..last].iter().collect();
+    let ends_in_custom = namespace
+        .rsplit('.')
+        .next()
+        .is_some_and(|token| token == CUSTOM_NAMESPACE);
+    if !ends_in_custom && valid_namespace(&namespace) {
+        last
+    } else {
+        end
+    }
+}
+
 /// A qualified API name split into its parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiName<'a> {
@@ -124,6 +174,30 @@ mod tests {
         ] {
             assert!(ApiName::parse(invalid).is_none(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn lexers_read_dotted_plugin_namespaces_as_one_word() {
+        let end = |text: &str, after_colon: bool| {
+            let chars: Vec<char> = text.chars().collect();
+            let word = chars
+                .iter()
+                .take_while(|c| c.is_ascii_alphanumeric() || **c == '_')
+                .count();
+            chars[..namespace_word_end(&chars, 0, word, after_colon)]
+                .iter()
+                .collect::<String>()
+        };
+        assert_eq!(end("example.tracker:summary", false), "example.tracker");
+        assert_eq!(
+            end("example.tracker:milestone.name", false),
+            "example.tracker"
+        );
+        assert_eq!(end("owner.name", false), "owner");
+        assert_eq!(end("owner.custom:region", false), "owner");
+        assert_eq!(end("ticket.example.tracker:due", true), "ticket");
+        assert_eq!(end("example.tracker = 1", false), "example");
+        assert_eq!(end("Example.tracker:x", false), "Example");
     }
 
     #[test]

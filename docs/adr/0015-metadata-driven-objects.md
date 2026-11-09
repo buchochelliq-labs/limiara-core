@@ -46,7 +46,8 @@ The kernel gains a domain-neutral object engine (`platform-objects`):
   permission sets).
 
 The engine is platform machinery; it holds no business concepts. Objects are
-defined by workspace administrators now and by plugins later (#318).
+defined by workspace administrators and, since ADR 0033 §2, declared by
+plugins in their manifests (#318).
 
 ### 2. Generic record storage with typed pivots
 

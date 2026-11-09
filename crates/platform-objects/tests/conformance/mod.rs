@@ -12,6 +12,7 @@ pub mod definitions;
 pub mod formulas;
 pub mod jobs;
 pub mod lease;
+pub mod plugin_objects;
 pub mod push;
 pub mod query;
 pub mod quick_actions;
