@@ -23,6 +23,22 @@ pub mod sqlite;
 pub use postgres::PostgresObjectStore;
 pub use sqlite::{SqliteObjectStore, SQLITE_MIGRATIONS};
 
+/// A related-to field's allowlist as both backends read it: a JSON array
+/// of `[object id, object API name]` pairs in order.
+pub(crate) fn reference_objects(
+    value: &serde_json::Value,
+) -> Result<(Vec<Uuid>, Vec<String>), ObjectError> {
+    let pairs: Vec<(String, String)> =
+        serde_json::from_value(value.clone()).map_err(|_| ObjectError::Invariant)?;
+    let mut ids = Vec::with_capacity(pairs.len());
+    let mut names = Vec::with_capacity(pairs.len());
+    for (id, name) in pairs {
+        ids.push(Uuid::parse_str(&id).map_err(|_| ObjectError::Invariant)?);
+        names.push(name);
+    }
+    Ok((ids, names))
+}
+
 /// Opens workspace units of work.
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
@@ -60,7 +76,9 @@ pub trait ObjectTx: Send {
     async fn object_by_id(&mut self, id: Uuid) -> Result<Option<ObjectDefinition>, ObjectError>;
     /// Every key prefix used by any object, deleted ones included.
     async fn key_prefixes(&mut self) -> Result<Vec<String>, ObjectError>;
-    /// Active lookup fields on any object that point to `object_id`.
+    /// Active reference fields on any object that point to `object_id`:
+    /// lookups and master-detail fields to it, and related-to fields whose
+    /// allowlist names it.
     async fn fields_referencing_object(
         &mut self,
         object_id: Uuid,
@@ -129,6 +147,14 @@ pub trait ObjectTx: Send {
     /// `(field id, record id)` for records outside the recycle bin whose
     /// lookups point to `target_id`.
     async fn referencing(&mut self, target_id: Uuid) -> Result<Vec<(Uuid, Uuid)>, ObjectError>;
+    /// Ids of records outside the recycle bin whose reference `field_id`
+    /// points to a record of `object_id`, for clearing a related-to field
+    /// when an object it allows is deleted (ADR 0033 §1).
+    async fn referencing_object_records(
+        &mut self,
+        field_id: Uuid,
+        object_id: Uuid,
+    ) -> Result<Vec<Uuid>, ObjectError>;
     /// One page of an object's records, fetching one more than the limit so
     /// the service knows whether another page follows.
     async fn list_records(

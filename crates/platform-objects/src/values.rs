@@ -27,6 +27,8 @@ pub const MASTERS_PER_OBJECT_MAX: usize = 2;
 /// Roll-up summary fields one object may have, as in Salesforce.
 pub const ROLLUPS_PER_OBJECT_MAX: usize = 25;
 pub const SCALE_LIMIT: i32 = 8;
+/// Objects one related-to field may point to (ADR 0033 §1).
+pub const REFERENCE_OBJECTS_MAX: usize = 10;
 
 /// The key names are searched and sorted by: Unicode lowercase, trimmed.
 pub fn name_key(value: &str) -> String {
@@ -133,6 +135,51 @@ pub struct FieldShape {
     pub delete_behaviour: Option<DeleteBehaviour>,
     pub formula: Option<String>,
     pub formula_type: Option<FieldType>,
+    /// A related-to field's allowlist, by API name.
+    pub reference_objects: Vec<String>,
+}
+
+/// Checks the shape of a related-to field's allowlist: only related-to
+/// fields have one, and it names 1 to 10 distinct objects. Whether they
+/// exist is the service's to check. Returns the trimmed names.
+pub fn reference_objects(
+    kind: FieldType,
+    names: Option<&[String]>,
+) -> Result<Vec<String>, ValidationIssue> {
+    let invalid = |detail: &str| {
+        ValidationIssue::new(
+            "reference_objects",
+            "objects.reference_objects_invalid",
+            detail,
+        )
+    };
+    let Some(names) = names else {
+        return if kind == FieldType::RelatedTo {
+            Err(invalid(
+                "a related-to field needs the objects it may point to",
+            ))
+        } else {
+            Ok(Vec::new())
+        };
+    };
+    if kind != FieldType::RelatedTo {
+        return Err(invalid("only related-to fields have a list of objects"));
+    }
+    if names.is_empty() || names.len() > REFERENCE_OBJECTS_MAX {
+        return Err(invalid(&format!(
+            "choose between 1 and {REFERENCE_OBJECTS_MAX} objects"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    let mut trimmed = Vec::with_capacity(names.len());
+    for name in names {
+        let name = name.trim();
+        if !seen.insert(name.to_owned()) {
+            return Err(invalid("choose each object once"));
+        }
+        trimmed.push(name.to_owned());
+    }
+    Ok(trimmed)
 }
 
 /// The types a formula field may give.
@@ -207,6 +254,16 @@ pub fn field_shape(input: &CreateField) -> Result<FieldShape, Vec<ValidationIssu
     }
     let delete_behaviour = match (kind, input.delete_behaviour) {
         (FieldType::Lookup, behaviour) => Some(behaviour.unwrap_or_default()),
+        // A related-to value is always cleared when its target goes.
+        (FieldType::RelatedTo, None | Some(DeleteBehaviour::Clear)) => Some(DeleteBehaviour::Clear),
+        (FieldType::RelatedTo, Some(_)) => {
+            issues.push(ValidationIssue::new(
+                "delete_behaviour",
+                "objects.delete_behaviour_not_allowed",
+                "deleting the target of a related-to field always clears it",
+            ));
+            None
+        }
         (FieldType::MasterDetail, Some(_)) => {
             issues.push(ValidationIssue::new(
                 "delete_behaviour",
@@ -232,6 +289,11 @@ pub fn field_shape(input: &CreateField) -> Result<FieldShape, Vec<ValidationIssu
             "a lookup needs the object it points to, and only lookups have one",
         ));
     }
+    let reference_objects = reference_objects(kind, input.reference_objects.as_deref())
+        .unwrap_or_else(|issue| {
+            issues.push(issue);
+            Vec::new()
+        });
     if kind == FieldType::MasterDetail && (input.unique || input.default_value.is_some()) {
         issues.push(ValidationIssue::new(
             "field_type",
@@ -331,6 +393,7 @@ pub fn field_shape(input: &CreateField) -> Result<FieldShape, Vec<ValidationIssu
                 None
             },
             formula_type,
+            reference_objects,
         })
     } else {
         Err(issues)
@@ -606,7 +669,7 @@ pub fn normalise(field: &FieldDefinition, value: &Value) -> Result<Option<Value>
                 .collect();
             Ok(Some(Value::Array(ordered)))
         }
-        FieldType::Lookup | FieldType::MasterDetail => {
+        FieldType::Lookup | FieldType::MasterDetail | FieldType::RelatedTo => {
             let text = value
                 .as_str()
                 .ok_or_else(|| issue(field, "records.value_type", "choose a record"))?
@@ -823,7 +886,7 @@ pub fn record_index(
         let Some(value) = values.get(&field.api_name) else {
             continue;
         };
-        if field.field_type.is_reference() {
+        if field.field_type.holds_reference() {
             if let Some(target_id) = references.get(&field.id) {
                 index.references.push(ReferenceEntry {
                     field_id: field.id,
@@ -920,6 +983,8 @@ mod tests {
             default_value: None,
             reference_object_id: None,
             reference_object: None,
+            reference_object_ids: Vec::new(),
+            reference_objects: Vec::new(),
             delete_behaviour: None,
             formula: None,
             formula_type: None,

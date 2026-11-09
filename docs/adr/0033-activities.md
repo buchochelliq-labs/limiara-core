@@ -2,10 +2,17 @@
 
 ## Status
 
-Proposed (2026-11-09). Builds on ADR 0015 (metadata-driven objects and
+Accepted (2026-11-09). Builds on ADR 0015 (metadata-driven objects and
 plugin namespaces), ADR 0028 (related lists), ADR 0032 (quick actions) and
 ADR 0011 (the record page's Activity tab). Part of issue #179 ("Log a call")
-and the CRM application roadmap.
+and the CRM application roadmap. Slice 1's server side, the *related to*
+field type (`FieldType::RelatedTo`), is implemented in `platform_objects`
+(`values`, `service`, `related`, `quick_actions`, the query planner and the
+replica definitions), the API's field and record routes with
+`reference_objects`, `related_objects` and the candidates route's `object`
+parameter, PostgreSQL migration 0036 and SQLite tenant step 0026. Lookup
+filters on related-to fields and the web form follow (see
+`docs/roadmap/README.md`).
 
 ## Context
 

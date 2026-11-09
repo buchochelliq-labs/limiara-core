@@ -287,6 +287,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "record_search_terms",
         "validation_rules",
         "quick_actions",
+        "field_reference_objects",
         "automations",
         "automation_runs",
         "automation_jobs",
@@ -536,6 +537,99 @@ async fn postgres_store_passes_the_related_list_conformance_suite() {
         .expect("tenant");
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
     conformance::related::run(store, tenant).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_related_to_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (id, name) in [(tenant, "Related to"), (other, "Related to, other")] {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let report = conformance::related_to::run(store, tenant).await;
+
+    // The events of records holding related-to values name what changed,
+    // never the values (ADR 0015 §5).
+    let envelopes: Vec<String> =
+        sqlx::query_scalar("SELECT envelope::text FROM outbox WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_all(&migrator)
+            .await
+            .expect("events");
+    let about_tasks: Vec<&String> = envelopes
+        .iter()
+        .filter(|envelope| {
+            report
+                .task_ids
+                .iter()
+                .any(|id| envelope.contains(id.as_str()))
+        })
+        .collect();
+    assert!(about_tasks.len() >= report.task_ids.len());
+    for envelope in about_tasks {
+        for target in &report.target_ids {
+            assert!(!envelope.contains(target.as_str()), "{envelope}");
+        }
+    }
+
+    // The allowlist table is tenant-scoped under forced row-level security.
+    let forced: (bool, bool) = sqlx::query_as(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class \
+         WHERE relname = 'field_reference_objects'",
+    )
+    .fetch_one(&migrator)
+    .await
+    .expect("rls flags");
+    assert_eq!(forced, (true, true));
+    let stored: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM field_reference_objects WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(&migrator)
+            .await
+            .expect("rows");
+    assert!(stored > 0);
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM field_reference_objects")
+        .fetch_one(&app)
+        .await
+        .expect("unscoped");
+    assert_eq!(unscoped, 0, "no rows without app.tenant_id");
+    let (field_id, object_id): (Uuid, Uuid) = sqlx::query_as(
+        // The field's own object, which its allowlist does not name, so only
+        // row-level security can refuse the row.
+        "SELECT id, object_id FROM field_definitions \
+         WHERE tenant_id = $1 AND field_type = 'related_to' LIMIT 1",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("a row");
+    let mut tx = platform_db::begin_tenant_tx(&app, other)
+        .await
+        .expect("other tenant");
+    let foreign: i64 = sqlx::query_scalar("SELECT count(*) FROM field_reference_objects")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("foreign");
+    assert_eq!(foreign, 0, "another workspace sees none");
+    let write = sqlx::query(
+        "INSERT INTO field_reference_objects (tenant_id, field_id, object_id, position) \
+         VALUES ($1, $2, $3, 9)",
+    )
+    .bind(tenant)
+    .bind(field_id)
+    .bind(object_id)
+    .execute(&mut *tx)
+    .await;
+    assert!(write.is_err(), "another workspace cannot write");
 }
 
 #[tokio::test]

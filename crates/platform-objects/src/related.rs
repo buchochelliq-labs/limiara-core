@@ -19,8 +19,8 @@ pub const RELATED_PREVIEW: u16 = 5;
 pub const RELATED_PAGE: u16 = 50;
 const SEARCH_MAX: usize = 80;
 
-/// A lookup or master-detail field of another object that points at an
-/// object: one related list on that object's records.
+/// A lookup, master-detail or related-to field of another object that
+/// points at an object: one related list on that object's records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Relationship {
     /// The object whose records point here.
@@ -31,6 +31,17 @@ pub struct Relationship {
     pub field: String,
     pub field_label: String,
     pub master_detail: bool,
+    /// The reference field's type: lookup, master-detail or related to.
+    pub field_type: FieldType,
+}
+
+/// A record another record points to, as the caller may see it: its name,
+/// and its object's API name so a client can link to it. A related-to
+/// field's target may be of any of several objects (ADR 0033 §1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelatedTarget {
+    pub name: String,
+    pub object: String,
 }
 
 /// The first records of one related list.
@@ -77,6 +88,15 @@ pub(crate) fn lookup_filter(
     let Some(filter) = filter.map(str::trim).filter(|filter| !filter.is_empty()) else {
         return Ok(None);
     };
+    if field_type == FieldType::RelatedTo {
+        // Its target may be any of several objects, and a filter is one
+        // object's condition; per-object filters are a follow-up.
+        return Err(ValidationIssue::new(
+            "lookup_filter",
+            "objects.lookup_filter_not_supported",
+            "related-to fields do not take a lookup filter yet",
+        ));
+    }
     if !field_type.is_reference() {
         return Err(ValidationIssue::new(
             "lookup_filter",
@@ -184,6 +204,21 @@ impl ObjectService {
         search: Option<&str>,
         cursor: Option<String>,
     ) -> Result<QueryResult, ObjectError> {
+        self.reference_candidates(api_name, field_api_name, None, search, cursor)
+            .await
+    }
+
+    /// The records a reference field may point at, for its picker. A
+    /// related-to field names the object to list with `target_object`,
+    /// one its allowlist names; a lookup takes none, or its own target.
+    pub async fn reference_candidates(
+        &self,
+        api_name: &str,
+        field_api_name: &str,
+        target_object: Option<&str>,
+        search: Option<&str>,
+        cursor: Option<String>,
+    ) -> Result<QueryResult, ObjectError> {
         let mut tx = self.begin().await?;
         let access = self.access(tx.as_mut()).await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
@@ -192,12 +227,34 @@ impl ObjectService {
         }
         let field = object
             .field(field_api_name)
-            .filter(|field| field.is_active() && field.field_type.is_reference())
+            .filter(|field| field.is_active() && field.field_type.holds_reference())
             .ok_or(ObjectError::NotFound)?;
-        let target = field
-            .reference_object
-            .as_deref()
-            .ok_or(ObjectError::Invariant)?;
+        let not_allowed = || {
+            ObjectError::invalid(
+                "object",
+                "records.reference_object_not_allowed",
+                "choose one of the objects this field allows",
+            )
+        };
+        let target = match (field.field_type, target_object) {
+            (FieldType::RelatedTo, Some(target)) => field
+                .reference_objects
+                .iter()
+                .find(|allowed| allowed.as_str() == target)
+                .map(String::as_str)
+                .ok_or_else(not_allowed)?,
+            (FieldType::RelatedTo, None) => return Err(not_allowed()),
+            (_, target) => {
+                let own = field
+                    .reference_object
+                    .as_deref()
+                    .ok_or(ObjectError::Invariant)?;
+                if target.is_some_and(|target| target != own) {
+                    return Err(not_allowed());
+                }
+                own
+            }
+        };
         let mut conditions = Vec::new();
         if let Some(filter) = &field.lookup_filter {
             conditions.push(format!("({filter})"));
@@ -241,8 +298,8 @@ impl ObjectService {
         Ok(result)
     }
 
-    /// The lookup and master-detail fields of objects the caller reads
-    /// that point at an object, by the pointing object's label.
+    /// The lookup, master-detail and related-to fields of objects the
+    /// caller reads that point at an object, by the pointing object's label.
     async fn relationships(
         &self,
         tx: &mut dyn ObjectTx,
@@ -251,7 +308,9 @@ impl ObjectService {
     ) -> Result<Vec<Relationship>, ObjectError> {
         let mut found = Vec::new();
         for field in tx.fields_referencing_object(object.id).await? {
-            if !field.is_active() || !field.field_type.is_reference() {
+            // A related-to field whose allowlist names the object gives
+            // a list too (ADR 0033 §1); the store found only those.
+            if !field.is_active() || !field.field_type.holds_reference() {
                 continue;
             }
             let Some(child) = tx
@@ -268,6 +327,7 @@ impl ObjectService {
                 field: field.api_name,
                 field_label: field.label,
                 master_detail: field.field_type == FieldType::MasterDetail,
+                field_type: field.field_type,
             });
         }
         found.sort_by(|a, b| {
@@ -308,8 +368,9 @@ impl ObjectService {
     }
 
     /// The related lists of a record the caller sees: for each lookup or
-    /// master-detail field pointing at its object, the first records that
-    /// point at it and that the caller may see.
+    /// master-detail field pointing at its object, and each related-to field
+    /// allowing it, the first records that point at it and that the caller
+    /// may see.
     pub async fn related_lists(
         &self,
         api_name: &str,

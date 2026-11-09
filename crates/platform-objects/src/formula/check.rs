@@ -32,6 +32,15 @@ pub(crate) fn field_type(kind: FieldType) -> Type {
     }
 }
 
+/// Formulas cannot use a related-to field: its target may be a record of
+/// any of several objects (ADR 0033 §1).
+fn related_to_unsupported(name: &str, position: usize) -> FormulaError {
+    FormulaError::new(
+        position,
+        format!("{name} is a related-to field, which formulas cannot use yet"),
+    )
+}
+
 fn standard_type(standard: Standard) -> Type {
     match standard {
         Standard::CreatedAt | Standard::UpdatedAt | Standard::TouchedAt | Standard::DeletedAt => {
@@ -276,6 +285,9 @@ impl<'a> Catalog<'a> {
                     format!("{} has no field {segment}", object.api_name),
                 )
             })?;
+            if field.field_type == FieldType::RelatedTo {
+                return Err(related_to_unsupported(segment, position));
+            }
             if !field.field_type.is_reference() {
                 return Err(FormulaError::new(
                     position,
@@ -297,6 +309,9 @@ impl<'a> Catalog<'a> {
                 })?;
                 if field.field_type == FieldType::Formula {
                     return self.inline(object, field, through, position);
+                }
+                if field.field_type == FieldType::RelatedTo {
+                    return Err(related_to_unsupported(last, position));
                 }
                 Leaf::Field {
                     api_name: field.api_name.clone(),

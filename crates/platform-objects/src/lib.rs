@@ -44,7 +44,7 @@ pub use access::{ObjectAccess, ObjectCaller};
 pub use model::*;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};
 pub use query::{QueryColumn, QueryRequest, QueryResult};
-pub use related::{RelatedList, Relationship};
+pub use related::{RelatedList, RelatedTarget, Relationship};
 pub use replica::{
     Applied, Choices, DeleteConflict, FieldConflict, Lease, Merge, RemoteRecord, Side,
     TrustedClock, TrustedInstant,

@@ -474,7 +474,7 @@ async fn index_replica_record(
     for field in object
         .fields
         .iter()
-        .filter(|field| field.is_active() && field.field_type.is_reference())
+        .filter(|field| field.is_active() && field.field_type.holds_reference())
     {
         let Some(target) = record.values.get(&field.api_name).and_then(Value::as_str) else {
             continue;

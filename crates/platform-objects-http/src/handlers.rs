@@ -15,9 +15,9 @@ use platform_objects::composite::{CompositeOperation, CompositeOutcome, Composit
 use platform_objects::service::ListRecords;
 use platform_objects::{
     AccessFlags, Automation, CreateAutomation, CreateField, CreateObject, CreateQuickAction,
-    CreateValidationRule, FieldDefinition, GranteeKind, MutationContext, ObjectDefinition,
-    ObjectError, ObjectService, QuickAction, Record, RecordSort, RecordStatus, ShareAccess,
-    SortDirection, UpdateAutomation, UpdateField, UpdateObject, UpdateQuickAction,
+    CreateValidationRule, FieldDefinition, FieldType, GranteeKind, MutationContext,
+    ObjectDefinition, ObjectError, ObjectService, QuickAction, Record, RecordSort, RecordStatus,
+    ShareAccess, SortDirection, UpdateAutomation, UpdateField, UpdateObject, UpdateQuickAction,
     UpdateValidationRule, ValidationIssue, ValidationRule,
 };
 use serde::{Deserialize, Serialize};
@@ -251,6 +251,9 @@ fn field_json(field: &FieldDefinition) -> Value {
         "options": field.options,
         "default_value": field.default_value,
         "reference_object": field.reference_object,
+        // A related-to field's allowlist (ADR 0033 §1); null otherwise.
+        "reference_objects": (field.field_type == FieldType::RelatedTo)
+            .then_some(&field.reference_objects),
         "delete_behaviour": field.delete_behaviour,
         "lookup_filter": field.lookup_filter,
         "formula": field.formula,
@@ -292,12 +295,12 @@ fn object_json(object: &ObjectDefinition, access: Option<AccessFlags>, with_fiel
     value
 }
 
-/// A record as callers see it: the standard fields of ADR 0014 followed by
-/// custom values keyed by field API name.
-/// Records as callers see them, with the names of lookup targets the caller
-/// can read under `related` (target id to name).
+/// Records as callers see them: the standard fields of ADR 0014 followed by
+/// custom values keyed by field API name, with the reference targets the
+/// caller can read named under `related` (target id to name) and their
+/// objects under `related_objects` (target id to object API name).
 async fn records_json(service: &ObjectService, object: &str, records: &[Record]) -> Vec<Value> {
-    let names = match service.related_names(object, records).await {
+    let names = match service.related_targets(object, records).await {
         Ok(names) => names,
         Err(_) => {
             tracing::warn!("lookup names unavailable");
@@ -317,7 +320,11 @@ async fn one_record_json(service: &ObjectService, object: &str, record: &Record)
         .unwrap_or(Value::Null)
 }
 
-fn record_json(object: &str, record: &Record, names: &BTreeMap<String, String>) -> Value {
+fn record_json(
+    object: &str,
+    record: &Record,
+    names: &BTreeMap<String, platform_objects::RelatedTarget>,
+) -> Value {
     let mut value = json!({
         "id": record.public_id,
         "object": object,
@@ -335,13 +342,17 @@ fn record_json(object: &str, record: &Record, names: &BTreeMap<String, String>) 
     });
     if let Some(map) = value.as_object_mut() {
         let mut related = Map::new();
+        let mut related_objects = Map::new();
         for (key, field_value) in &record.values {
-            if let Some((id, name)) = field_value.as_str().and_then(|id| names.get_key_value(id)) {
-                related.insert(id.clone(), json!(name));
+            if let Some((id, target)) = field_value.as_str().and_then(|id| names.get_key_value(id))
+            {
+                related.insert(id.clone(), json!(target.name));
+                related_objects.insert(id.clone(), json!(target.object));
             }
             map.insert(key.clone(), field_value.clone());
         }
         map.insert("related".into(), Value::Object(related));
+        map.insert("related_objects".into(), Value::Object(related_objects));
     }
     value
 }
@@ -2048,6 +2059,9 @@ pub(crate) struct PageQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CandidatesQuery {
+    /// The object to list, for a related-to field.
+    #[serde(default)]
+    object: Option<String>,
     #[serde(default)]
     search: Option<String>,
     #[serde(default)]
@@ -2062,6 +2076,7 @@ fn related_json(list: &platform_objects::RelatedList) -> Value {
         "field": list.relationship.field,
         "field_label": list.relationship.field_label,
         "master_detail": list.relationship.master_detail,
+        "field_type": list.relationship.field_type,
         "data": list.records.rows,
         "next_cursor": list.records.next_cursor,
     })
@@ -2125,7 +2140,13 @@ pub async fn lookup_candidates<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .lookup_candidates(&object, &field, query.search.as_deref(), query.cursor)
+        .reference_candidates(
+            &object,
+            &field,
+            query.object.as_deref(),
+            query.search.as_deref(),
+            query.cursor,
+        )
         .await
     {
         Ok(result) => Json(json!({

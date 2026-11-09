@@ -577,11 +577,9 @@ async fn hold_back(
     arriving: &BTreeSet<String>,
 ) -> Result<(Map<String, Value>, Map<String, Value>), ObjectError> {
     let mut held_back = Map::new();
-    for field in object
-        .fields
-        .iter()
-        .filter(|field| field.is_active() && field.field_type == FieldType::Lookup)
-    {
+    for field in object.fields.iter().filter(|field| {
+        field.is_active() && matches!(field.field_type, FieldType::Lookup | FieldType::RelatedTo)
+    }) {
         let Some(target) = values.get(&field.api_name).and_then(Value::as_str) else {
             continue;
         };
