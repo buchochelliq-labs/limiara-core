@@ -76,7 +76,7 @@ export function QuickActions({client, object, onNotice}: {client: Client; object
     <div className="object-section__header"><h2 id="quick-actions-heading">Quick actions</h2>{editing === null && load.status === 'ready' && !full && <Button size="small" onClick={() => setEditing('new')}>New quick action</Button>}</div>
     <p>Buttons on each {object.label.toLowerCase()} page, next to Edit and Delete. An action asks only for its fields and applies its presets. It grants nothing: members see it only where they could already edit the record or create the related one.</p>
     {full && <p className="object-form__meta">This object has the most quick actions it can have ({quickActionsMax}). Delete one to add another.</p>}
-    {editing !== null && <QuickActionForm client={client} object={object} action={editing === 'new' ? null : editing} targets={targets} onCancel={() => setEditing(null)} onSaved={reload} />}
+    {editing !== null && <QuickActionForm key={editing === 'new' ? 'new' : `${editing.name}@${editing.version}`} client={client} object={object} action={editing === 'new' ? null : editing} targets={targets} onCancel={() => setEditing(null)} onSaved={reload} />}
     {load.status === 'loading' && <Skeleton label="Loading quick actions" lines={2} />}
     {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Quick actions could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
     {load.status === 'ready' && load.actions.length === 0 && editing === null && <p className="object-value--empty">No quick actions yet.</p>}
