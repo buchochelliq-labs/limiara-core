@@ -234,6 +234,7 @@ export function RelatedLists({client, apiName, recordId, recordName, onNavigate}
   // The child objects, described to learn whether the member may create them (ADR 0032 §1).
   const [children, setChildren] = useState<Record<string, ObjectDescription>>({});
   const [creating, setCreating] = useState<RelatedList | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     if (attempt === 0) setLoad({status: 'loading'});
@@ -241,6 +242,7 @@ export function RelatedLists({client, apiName, recordId, recordName, onNavigate}
       .then(value => {
         if (controller.signal.aborted) return;
         setLoad({status: 'ready', value});
+        setRefreshFailed(false);
         for (const object of new Set(value.map(list => list.object))) {
           client.describe(object, controller.signal)
             .then(description => { if (!controller.signal.aborted) setChildren(known => ({...known, [object]: description})); })
@@ -248,7 +250,12 @@ export function RelatedLists({client, apiName, recordId, recordName, onNavigate}
             .catch(() => undefined);
         }
       })
-      .catch(reason => { if (!controller.signal.aborted) setLoad(failed(reason)); });
+      .catch(reason => {
+        if (controller.signal.aborted) return;
+        // A refresh after a save keeps what is shown, and any open form with it.
+        if (attempt > 0) setRefreshFailed(true);
+        else setLoad(failed(reason));
+      });
     return () => controller.abort();
   }, [client, apiName, recordId, attempt]);
   if (load.status === 'loading') return <section aria-label="Related" className="object-section"><h2>Related</h2><Skeleton lines={3} /></section>;
@@ -284,6 +291,7 @@ export function RelatedLists({client, apiName, recordId, recordName, onNavigate}
         {more[key(list)] === 'error' && <Alert variant="danger" title={`More ${list.objectPluralLabel.toLowerCase()} could not be loaded. Try again.`} />}
       </section>;
     })}
+    {refreshFailed && <Alert variant="warning" title="The related lists could not be refreshed. Reload the page to see the latest records." />}
     {creating && children[creating.object] && <RecordModal client={client} object={children[creating.object] as ObjectDescription} presets={{[creating.field]: {value: recordId, label: recordName ?? recordId}}} onNavigate={onNavigate}
       // The member stays on this record; the list shows what they added.
       onClose={() => setCreating(null)} onSaved={(_, next) => { setAttempt(value => value + 1); if (next === 'close') setCreating(null); }} />}

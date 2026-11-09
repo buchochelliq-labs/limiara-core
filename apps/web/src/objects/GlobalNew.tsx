@@ -25,6 +25,8 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
   const [objects, setObjects] = useState<Load<ObjectSummary[]> | null>(null);
   const [chosen, setChosen] = useState<Load<ObjectDescription> | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  // Only the latest choice may open a form; a slower, older one is dropped.
+  const request = useRef(0);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -59,9 +61,10 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
   const choose = (apiName: string) => {
     setOpen(false);
     setChosen({status: 'loading'});
+    const mine = ++request.current;
     client.describe(apiName)
-      .then(value => setChosen({status: 'ready', value}))
-      .catch(reason => setChosen(failed(reason)));
+      .then(value => { if (mine === request.current) setChosen({status: 'ready', value}); })
+      .catch(reason => { if (mine === request.current) setChosen(failed(reason)); });
   };
   // Focus returns to New when the form closes, since the menu item is gone.
   const close = () => { setChosen(null); buttonRef.current?.focus(); };
@@ -70,7 +73,7 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
     <button ref={buttonRef} type="button" className="ui-button ui-button--secondary ui-button--small global-new__button" aria-haspopup="true" aria-expanded={open} aria-controls="global-new-panel" onClick={() => {
       // Reopening after a failed load tries again.
       if (!open && objects && objects.status !== 'ready' && objects.status !== 'loading') setObjects(null);
-      setChosen(current => current?.status === 'ready' ? current : null);
+      if (chosen?.status !== 'ready') { request.current += 1; setChosen(null); }
       setOpen(value => !value);
     }}>
       <span><Plus aria-hidden="true" weight="bold" />New</span>
@@ -84,7 +87,7 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
       {(!objects || objects.status === 'loading') && <p className="global-new__note" role="status" tabIndex={-1}>Loading objects…</p>}
       {objects && objects.status !== 'ready' && objects.status !== 'loading' && <p className="global-new__note" role="status" tabIndex={-1}>The objects could not be loaded. Close the menu and try again.</p>}
     </div>}
-    {chosen?.status === 'ready' && <RecordModal client={client} object={chosen.value} onNavigate={target => { setChosen(null); onNavigate(target); }} onClose={close} onSaved={(saved, next) => {
+    {chosen?.status === 'ready' && <RecordModal key={chosen.value.apiName} client={client} object={chosen.value} onNavigate={target => { setChosen(null); onNavigate(target); }} onClose={close} onSaved={(saved, next) => {
       if (next === 'close') { setChosen(null); onNavigate(recordRoute(chosen.value.apiName, saved.id)); }
     }} />}
     {chosen && chosen.status !== 'ready' && chosen.status !== 'loading' && <p className="global-new__error" role="alert">The form could not be opened. Try again.</p>}
