@@ -65,7 +65,23 @@ build() {
   (
     cd "$shell_dir"
     [[ -d gen/android ]] || cargo tauri android init --ci
-    cargo tauri android build --ci --debug --apk --target x86_64
+    # The generated Gradle wrapper gives its own download 10 seconds, too
+    # little when services.gradle.org is slow; the Rust build is done by
+    # then, so a retry only repeats the packaging.
+    wrapper=gen/android/gradle/wrapper/gradle-wrapper.properties
+    if [[ -f "$wrapper" ]]; then
+      if grep -q '^networkTimeout=' "$wrapper"; then
+        sed -i 's/^networkTimeout=.*/networkTimeout=120000/' "$wrapper"
+      else
+        echo 'networkTimeout=120000' >>"$wrapper"
+      fi
+    fi
+    for attempt in 1 2 3; do
+      cargo tauri android build --ci --debug --apk --target x86_64 && break
+      (( attempt < 3 )) || fail "the APK could not be built after $attempt attempts"
+      log "packaging failed (attempt $attempt); trying again"
+      sleep 15
+    done
   )
   apk=$(find "$shell_dir/gen/android" -name '*.apk' -path '*debug*' | head -n 1)
   [[ -n "$apk" ]] || fail "the APK was not built"
