@@ -370,6 +370,15 @@ nothing: running it uses the normal record create and update APIs.
   `fields.{field}` or `presets.{field}`), a record value code such as
   `records.value_type` on `presets.{field}`, `quick_actions.limit_reached`
   (10 per object) and `409 quick_actions.duplicate_name`.
+- The web record page shows the actions in this order next to Edit and
+  Delete: an update action only on records the member may edit, a create
+  action only when the member may create the target object. An update
+  action's form shows only its `fields` and saves their changes with all
+  of its presets through the record update API; a create action's form
+  shows its `fields` with the `target_field` set to the current record,
+  read-only, and sends its presets, shown or not, on create. A preset field
+  the form also shows starts at the preset, and the member may change it.
+  Administrators manage the actions in the Object Manager.
 - Deleting a field removes it from the `fields` and `presets` of the
   actions that use it; an action left with no fields is deleted. Deleting
   a create action's `target_field` or target object deletes the action,

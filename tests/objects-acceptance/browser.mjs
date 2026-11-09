@@ -6,7 +6,8 @@
 // API (API_BASE), signs in with the seeded administrator session
 // (SESSION_TOKEN), and drives the object pages end to end: navigation from the
 // UI contribution endpoint, the object home, create, edit, delete and restore
-// from the recycle bin, then the Object Manager creating an object and a
+// from the recycle bin, quick actions defined in the Object Manager and run
+// from record pages, then the Object Manager creating an object and a
 // field. Nothing here stubs the API. Screenshots go to SCREENSHOT_DIR.
 import {createServer, request as httpRequest} from 'node:http';
 import {mkdir, readFile, stat} from 'node:fs/promises';
@@ -332,6 +333,75 @@ try {
   await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:project')}`);
   await page.getByRole('button', {name: 'Delete default_code'}).click();
   await page.getByText('No automations yet.').waitFor();
+
+  step('quick actions: an administrator adds an update action and a member runs it from a record (ADR 0032)');
+  await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:project')}`);
+  let quick = page.getByRole('region', {name: 'Quick actions'});
+  await quick.getByText('No quick actions yet.').waitFor();
+  await quick.getByRole('button', {name: 'New quick action'}).click();
+  await quick.getByLabel('Label', {exact: true}).fill('Mark won');
+  if (await quick.getByLabel('Action name').inputValue() !== 'mark_won') throw new Error('the action name must follow its label');
+  if (await quick.getByRole('checkbox', {name: 'Code label'}).count()) throw new Error('formula fields cannot be chosen');
+  await quick.getByRole('button', {name: 'Add preset'}).click();
+  await quick.getByLabel('Preset field 1').selectOption({label: 'Status'});
+  await quick.getByLabel('Value for preset 1').selectOption('won');
+  await quick.getByRole('button', {name: 'Add quick action'}).click();
+  await quick.getByText('choose 1 to 20 fields').first().waitFor();
+  await quick.getByRole('checkbox', {name: 'Code', exact: true}).check();
+  await quick.getByRole('button', {name: 'Add quick action'}).click();
+  await quick.getByRole('row', {name: /Mark won/}).getByText('Status = Won').waitFor();
+  await shot(page, '16-quick-action-manager');
+  await page.goto(`${origin}/o/custom:project`);
+  await page.getByRole('link', {name: 'Batch one'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Batch one'}).waitFor();
+  await page.getByRole('region', {name: 'Details'}).getByText('Open', {exact: true}).waitFor();
+  await page.getByRole('button', {name: 'Mark won'}).click();
+  dialog = page.getByRole('dialog', {name: 'Mark won'});
+  await dialog.getByLabel('Code').waitFor();
+  for (const hidden of ['Project name', 'Status', 'Starts on', 'Client']) {
+    if (await dialog.getByLabel(hidden, {exact: true}).count()) throw new Error(`the action form must show only its fields, not ${hidden}`);
+  }
+  if (await dialog.getByRole('button', {name: 'Save & New'}).count()) throw new Error('an update action offers no Save & New');
+  await dialog.getByLabel('Code').fill('BO-1');
+  await shot(page, '17-quick-action-update');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await page.getByRole('region', {name: 'Details'}).getByText('Won', {exact: true}).waitFor();
+  await page.getByRole('region', {name: 'Details'}).getByText('BO-1', {exact: true}).waitFor();
+
+  step('quick actions: a create action on Client makes a project through its Client field');
+  await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:client')}`);
+  quick = page.getByRole('region', {name: 'Quick actions'});
+  await quick.getByRole('button', {name: 'New quick action'}).click();
+  await quick.getByLabel('Label', {exact: true}).fill('Start project');
+  await quick.getByLabel('Kind').selectOption('create');
+  await quick.getByLabel('Creates').selectOption({label: 'Project (Client)'});
+  if (await quick.getByRole('checkbox', {name: 'Client', exact: true}).count()) throw new Error('the reference field is set by the action, not chosen');
+  await quick.getByRole('checkbox', {name: 'Project name'}).check();
+  await quick.getByRole('checkbox', {name: 'Code', exact: true}).check();
+  await quick.getByRole('button', {name: 'Add preset'}).click();
+  await quick.getByLabel('Preset field 1').selectOption({label: 'Status'});
+  await quick.getByLabel('Value for preset 1').selectOption('won');
+  await quick.getByRole('button', {name: 'Add quick action'}).click();
+  await quick.getByRole('row', {name: /Start project/}).getByText('Creates Project (Client)').waitFor();
+  await page.goto(`${origin}/o/custom:client`);
+  await page.getByRole('link', {name: 'Analytical Engines'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
+  await page.getByRole('button', {name: 'Start project'}).click();
+  dialog = page.getByRole('dialog', {name: 'Start project'});
+  if (await dialog.getByLabel('Client', {exact: true}).inputValue() !== 'Analytical Engines') throw new Error('the create action must name its parent');
+  if (!(await dialog.getByLabel('Client', {exact: true}).evaluate(element => element.readOnly))) throw new Error('the parent must not be changed from a quick action');
+  if (await dialog.getByLabel('Status', {exact: true}).count()) throw new Error('a preset the action does not show stays hidden');
+  await dialog.getByLabel('Project name').fill('Quick project');
+  await dialog.getByLabel('Code').fill('QP-1');
+  await shot(page, '18-quick-action-create');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
+  await page.getByRole('region', {name: 'Projects'}).getByRole('link', {name: 'Quick project'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Quick project'}).waitFor();
+  await page.getByRole('region', {name: 'Details'}).getByText('Won', {exact: true}).waitFor();
+  await page.getByRole('link', {name: 'Analytical Engines'}).waitFor();
 
   step('the Object Manager creates an object and a field');
   await page.goto(`${origin}/settings`);

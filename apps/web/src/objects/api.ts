@@ -183,6 +183,15 @@ export type RolePermission = {roleId: string; roleName: string; access: ObjectAc
 export type ValidationRule = {name: string; description: string | null; condition: string; message: string; errorField: string | null; active: boolean; version: number};
 export type NewValidationRule = {name: string; description?: string | null; condition: string; message: string; error_field?: string | null; active?: boolean};
 export type ValidationRuleChanges = {description?: string | null; condition?: string; message?: string; error_field?: string | null; active?: boolean};
+/** A quick action (ADR 0032): a record-page shortcut that updates chosen fields or creates a related record. */
+export type QuickActionKind = 'update' | 'create';
+/** `fields` and `presets` use field API names, `name` meaning the record name. Create actions name the child object and its reference field. */
+export type QuickAction = {name: string; label: string; kind: QuickActionKind; position: number; targetObject: string | null; targetField: string | null; fields: string[]; presets: Record<string, unknown>; version: number};
+export type NewQuickAction = {name: string; label: string; kind: QuickActionKind; position?: number; target_object?: string; target_field?: string; fields?: string[]; presets?: Record<string, unknown>};
+/** Kind and target are fixed once an action exists. */
+export type QuickActionChanges = {label?: string; position?: number; fields?: string[]; presets?: Record<string, unknown>};
+/** Quick actions per object (ADR 0032 §2). */
+export const quickActionsMax = 10;
 /** Record-triggered automations (ADR 0022). */
 export type AutomationTrigger = 'create' | 'update' | 'create_or_update' | 'delete' | 'undelete';
 export type AutomationTiming = 'before_save' | 'after_save' | 'async' | 'scheduled';
@@ -285,6 +294,11 @@ export type ObjectsClient = {
   createValidationRule(apiName: string, input: NewValidationRule): Promise<ValidationRule>;
   updateValidationRule(apiName: string, name: string, version: number, changes: ValidationRuleChanges): Promise<ValidationRule>;
   deleteValidationRule(apiName: string, name: string, version: number): Promise<void>;
+  /** An object's quick actions, by position then name (ADR 0032). */
+  quickActions(apiName: string, signal?: AbortSignal): Promise<QuickAction[]>;
+  createQuickAction(apiName: string, input: NewQuickAction): Promise<QuickAction>;
+  updateQuickAction(apiName: string, name: string, version: number, changes: QuickActionChanges): Promise<QuickAction>;
+  deleteQuickAction(apiName: string, name: string, version: number): Promise<void>;
   automations(apiName: string, signal?: AbortSignal): Promise<Automation[]>;
   createAutomation(apiName: string, input: NewAutomation): Promise<Automation>;
   updateAutomation(apiName: string, name: string, version: number, changes: AutomationChanges): Promise<Automation>;
@@ -312,6 +326,12 @@ const standardKeys = new Set(['id', 'object', 'name', 'owner', 'created_at', 'cr
 type ApiRule = {name: string; description: string | null; condition: string; message: string; error_field: string | null; active: boolean; version: number};
 export function ruleFromApi(rule: ApiRule): ValidationRule {
   return {name: rule.name, description: rule.description ?? null, condition: rule.condition, message: rule.message, errorField: rule.error_field ?? null, active: rule.active === true, version: rule.version};
+}
+type ApiQuickAction = {name: string; label: string; kind: QuickActionKind; position: number; target_object?: string | null; target_field?: string | null; fields?: unknown; presets?: unknown; version: number};
+export function quickActionFromApi(action: ApiQuickAction): QuickAction {
+  const presets = typeof action.presets === 'object' && action.presets !== null && !Array.isArray(action.presets) ? {...action.presets as Record<string, unknown>} : {};
+  const fields = Array.isArray(action.fields) ? action.fields.filter((field): field is string => typeof field === 'string') : [];
+  return {name: action.name, label: action.label, kind: action.kind === 'create' ? 'create' : 'update', position: typeof action.position === 'number' ? action.position : 0, targetObject: action.target_object ?? null, targetField: action.target_field ?? null, fields, presets, version: action.version};
 }
 type ApiRun = {id: string; record: string; event: AutomationRun['event']; outcome: AutomationRun['outcome']; detail: string | null; saves: number; ran_at: string; ran_by: UserReference | null};
 export function runFromApi(run: ApiRun): AutomationRun {
@@ -496,6 +516,19 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     async deleteValidationRule(apiName, name, version) {
       await request<unknown>(`${object(apiName)}/validation-rules/${encodeURIComponent(name)}?expected_version=${version}`, {method: 'DELETE'});
     },
+    async quickActions(apiName, signal) {
+      const body = await request<{data: ApiQuickAction[]}>(`${object(apiName)}/quick-actions`, {signal});
+      return body.data.map(quickActionFromApi);
+    },
+    async createQuickAction(apiName, input) {
+      return quickActionFromApi(await request<ApiQuickAction>(`${object(apiName)}/quick-actions`, {method: 'POST', json: input}));
+    },
+    async updateQuickAction(apiName, name, version, changes) {
+      return quickActionFromApi(await request<ApiQuickAction>(`${object(apiName)}/quick-actions/${encodeURIComponent(name)}`, {method: 'PATCH', json: {...changes, expected_version: version}}));
+    },
+    async deleteQuickAction(apiName, name, version) {
+      await request<unknown>(`${object(apiName)}/quick-actions/${encodeURIComponent(name)}?expected_version=${version}`, {method: 'DELETE'});
+    },
     async automations(apiName, signal) {
       const body = await request<{data: ApiAutomation[]}>(`${object(apiName)}/automations`, {signal});
       return body.data.map(automationFromApi);
@@ -599,6 +632,8 @@ export function createFixtureObjectsClient(): ObjectsClient {
   const shares: Record<string, RecordShare[]> = {};
   const rules: Record<string, ValidationRule[]> = {};
   const automations: Record<string, Automation[]> = {};
+  const quickActions: Record<string, QuickAction[]> = {};
+  const byPosition = (left: QuickAction, right: QuickAction) => left.position - right.position || left.name.localeCompare(right.name);
   const fullRights: RecordRights = {read: true, edit: true, delete: true, share: true, transfer: true};
   const find = (apiName: string) => {
     const object = objects.find(item => item.apiName === apiName);
@@ -764,6 +799,44 @@ export function createFixtureObjectsClient(): ObjectsClient {
       return structuredClone(rule);
     },
     async deleteValidationRule(apiName, name) { rules[apiName] = (rules[apiName] ?? []).filter(rule => rule.name !== name); },
+    async quickActions(apiName) { find(apiName); return structuredClone(quickActions[apiName] ?? []); },
+    async createQuickAction(apiName, input) {
+      find(apiName);
+      const list = quickActions[apiName] ??= [];
+      if (list.length >= quickActionsMax) throw new ObjectsApiError('invalid', 'validation.failed', [{field: 'name', code: 'quick_actions.limit_reached', detail: `an object can have at most ${quickActionsMax} quick actions`}]);
+      if (list.some(item => item.name === input.name)) throw new ObjectsApiError('conflict', 'quick_actions.duplicate_name');
+      const issues: ValidationIssue[] = [];
+      if (!input.fields?.length) issues.push({field: 'fields', code: 'quick_actions.fields_invalid', detail: 'choose 1 to 20 fields'});
+      if (input.kind === 'create' && (!input.target_object || !input.target_field)) issues.push({field: 'target_object', code: 'quick_actions.target_required', detail: 'choose the object a create action makes records of'});
+      if (input.kind === 'update' && (input.target_object || input.target_field)) issues.push({field: 'target_object', code: 'quick_actions.target_not_allowed', detail: 'only create actions have a target'});
+      if (issues.length) throw new ObjectsApiError('invalid', 'validation.failed', issues);
+      const position = input.position ?? list.reduce((last, item) => Math.max(last, item.position + 1), 0);
+      const created: QuickAction = {name: input.name, label: input.label, kind: input.kind, position, targetObject: input.target_object ?? null, targetField: input.target_field ?? null, fields: [...(input.fields ?? [])], presets: structuredClone(input.presets ?? {}), version: 1};
+      list.push(created);
+      list.sort(byPosition);
+      return structuredClone(created);
+    },
+    async updateQuickAction(apiName, name, version, changes) {
+      const list = quickActions[apiName] ?? [];
+      const found = list.find(item => item.name === name);
+      if (!found) throw new ObjectsApiError('missing');
+      if (found.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      Object.assign(found, {
+        ...(changes.label !== undefined ? {label: changes.label} : {}),
+        ...(changes.position !== undefined ? {position: changes.position} : {}),
+        ...(changes.fields !== undefined ? {fields: [...changes.fields]} : {}),
+        ...(changes.presets !== undefined ? {presets: structuredClone(changes.presets)} : {}),
+        version: found.version + 1,
+      });
+      list.sort(byPosition);
+      return structuredClone(found);
+    },
+    async deleteQuickAction(apiName, name, version) {
+      const found = (quickActions[apiName] ?? []).find(item => item.name === name);
+      if (!found) throw new ObjectsApiError('missing');
+      if (found.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      quickActions[apiName] = (quickActions[apiName] ?? []).filter(item => item.name !== name);
+    },
     async automations(apiName) { find(apiName); return structuredClone(automations[apiName] ?? []); },
     async createAutomation(apiName, input) {
       find(apiName);

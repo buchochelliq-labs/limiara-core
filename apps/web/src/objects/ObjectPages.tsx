@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {formatValue, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import './objects.css';
@@ -152,7 +152,10 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState('');
+  const [running, setRunning] = useState<QuickAction | null>(null);
+  const [relatedRefresh, setRelatedRefresh] = useState(0);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
+  const actions = useQuickActions(client, apiName);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -186,9 +189,13 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   // Record-level rights (ADR 0016) refine the object's permissions.
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
+  // An action grants nothing (ADR 0032 §3): it shows only where the member could do the same through the full form.
+  const available = actions.list.filter(action => action.kind === 'update' ? canEdit : actionTarget(action, actions.targets)?.access.create === true);
+  const runningTarget = running?.kind === 'create' ? actionTarget(running, actions.targets) : undefined;
 
   return <div className="content-canvas object-page">
     <PageHeader breadcrumb={`Objects / ${object.label}`} title={record.name} headingRef={headingRef}>
+      {available.map(action => <Button key={action.name} variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setRunning(action); }}>{action.label}</Button>)}
       {canEdit && <Button variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setEditing(true); }}>Edit</Button>}
       {canDelete && <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>}
     </PageHeader>
@@ -203,6 +210,13 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       else if (next === 'close') onNavigate(recordRoute(object.apiName, saved.id));
       if (next === 'close') setEditing(false);
     }} />}
+    {running?.kind === 'update' && <RecordModal client={client} object={object} record={record} title={running.label} only={running.fields} always={running.presets} offerNew={false} onNavigate={onNavigate} onClose={() => setRunning(null)} onSaved={saved => {
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      setRunning(null);
+    }} />}
+    {running?.kind === 'create' && runningTarget && running.targetField && <RecordModal client={client} object={runningTarget} title={running.label} presets={{[running.targetField]: {value: record.id, label: record.name}}} only={running.fields} always={running.presets} onNavigate={onNavigate}
+      // As with New on a related list, the member stays on this record and its lists show what they added.
+      onClose={() => setRunning(null)} onSaved={(_, next) => { setRelatedRefresh(value => value + 1); if (next === 'close') setRunning(null); }} />}
     <section aria-label="Details" className="object-section">
       <h2>Details</h2>
       <dl className="object-fields">
@@ -210,7 +224,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
         {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} onNavigate={onNavigate} /></dd></div>)}
       </dl>
     </section>
-    <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} onNavigate={onNavigate} />
+    <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} refresh={relatedRefresh} onNavigate={onNavigate} />
     <section aria-label="System information" className="object-section">
       <h2>System information</h2>
       <dl className="object-fields">
@@ -226,11 +240,48 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   </div>;
 }
 
+/** The child object a create action makes records of, when the member's description of it names the action's reference field. */
+function actionTarget(action: QuickAction, targets: Record<string, ObjectDescription>): ObjectDescription | undefined {
+  const target = action.targetObject ? targets[action.targetObject] : undefined;
+  return target?.fields.some(field => field.apiName === action.targetField) ? target : undefined;
+}
+
+/**
+ * An object's quick actions in position order (ADR 0032), with the child
+ * objects of its create actions described to learn whether the member may
+ * create them. A failure leaves the page without actions.
+ */
+function useQuickActions(client: ObjectsClient, apiName: string): {list: QuickAction[]; targets: Record<string, ObjectDescription>} {
+  const [list, setList] = useState<QuickAction[]>([]);
+  const [targets, setTargets] = useState<Record<string, ObjectDescription>>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    setList([]);
+    setTargets({});
+    client.quickActions(apiName, controller.signal)
+      .then(actions => {
+        if (controller.signal.aborted) return;
+        setList([...actions].sort((left, right) => left.position - right.position || left.name.localeCompare(right.name)));
+        for (const target of new Set(actions.flatMap(action => action.kind === 'create' && action.targetObject ? [action.targetObject] : []))) {
+          client.describe(target, controller.signal)
+            .then(description => { if (!controller.signal.aborted) setTargets(known => ({...known, [target]: description})); })
+            // Without a description the action is not offered.
+            .catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [client, apiName]);
+  return {list, targets};
+}
+
 /** The records of other objects that point at this one (ADR 0028), each list showing only what the member may see. */
-export function RelatedLists({client, apiName, recordId, recordName, onNavigate}: {client: ObjectsClient; apiName: string; recordId: string; recordName?: string; onNavigate: Navigate}) {
+export function RelatedLists({client, apiName, recordId, recordName, refresh = 0, onNavigate}: {client: ObjectsClient; apiName: string; recordId: string; recordName?: string; refresh?: number; onNavigate: Navigate}) {
   const [load, setLoad] = useState<Load<RelatedList[]>>({status: 'loading'});
   const [more, setMore] = useState<Record<string, 'loading' | 'error'>>({});
-  const [attempt, setAttempt] = useState(0);
+  const [ownAttempt, setAttempt] = useState(0);
+  // A save elsewhere on the page, such as a quick action, refreshes the lists too.
+  const attempt = ownAttempt + refresh;
   // The child objects, described to learn whether the member may create them (ADR 0032 §1).
   const [children, setChildren] = useState<Record<string, ObjectDescription>>({});
   const [creating, setCreating] = useState<RelatedList | null>(null);
@@ -316,17 +367,17 @@ function Created({object, record, onNavigate}: {object: ObjectDescription; recor
  * (or, when editing, shows it updated); Save & New keeps the modal open on
  * a blank form for the next record.
  */
-export function RecordModal({client, object, record, presets, onClose, onSaved, onNavigate}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate}) {
+export function RecordModal({client, object, record, presets, title, only, always, offerNew, onClose, onSaved, onNavigate}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; title?: string; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate}) {
   const sequence = useSaveAndNew();
   // After Save & New on an edit, the modal goes on to create a record.
   const [editing, setEditing] = useState(record);
   // A save in flight keeps the modal open, so its result is never lost.
   const [saving, setSaving] = useState(false);
   const noun = object.label.toLowerCase();
-  return <Modal title={editing ? `Edit ${editing.name}` : `New ${noun}`} onClose={onClose} busy={saving}>
+  return <Modal title={title ?? (editing ? `Edit ${editing.name}` : `New ${noun}`)} onClose={onClose} busy={saving}>
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {/* Each form after Save & New takes focus, since the one that had it is gone. */}
-    <RecordForm key={sequence.form} focusFirst={sequence.form > 0} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} onCancel={onClose} onSaved={(saved, next) => {
+    <RecordForm key={sequence.form} focusFirst={sequence.form > 0} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} only={only} always={always} offerNew={offerNew} onCancel={onClose} onSaved={(saved, next) => {
       onSaved(saved, next);
       if (next === 'new') { setEditing(undefined); sequence.next(saved); }
     }} />
@@ -349,11 +400,24 @@ export function NewRecordPage({client, apiName, onNavigate, headingRef}: {client
   </div>;
 }
 
-type Draft = Record<string, string | boolean | string[]>;
+/** What a form input holds for one field: text, a checkbox, or the chosen values of a multi-select. */
+export type DraftValue = string | boolean | string[];
+type Draft = Record<string, DraftValue>;
 
 /** Fields a person can type into; formula fields are computed (ADR 0021). */
-function editableFields(object: ObjectDescription) {
+export function editableFields(object: ObjectDescription) {
   return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup');
+}
+
+/** Starts the inputs of preset fields at their preset, so the form shows what a save sends. */
+function withValues(object: ObjectDescription, draft: Draft, values: Record<string, unknown> = {}): Draft {
+  const next = {...draft};
+  for (const [key, value] of Object.entries(values)) {
+    if (key === 'name') next.name = typeof value === 'string' ? value : '';
+    const field = object.fields.find(item => item.apiName === key);
+    if (field) next[key] = toDraftValue(field, value);
+  }
+  return next;
 }
 
 /** Values a new record starts with, such as the parent of a related record (ADR 0032). */
@@ -364,12 +428,17 @@ function initialDraft(object: ObjectDescription, record?: ObjectRecord, presets:
   for (const field of editableFields(object)) {
     const preset = record ? undefined : presets[field.apiName];
     const value = preset ? preset.value : record ? record.values[field.apiName] : field.options.find(option => option.default)?.value;
-    if (field.type === 'boolean') draft[field.apiName] = value === true;
-    else if (field.type === 'multi_picklist') draft[field.apiName] = Array.isArray(value) ? value.map(String) : [];
-    else if (field.type === 'date_time' && typeof value === 'string') draft[field.apiName] = toLocalInput(value);
-    else draft[field.apiName] = value === undefined || value === null ? '' : String(value);
+    draft[field.apiName] = toDraftValue(field, value);
   }
   return draft;
+}
+
+/** An API value as what a form input holds; the reverse of `toApiValue`. */
+export function toDraftValue(field: ObjectField, value: unknown): DraftValue {
+  if (field.type === 'boolean') return value === true;
+  if (field.type === 'multi_picklist') return Array.isArray(value) ? value.map(String) : [];
+  if (field.type === 'date_time' && typeof value === 'string') return toLocalInput(value);
+  return value === undefined || value === null ? '' : String(value);
 }
 
 /** `datetime-local` works in the member's time zone; the API stores UTC. */
@@ -380,7 +449,8 @@ function toLocalInput(value: string): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
-function toApiValue(field: ObjectField, value: Draft[string]): unknown {
+/** What a form input holds as the value the record API takes for its field. */
+export function toApiValue(field: ObjectField, value: DraftValue): unknown {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) && value.length ? value : null;
   if (typeof value !== 'string' || value.trim() === '') return null;
@@ -395,7 +465,7 @@ function toApiValue(field: ObjectField, value: Draft[string]): unknown {
   return value.trim();
 }
 
-const inputTypes: Partial<Record<ObjectField['type'], string>> = {email: 'email', phone: 'tel', url: 'url', number: 'number', currency: 'number', percent: 'number', date: 'date', date_time: 'datetime-local'};
+export const inputTypes: Partial<Record<ObjectField['type'], string>> = {email: 'email', phone: 'tel', url: 'url', number: 'number', currency: 'number', percent: 'number', date: 'date', date_time: 'datetime-local'};
 
 /** A lookup picker over the records the field may point at: those the member sees that meet its filter (ADR 0028). */
 function LookupInput({client, objectApiName, field, value, currentName, error, onChange}: {client: ObjectsClient; objectApiName: string; field: ObjectField; value: string; currentName?: string; error?: string; onChange: (value: string) => void}) {
@@ -428,12 +498,32 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
   </div>;
 }
 
+/**
+ * The values a save sends. Edits send only what changed, so untouched values
+ * are never re-checked, and a new record leaves empty fields out. An action's
+ * presets (ADR 0032) go with every save, but a shown preset field always sends
+ * what the member submitted, even unchanged or empty, so their input wins.
+ */
+export function valuesToSend({record, draft, initial, shown, showsName, always = {}}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>}): Record<string, unknown> {
+  const overrides = (apiName: string) => Object.prototype.hasOwnProperty.call(always, apiName);
+  const values: Record<string, unknown> = {};
+  if (showsName && (!record || draft.name !== initial.name || overrides('name'))) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
+  for (const field of shown) {
+    const value = draft[field.apiName];
+    if (record && !overrides(field.apiName) && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
+    const apiValue = toApiValue(field, value ?? '');
+    if (!record && apiValue === null && !overrides(field.apiName)) continue;
+    values[field.apiName] = apiValue;
+  }
+  return {...always, ...values};
+}
+
 /** What to do once a record is saved: close the form, or start a new record. */
 export type AfterSave = 'close' | 'new';
 
 /** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
-export function RecordForm({client, object, record, presets = {}, onCancel, onSaved, onSavingChange, focusFirst = false}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean}) {
-  const [draft, setDraft] = useState<Draft>(() => initialDraft(object, record, presets));
+export function RecordForm({client, object, record, presets = {}, only, always, offerNew = true, onCancel, onSaved, onSavingChange, focusFirst = false}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean}) {
+  const [draft, setDraft] = useState<Draft>(() => withValues(object, initialDraft(object, record, presets), always));
   const [saving, setSavingState] = useState(false);
   const setSaving = (value: boolean) => { setSavingState(value); onSavingChange?.(value); };
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
@@ -443,24 +533,18 @@ export function RecordForm({client, object, record, presets = {}, onCancel, onSa
   const initial = useMemo(() => initialDraft(object, record), [object, record]);
   const issueFor = (field: string) => issues.find(issue => issue.field === field)?.detail;
   const set = (key: string, value: Draft[string]) => setDraft(current => ({...current, [key]: value}));
+  // A quick action (ADR 0032) asks only for its fields; a parent preset stays visible, read-only.
+  const showsName = !only || only.includes('name');
+  const shown = editableFields(object).filter(field => !only || only.includes(field.apiName) || (!record && presets[field.apiName] !== undefined && isReference(field.type)));
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
     setIssues([]);
     setError('');
-    const values: Record<string, unknown> = {};
-    if (!record || draft.name !== initial.name) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
-    for (const field of editableFields(object)) {
-      const value = draft[field.apiName];
-      // Edits send only what changed, so untouched values are never re-checked.
-      if (record && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
-      const apiValue = toApiValue(field, value ?? '');
-      if (!record && apiValue === null) continue;
-      values[field.apiName] = apiValue;
-    }
     try {
-      const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, values) : await client.createRecord(object.apiName, values);
+      const sent = valuesToSend({record: !!record, draft, initial, shown, showsName, always});
+      const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, sent) : await client.createRecord(object.apiName, sent);
       onSaved(saved, next.current);
     } catch (reason) {
       if (reason instanceof ObjectsApiError && reason.reason === 'invalid' && reason.issues.length) {
@@ -480,8 +564,8 @@ export function RecordForm({client, object, record, presets = {}, onCancel, onSa
 
   return <form className="object-form" onSubmit={event => void submit(event)} noValidate aria-busy={saving || undefined}>
     {error && <Alert variant="danger" title={error}>{issues.length > 0 && <ul>{issues.map(issue => <li key={`${issue.field}-${issue.code}-${issue.detail}`}>{issue.field === 'record' ? issue.detail : <>{object.fields.find(field => field.apiName === issue.field)?.label ?? (issue.field === 'name' ? object.nameLabel : issue.field)}: {issue.detail}</>}</li>)}</ul>}</Alert>}
-    <TextField label={object.nameLabel} required autoFocus={focusFirst} value={String(draft.name ?? '')} error={issueFor('name')} maxLength={255} onChange={event => set('name', event.target.value)} />
-    {editableFields(object).map(field => {
+    {showsName && <TextField label={object.nameLabel} required autoFocus={focusFirst} value={String(draft.name ?? '')} error={issueFor('name')} maxLength={255} onChange={event => set('name', event.target.value)} />}
+    {shown.map(field => {
       const value = draft[field.apiName];
       const fieldError = issueFor(field.apiName);
       if (field.type === 'boolean') return <label key={field.apiName} className="object-checkbox"><input type="checkbox" checked={value === true} onChange={event => set(field.apiName, event.target.checked)} />{field.label}{fieldError && <span className="ui-field__error">{fieldError}</span>}</label>;
@@ -506,7 +590,7 @@ export function RecordForm({client, object, record, presets = {}, onCancel, onSa
     })}
     <div className="object-page__actions">
       <Button type="submit" loading={saving} onClick={() => { next.current = 'close'; }}>Save</Button>
-      {object.access.create && <Button type="submit" variant="secondary" disabled={saving} onClick={() => { next.current = 'new'; }}>Save &amp; New</Button>}
+      {offerNew && object.access.create && <Button type="submit" variant="secondary" disabled={saving} onClick={() => { next.current = 'new'; }}>Save &amp; New</Button>}
       <Button type="button" variant="quiet" onClick={onCancel} disabled={saving}>Cancel</Button>
     </div>
     {record && <p className="object-form__meta"><Badge variant="neutral">Version {record.version}</Badge></p>}
