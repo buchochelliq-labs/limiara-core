@@ -3,6 +3,8 @@ import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../
 import {fieldTypes, isReference, ObjectsApiError, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
 import {failed, objectRoute, useObject, type Load} from './ObjectPages';
 import {Automations} from './Automations';
+import {QuickActions} from './QuickActions';
+import {suggestName} from './names';
 import {Issues, issuesText} from './issues';
 import './objects.css';
 
@@ -13,11 +15,7 @@ const managerObjectRoute = (apiName: string) => `${objectManagerRoute}/${encodeU
 
 const origins: Record<ObjectSummary['origin'], string> = {system: 'Standard', plugin: 'Feature', workspace: 'Custom'};
 
-/** Turns a label into a short API name: `Project stage` → `project_stage`. */
-export function suggestName(label: string): string {
-  const name = label.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^[^a-z]+/, '').replace(/_+$/, '').slice(0, 63);
-  return name.replace(/_+$/, '');
-}
+export {suggestName} from './names';
 
 /** Setup → Object Manager: every object the caller can see, and new custom objects. */
 export function ObjectManager({client, onNavigate, headingRef}: {client: ObjectsClient; onNavigate: Navigate; headingRef?: RefObject<HTMLHeadingElement | null>}) {
@@ -202,6 +200,7 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
         {filtering && object.fields.some(field => field.apiName === filtering) && <LookupFilterForm key={filtering} client={client} object={object} field={object.fields.find(field => field.apiName === filtering) ?? object.fields[0]!} onDone={message => { setFiltering(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}
+      {canManage && <QuickActions client={client} object={object} onNotice={setNotice} />}
       {canManage && <Automations client={client} object={object} onNotice={setNotice} />}
       {canManage && <RecordAccessSettings client={client} object={object} onSaved={message => { setNotice(message); retry(); }} />}
       {canManage && <ObjectPermissions client={client} object={object} />}

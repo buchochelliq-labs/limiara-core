@@ -93,7 +93,9 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   components (for engine objects, create and edit open as a modal with
   Save, Save & New and Cancel, full screen on phones; related lists offer
   New with the parent filled in, and the shell offers a global New menu;
-  admin-defined quick actions remain, #179);
+  admin-defined quick actions are delivered on the web, defined in the
+  Object Manager and shown on record pages, while sending them to device
+  replicas is a follow-up, #179);
   then the workspace layout builder with customisation overlays; then
   personal preferences. Follow-ups: the API searches people by full name (plus exact
   email) only, not by organisation or role; it cannot yet filter people by
@@ -198,7 +200,7 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
 - Relationships beyond the master-detail fields of [ADR 0025](../adr/0025-master-detail-relationships.md) and the roll-up summary fields of [ADR 0026](../adr/0026-rollup-summary-fields.md) (#295): roll-up filter criteria, averages and roll-ups over lookups, background recalculation for very large masters, a junction lock order that cannot deadlock with a cascade, multi-level master-detail, moving details between masters as an opt-in field setting, and converting a lookup into a master-detail field on an object that already has records.
 - Related lists and lookup filters beyond [ADR 0028](../adr/0028-related-lists-and-lookup-filters.md) (#295): filters that compare the target with the record being edited, optional filters that only warn, choosing a related list's columns and order, and related lists through junction objects.
 - Reports beyond the saved reports of [ADR 0027](../adr/0027-saved-reports.md) (#313, #314): a report builder that writes the query from chosen fields, groupings and filters, matrix reports, folders with sharing, scheduled email subscriptions, CSV and XLSX export, heavy aggregates on the analytics store (#284), and dashboards of report components with running user and refresh.
-- Quick actions beyond the server slice of [ADR 0032](../adr/0032-quick-actions.md) (#179): the metadata, API and cascades are built, but quick actions are not yet sent to device replicas (ADR 0032 §5 and ADR 0024), so their changes do not move the workspace metadata version yet; the Object Manager editor and the record-page buttons follow, and "Log a call" waits for the activities decision.
+- Quick actions beyond the web delivery of [ADR 0032](../adr/0032-quick-actions.md) (#179): the metadata, API, cascades, Object Manager editor and web record-page buttons are built, but quick actions are not yet sent to device replicas (ADR 0032 §5 and ADR 0024), so their changes do not move the workspace metadata version yet and the phone app does not offer them; "Log a call" waits for the activities decision.
 - Formulas beyond [ADR 0021](../adr/0021-formulas-and-validation-rules.md) (#298): filtering on formulas that follow lookups or use the time, which needs values kept current from related changes and a schedule.
 - Global search beyond [ADR 0020](../adr/0020-global-search.md) (#305): boosting recently viewed records (with the recently viewed service, #285), synonyms and typo tolerance, server-side highlighting, the search bar on narrow screens, plugin objects with typed stores (Contacts) in the index, and a pluggable external search engine fed from the change log.
 - Field history beyond [ADR 0017](../adr/0017-field-history.md) (#311): per-workspace retention limits, export and archival of history to object storage, and hiding entries for fields hidden by field-level security (#316).

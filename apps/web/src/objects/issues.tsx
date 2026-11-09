@@ -10,6 +10,7 @@ export function issuesText(error: unknown, fallback: string): {message: string; 
     if (error.code === 'objects.object_in_use') return {message: 'An automation creates records of this object. Change or delete it first.', issues: []};
     if (error.code === 'objects.field_in_use') return {message: 'A validation rule, formula field or automation uses this field. Change or delete it first.', issues: []};
     if (error.code === 'automations.duplicate_name') return {message: 'Another automation on this object has that name. Choose another name.', issues: []};
+    if (error.code === 'quick_actions.duplicate_name') return {message: 'Another quick action on this object has that name. Choose another name.', issues: []};
     if (error.code === 'rules.duplicate_name') return {message: 'Another rule on this object has that name. Choose another name.', issues: []};
     return {message: error.message, issues: []};
   }

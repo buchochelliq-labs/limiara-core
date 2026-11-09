@@ -2,11 +2,12 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
-import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, recordFromApi, type ObjectDescription} from './api';
+import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
 import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
+import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
 import {MembersPage} from './MembersPage';
 import {HistoryPanel} from './HistoryPanel';
 import {formatCell, QueryConsole, queryProblem, QueryResults} from './QueryConsole';
@@ -598,5 +599,121 @@ describe('related lists and lookup filters (ADR 0028)', () => {
     expect((await client.lookupCandidates('custom:task', 'custom:project', 'zeph')).records.map(item => item.name)).toEqual(['Zephyr Works']);
     expect((await client.describe('custom:task')).fields[0]?.lookupFilter).toBe("custom:status = 'open'");
     expect(renderToStaticMarkup(<RelatedLists client={client} apiName="custom:project" recordId={parent.id} onNavigate={noop} />)).toContain('ui-skeleton');
+  });
+});
+
+describe('quick actions (ADR 0032)', () => {
+  const account: ObjectDescription = {...project, apiName: 'custom:account', label: 'Account', pluralLabel: 'Accounts', nameLabel: 'Account name', fields: []};
+  const contact: ObjectDescription = {...project, apiName: 'custom:contact', label: 'Contact', pluralLabel: 'Contacts', nameLabel: 'Full name', fields: [
+    {apiName: 'custom:account', label: 'Account', description: null, type: 'lookup', origin: 'workspace', required: false, unique: false, indexed: true, options: [], referenceObject: 'custom:account', deleteBehaviour: 'clear', trackHistory: false, version: 1},
+    {apiName: 'custom:email', label: 'Email', description: null, type: 'email', origin: 'workspace', required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1},
+    {apiName: 'custom:greeting', label: 'Greeting', description: null, type: 'formula', origin: 'workspace', required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1, formula: '"Hi " & name', formulaType: 'text'},
+  ]};
+  const wire = {name: 'add_contact', label: 'Add contact', kind: 'create', position: 1, target_object: 'custom:contact', target_field: 'custom:account', fields: ['name', 'custom:email'], presets: {'custom:role': 'buyer'}, version: 1, created_at: '2026-11-09T00:00:00Z', created_by: {}, updated_at: '2026-11-09T00:00:00Z', updated_by: {}};
+
+  it('maps actions from the API', () => {
+    expect(quickActionFromApi(wire as Parameters<typeof quickActionFromApi>[0])).toEqual({name: 'add_contact', label: 'Add contact', kind: 'create', position: 1, targetObject: 'custom:contact', targetField: 'custom:account', fields: ['name', 'custom:email'], presets: {'custom:role': 'buyer'}, version: 1});
+    expect(quickActionFromApi({name: 'close', label: 'Close', kind: 'update', position: 0, target_object: null, target_field: null, fields: ['custom:code'], presets: {}, version: 2})).toMatchObject({kind: 'update', targetObject: null, targetField: null, presets: {}});
+  });
+
+  it('lists, creates, changes and deletes actions by name with versions', async () => {
+    const base = `/api/v1/workspaces/${workspace}/objects/custom%3Aaccount/quick-actions`;
+    const listing = respond(200, {data: [wire]});
+    expect((await createObjectsApiClient(workspace, listing).quickActions('custom:account')).map(action => action.name)).toEqual(['add_contact']);
+    expect(vi.mocked(listing).mock.calls[0]?.[0]).toBe(base);
+
+    const create = respond(201, wire);
+    await createObjectsApiClient(workspace, create).createQuickAction('custom:account', {name: 'add_contact', label: 'Add contact', kind: 'create', target_object: 'custom:contact', target_field: 'custom:account', fields: ['name'], presets: {'custom:role': 'buyer'}});
+    const [createUrl, createInit] = vi.mocked(create).mock.calls[0] ?? [];
+    expect(createUrl).toBe(base);
+    expect(createInit?.method).toBe('POST');
+    expect(JSON.parse(String(createInit?.body))).toEqual({name: 'add_contact', label: 'Add contact', kind: 'create', target_object: 'custom:contact', target_field: 'custom:account', fields: ['name'], presets: {'custom:role': 'buyer'}});
+
+    const update = respond(200, {...wire, version: 2});
+    await createObjectsApiClient(workspace, update).updateQuickAction('custom:account', 'add_contact', 1, {label: 'New contact', position: 3});
+    const [updateUrl, updateInit] = vi.mocked(update).mock.calls[0] ?? [];
+    expect(updateUrl).toBe(`${base}/add_contact`);
+    expect(updateInit?.method).toBe('PATCH');
+    expect(JSON.parse(String(updateInit?.body))).toEqual({label: 'New contact', position: 3, expected_version: 1});
+
+    const remove = respond(200, wire);
+    await createObjectsApiClient(workspace, remove).deleteQuickAction('custom:account', 'add_contact', 2);
+    const [deleteUrl, deleteInit] = vi.mocked(remove).mock.calls[0] ?? [];
+    expect(deleteUrl).toBe(`${base}/add_contact?expected_version=2`);
+    expect(deleteInit?.method).toBe('DELETE');
+
+    await expect(createObjectsApiClient(workspace, respond(409, {code: 'quick_actions.duplicate_name'})).createQuickAction('custom:account', {name: 'x', label: 'X', kind: 'update', fields: ['name']})).rejects.toMatchObject({reason: 'conflict', code: 'quick_actions.duplicate_name'});
+    await expect(createObjectsApiClient(workspace, respond(400, {code: 'validation.failed', errors: [{field: 'presets.custom:budget', code: 'records.value_type', detail: 'enter a number'}]})).createQuickAction('custom:account', {name: 'x', label: 'X', kind: 'update', fields: ['name']})).rejects.toMatchObject({reason: 'invalid', issues: [{field: 'presets.custom:budget'}]});
+  });
+
+  it('keeps fixture actions in position order, refuses duplicates and stops at ten', async () => {
+    const client = createFixtureObjectsClient();
+    await client.createQuickAction('custom:project', {name: 'second', label: 'Second', kind: 'update', position: 5, fields: ['custom:code']});
+    await client.createQuickAction('custom:project', {name: 'first', label: 'First', kind: 'update', position: 1, fields: ['name'], presets: {'custom:status': 'won'}});
+    expect((await client.quickActions('custom:project')).map(action => action.name)).toEqual(['first', 'second']);
+    await expect(client.createQuickAction('custom:project', {name: 'first', label: 'Again', kind: 'update', fields: ['name']})).rejects.toMatchObject({reason: 'conflict', code: 'quick_actions.duplicate_name'});
+    for (let index = 0; index < 8; index++) await client.createQuickAction('custom:project', {name: `extra_${index}`, label: `Extra ${index}`, kind: 'update', fields: ['name']});
+    expect(await client.quickActions('custom:project')).toHaveLength(10);
+    await expect(client.createQuickAction('custom:project', {name: 'eleventh', label: 'Eleventh', kind: 'update', fields: ['name']})).rejects.toMatchObject({reason: 'invalid', issues: [{code: 'quick_actions.limit_reached'}]});
+    const changed = await client.updateQuickAction('custom:project', 'second', 1, {position: 0});
+    expect(changed).toMatchObject({position: 0, version: 2});
+    expect((await client.quickActions('custom:project'))[0]?.name).toBe('second');
+    await expect(client.deleteQuickAction('custom:project', 'second', 1)).rejects.toMatchObject({code: 'records.version_conflict'});
+    await client.deleteQuickAction('custom:project', 'second', 2);
+    expect(await client.quickActions('custom:project')).toHaveLength(9);
+  });
+
+  it('offers the lookups of other objects as targets and never their computed or reference fields', () => {
+    const targets = actionTargets([account, contact, project], 'custom:account');
+    expect(targets.map(targetLabel)).toEqual(['Contact (Account)']);
+    expect(actionFields(contact, 'custom:account').map(field => field.apiName)).toEqual(['custom:email']);
+  });
+
+  it('renders the Object Manager section and its form with labelled states', () => {
+    const section = renderToStaticMarkup(<QuickActions client={createFixtureObjectsClient()} object={project} onNotice={noop} />);
+    expect(section).toContain('<h2 id="quick-actions-heading">Quick actions</h2>');
+    expect(section).toContain('Loading quick actions');
+    const ready = {status: 'ready' as const, targets: actionTargets([contact], 'custom:account')};
+    const blank = renderToStaticMarkup(<QuickActionForm client={createFixtureObjectsClient()} object={project} action={null} targets={ready} onCancel={noop} onSaved={noop} />);
+    for (const label of ['Label', 'Action name', 'Kind', 'Position']) expect(blank).toContain(`>${label}`);
+    expect(blank).toContain('<legend>Fields on the form</legend>');
+    expect(blank).toContain('Project name');
+    expect(blank).toContain('<legend>Presets</legend>');
+    expect(blank).toContain('Add preset');
+    expect(blank).toContain('Add quick action');
+    const create: QuickAction = {name: 'add_contact', label: 'Add <b>contact</b>', kind: 'create', position: 0, targetObject: 'custom:contact', targetField: 'custom:account', fields: ['name', 'custom:email'], presets: {'custom:email': 'a@example.com'}, version: 1};
+    const editing = renderToStaticMarkup(<QuickActionForm client={createFixtureObjectsClient()} object={account} action={create} targets={ready} onCancel={noop} onSaved={noop} />);
+    expect(editing).toContain('Creates Contact (Account) records');
+    expect(editing).toContain('The kind and target cannot change.');
+    expect(editing).not.toContain('Action name');
+    expect(editing).toContain('Full name');
+    expect(editing).not.toContain('Greeting');
+    expect(editing).toContain('Preset field 1');
+    expect(editing).toContain('value="a@example.com"');
+    expect(editing).toContain('Add &lt;b&gt;contact&lt;/b&gt;');
+    expect(editing).not.toContain('<b>contact</b>');
+  });
+
+  it('shows only an action\'s fields in the record form, titled with its label as inert text', () => {
+    const record = recordFromApi({id: '000abc', name: 'Apollo', owner: null, created_at: '', created_by: null, updated_at: '', updated_by: null, version: 2, is_deleted: false, 'custom:status': 'open', 'custom:code': 'AP-1'});
+    const form = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={project} record={record} only={['custom:code']} always={{'custom:status': 'won'}} offerNew={false} onCancel={noop} onSaved={noop} />);
+    expect(form).toContain('>Code');
+    expect(form).toContain('value="AP-1"');
+    expect(form).not.toContain('Project name');
+    expect(form).not.toContain('>Status');
+    expect(form).not.toContain('Notes');
+    expect(form).not.toContain('Save &amp; New');
+    const modal = renderToStaticMarkup(<RecordModal client={createFixtureObjectsClient()} object={project} record={record} title="Mark <i>won</i>" only={['custom:code']} offerNew={false} onClose={noop} onSaved={noop} onNavigate={noop} />);
+    expect(modal).toContain('Mark &lt;i&gt;won&lt;/i&gt;</h2>');
+    const task: ObjectDescription = {...project, apiName: 'custom:task', label: 'Task', fields: [
+      {apiName: 'custom:project', label: 'Project', description: null, type: 'lookup', origin: 'workspace', required: true, unique: false, indexed: true, options: [], referenceObject: 'custom:project', deleteBehaviour: 'restrict', trackHistory: false, version: 1},
+      ...project.fields,
+    ]};
+    const created = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={task} presets={{'custom:project': {value: '000abc', label: 'Apollo'}}} only={['name', 'custom:code']} always={{'custom:code': 'T-1', 'custom:status': 'open'}} onCancel={noop} onSaved={noop} />);
+    expect(created).toContain('Project name');
+    expect(created).toMatch(/<input[^>]*readOnly=""[^>]*value="Apollo"/);
+    expect(created).toContain('value="T-1"');
+    expect(created).not.toContain('>Status');
+    expect(created).toContain('Save &amp; New');
   });
 });
