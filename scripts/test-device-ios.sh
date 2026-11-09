@@ -74,6 +74,11 @@ pnpm --filter web build
 (
   cd apps/device-shell/src-tauri
   [[ -d gen/apple ]] || cargo tauri ios init --ci
+  # Tauri's configuration has no iOS entitlements, so the committed file
+  # replaces the generated project's own.
+  entitlements=$(find gen/apple -maxdepth 2 -name '*.entitlements' | head -n 1)
+  [[ -n "$entitlements" ]] || { echo "the generated iOS project has no entitlements file" >&2; exit 1; }
+  cp Entitlements.ios.plist "$entitlements"
   cargo tauri ios build --ci --debug --target aarch64-sim
 )
 app=$(find apps/device-shell/src-tauri/gen/apple/build -type d -name '*.app' -path '*sim*' | head -n 1)
@@ -94,6 +99,45 @@ services=$(xcrun simctl spawn "$simulator" launchctl list)
 grep -q "$bundle_id" <<<"$services" ||
   { echo "the app exited within 10 seconds of launch" >&2; exit 1; }
 
+log "delivering a simulated push"
+# The app declares background pushes (Info.ios.plist), and a content-free
+# push reaches the controller's wake, whose outcome completes it for iOS
+# (ADR 0030 §5). Signed out, the wake has no workspace to sync.
+/usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app/Info.plist" | grep -q remote-notification ||
+  { echo "the app does not declare remote-notification background mode" >&2; exit 1; }
+# The plugin keeps a trail of each step in the app's temporary directory;
+# the simulator's containers sit on the Mac's own file system.
+container=$(xcrun simctl get_app_container "$simulator" "$bundle_id" data)
+trail="$container/tmp/device-push.log"
+# The simulator hands a push to an app only once APNs has given it a
+# token, which a CI runner never gets, so `simctl push` cannot reach it.
+# A debug simulator build delivers a push through the delegate's callback
+# when this file appears (the plugin's `watchForSimulatedPushes`).
+touch "$container/tmp/simulate-push"
+push_log=""
+# The plugin records the result it handed iOS: 1 is `.noData`.
+done_line="iOS told: 1"
+for _ in $(seq 1 30); do
+  sleep 1
+  push_log=$(cat "$trail" 2>/dev/null || true)
+  grep -q "$done_line" <<<"$push_log" && break
+done
+echo "--- the push plugin's trail"
+printf '%s\n' "${push_log:-(none: the plugin never started)}"
+if ! grep -q "$done_line" <<<"$push_log"; then
+  executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+  echo "--- the app's own log"
+  xcrun simctl spawn "$simulator" log show --last 10m --style compact \
+    --predicate "process == \"$executable\"" 2>/dev/null | tail -n 60 || true
+  grep -q "delivering a simulated push" <<<"$push_log" ||
+    { echo "the debug build did not pick up the simulated push" >&2; exit 1; }
+  grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the plugin" >&2; exit 1; }
+  echo "the push did not complete through the controller's wake" >&2
+  exit 1
+fi
+services=$(xcrun simctl spawn "$simulator" launchctl list)
+grep -q "$bundle_id" <<<"$services" || { echo "the app exited after the push" >&2; exit 1; }
+
 app_size=$(du -sk "$app" | awk '{print $1}')
 binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")" | awk '{print $1}')
 {
@@ -107,4 +151,4 @@ binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutabl
   echo
   echo "ADR 0024's budget is for release device builds; a debug simulator build is an upper bound."
 } >>"$summary"
-log "iOS build, simulator tests and app launch passed"
+log "iOS build, simulator tests, app launch and simulated push passed"

@@ -106,3 +106,17 @@ to `app.limiara.shell:/callback`, which the server must list in
 plugin onto the controller's browser and redirect ports; its tests run on
 the desktop. The emulator check confirms Android routes the redirect to the
 plugin's redirect activity and that a stray redirect leaves the app running.
+
+## Push
+
+On iOS the `device-push` plugin (`push/`) registers for APNs and hands each
+content-free push to the controller's wake, which completes the push for
+iOS (ADR 0030 §5). `Info.ios.plist` declares the `remote-notification`
+background mode, and `Entitlements.ios.plist` the `aps-environment`
+entitlement, which Tauri's configuration cannot express: copy it over the
+`.entitlements` file in `gen/apple` after `cargo tauri ios init`, as
+`scripts/test-device-ios.sh` does. A real device token also needs a build
+signed with the Apple team. The simulator delivers pushes only to an app
+APNs has given a token, so the `ios` workflow has a debug simulator build
+deliver a simulated push through the delegate's callback instead
+(ADR 0030 §5). Android's FCM half is still to come.

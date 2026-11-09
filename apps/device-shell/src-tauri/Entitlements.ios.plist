@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- APNs gives a device token only to an app carrying this entitlement
+	     (ADR 0030 §5). Development matches debug builds and the simulator;
+	     a release build signed for distribution uses production. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

@@ -76,6 +76,52 @@ fn sign_in_ports(app: &tauri::App<tauri::Wry>) -> Result<SignInPorts, String> {
     Ok((redirect_uri, opener, receiver))
 }
 
+/// Hands the platform's push events to the controller (ADR 0030 §5): the
+/// APNs token goes to the server, and each content-free push runs one
+/// budgeted sync, whose outcome completes the push for iOS.
+#[cfg(target_os = "ios")]
+fn follow_push(app: &tauri::App<tauri::Wry>, controller: Arc<Controller>) {
+    use device_push::Event;
+    use platform_device::app::PushProvider;
+    let Some(push) = app
+        .try_state::<device_push::Push<tauri::Wry>>()
+        .map(|push| push.inner().clone())
+    else {
+        return;
+    };
+    let follow = move || loop {
+        match push.next() {
+            Ok(Event::Token { token }) => {
+                // Sent again whenever a workspace opens, so a failure here
+                // costs nothing.
+                let _ = tauri::async_runtime::block_on(
+                    controller.register_push(PushProvider::Apns, &token),
+                );
+            }
+            Ok(Event::Wake { id, received_at }) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_secs_f64())
+                    .unwrap_or(received_at);
+                let result = match crate::phone::wake_budget(received_at, now) {
+                    Some(budget) => crate::phone::finished(&tauri::async_runtime::block_on(
+                        controller.wake(budget),
+                    )),
+                    // Its time ran out while an earlier wake synced.
+                    None => device_push::Finished::Failed,
+                };
+                let _ = push.finish(id, result);
+            }
+            // Without the push entitlement, the app syncs when it is opened.
+            Ok(Event::Unavailable { .. }) => {}
+            Err(_) => return,
+        }
+    };
+    let _ = std::thread::Builder::new()
+        .name("push".into())
+        .spawn(follow);
+}
+
 /// The platform the server records for the device (ADR 0029).
 fn platform() -> &'static str {
     if cfg!(target_os = "ios") {
@@ -111,6 +157,7 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(device_keystore::init())
         .plugin(device_browser::init())
+        .plugin(device_push::init())
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let shell = handler_shell.clone();
             tauri::async_runtime::spawn(async move {
@@ -160,6 +207,8 @@ pub fn run() {
             );
             // Reopens a signed-in workspace before any network.
             tauri::async_runtime::block_on(controller.resume());
+            #[cfg(target_os = "ios")]
+            follow_push(app, controller.clone());
             let assets: Arc<dyn Assets> = Arc::new(Embedded(app.handle().clone()));
             let _ = shell.set(Shell::new(
                 controller,

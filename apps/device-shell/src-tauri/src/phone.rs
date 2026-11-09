@@ -1,6 +1,8 @@
-//! Phone sign-in (ADR 0029 §7, "Phone sign-in"): the system browser of
-//! the `device-browser` plugin behind the controller's [`Browser`] and
-//! [`Redirects`] ports.
+//! The phone's platform parts behind the controller's ports:
+//! - sign-in (ADR 0029 §8): the system browser of the `device-browser`
+//!   plugin behind [`Browser`] and [`Redirects`];
+//! - push (ADR 0030 §5): how a background wake's outcome completes the
+//!   push for the platform ([`finished`]).
 //!
 //! The controller prepares the redirect before it opens the browser. Here
 //! [`Redirects::prepare`] parks the waiting side, and [`Browser::open`] runs
@@ -8,7 +10,8 @@
 //! app's scheme, then hands the redirect over.
 
 use async_trait::async_trait;
-use platform_device::app::{Browser, PendingRedirect, Redirects};
+use device_push::Finished;
+use platform_device::app::{Browser, PendingRedirect, Redirects, WakeOutcome};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use url::Url;
@@ -92,9 +95,56 @@ impl Browser for BrowserSignIn {
     }
 }
 
+/// How long a push-started wake may sync. iOS allows about 30 seconds
+/// before it suspends the app again.
+pub const WAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// What is left of [`WAKE_BUDGET`] for a push iOS delivered at
+/// `received_at`, both in seconds since the Unix epoch: a wake that waited
+/// behind another one has less. `None` once nothing is left.
+pub fn wake_budget(received_at: f64, now: f64) -> Option<std::time::Duration> {
+    let waited = (now - received_at).max(0.0);
+    std::time::Duration::try_from_secs_f64(WAKE_BUDGET.as_secs_f64() - waited)
+        .ok()
+        .filter(|left| !left.is_zero())
+}
+
+/// What a background wake tells the platform: iOS schedules later wakes by
+/// how useful earlier ones were.
+pub fn finished(outcome: &Result<WakeOutcome, String>) -> Finished {
+    match outcome {
+        Ok(WakeOutcome::Synced) => Finished::NewData,
+        Ok(WakeOutcome::NoWorkspace | WakeOutcome::Wiped) => Finished::NoData,
+        Ok(WakeOutcome::OutOfTime) | Err(_) => Finished::Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_that_waited_gets_only_what_is_left() {
+        let at = 1_000.0;
+        assert_eq!(wake_budget(at, at), Some(WAKE_BUDGET));
+        assert_eq!(
+            wake_budget(at, at + 10.0),
+            Some(std::time::Duration::from_secs(15))
+        );
+        assert_eq!(wake_budget(at, at + 25.0), None);
+        assert_eq!(wake_budget(at, at + 40.0), None);
+        // A clock that moved back gives no more than the full budget.
+        assert_eq!(wake_budget(at, at - 5.0), Some(WAKE_BUDGET));
+    }
+
+    #[test]
+    fn a_wake_tells_the_platform_how_it_went() {
+        assert_eq!(finished(&Ok(WakeOutcome::Synced)), Finished::NewData);
+        assert_eq!(finished(&Ok(WakeOutcome::NoWorkspace)), Finished::NoData);
+        assert_eq!(finished(&Ok(WakeOutcome::Wiped)), Finished::NoData);
+        assert_eq!(finished(&Ok(WakeOutcome::OutOfTime)), Finished::Failed);
+        assert_eq!(finished(&Err("offline".into())), Finished::Failed);
+    }
 
     fn sign_in(
         authenticate: impl Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,
