@@ -90,7 +90,9 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   filter chips and open actions delivered; bulk actions, hover cards and
   saved list views remain), record page (highlights, stage path, tabs and
   activity timeline delivered; inline edit remains) and record form host
-  components;
+  components (for engine objects, create and edit open as a modal with
+  Save, Save & New and Cancel, full screen on phones; quick actions and
+  global New actions remain, #179);
   then the workspace layout builder with customisation overlays; then
   personal preferences. Follow-ups: the API searches people by full name (plus exact
   email) only, not by organisation or role; it cannot yet filter people by

@@ -1,7 +1,7 @@
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
 import {Plus} from '@phosphor-icons/react';
-import {Alert, Button, IconButton, Select, Skeleton, TextField} from './primitives';
+import {Alert, Button, IconButton, Modal, Select, Skeleton, TextField} from './primitives';
 
 describe('accessible UI primitives', () => {
   it('exposes loading and disabled button state', () => {
@@ -40,5 +40,13 @@ describe('accessible UI primitives', () => {
     const markup = renderToStaticMarkup(<Skeleton label="Loading people" />);
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-label="Loading people"');
+  });
+
+  it('labels a modal by its title and holds it open while busy', () => {
+    const open = renderToStaticMarkup(<Modal title="New project" onClose={() => undefined}><p>Body</p></Modal>);
+    expect(open).toMatch(/role="dialog" aria-modal="true"/);
+    expect(open).toMatch(/<button type="button" class="ui-modal__close" aria-label="Close" title="Close">/);
+    const busy = renderToStaticMarkup(<Modal title="New project" onClose={() => undefined} busy><p>Body</p></Modal>);
+    expect(busy).toMatch(/aria-label="Close" title="Close" disabled="">/);
   });
 });
