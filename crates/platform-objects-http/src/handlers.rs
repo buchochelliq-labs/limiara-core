@@ -14,10 +14,11 @@ use axum::{
 use platform_objects::composite::{CompositeOperation, CompositeOutcome, CompositeRequest};
 use platform_objects::service::ListRecords;
 use platform_objects::{
-    AccessFlags, Automation, CreateAutomation, CreateField, CreateObject, CreateValidationRule,
-    FieldDefinition, GranteeKind, MutationContext, ObjectDefinition, ObjectError, ObjectService,
-    Record, RecordSort, RecordStatus, ShareAccess, SortDirection, UpdateAutomation, UpdateField,
-    UpdateObject, UpdateValidationRule, ValidationIssue, ValidationRule,
+    AccessFlags, Automation, CreateAutomation, CreateField, CreateObject, CreateQuickAction,
+    CreateValidationRule, FieldDefinition, GranteeKind, MutationContext, ObjectDefinition,
+    ObjectError, ObjectService, QuickAction, Record, RecordSort, RecordStatus, ShareAccess,
+    SortDirection, UpdateAutomation, UpdateField, UpdateObject, UpdateQuickAction,
+    UpdateValidationRule, ValidationIssue, ValidationRule,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -657,6 +658,118 @@ pub async fn delete_validation_rule<H: ObjectsHost>(
         .await
     {
         Ok(rule) => Json(rule_json(&rule)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+// --- Quick actions (ADR 0032) -------------------------------------------------
+
+fn quick_action_json(action: &QuickAction) -> Value {
+    json!({
+        "name": action.name,
+        "label": action.label,
+        "kind": action.kind,
+        "position": action.position,
+        "target_object": action.target_object,
+        "target_field": action.target_field,
+        "fields": action.fields,
+        "presets": action.presets,
+        "version": action.version,
+        "created_at": action.created_at,
+        "created_by": crate::user_reference(action.created_by),
+        "updated_at": action.updated_at,
+        "updated_by": crate::user_reference(action.updated_by),
+    })
+}
+
+pub async fn list_quick_actions<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object)): Path<(Uuid, String)>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service.quick_actions(&object).await {
+        Ok(actions) => Json(json!({
+            "data": actions.iter().map(quick_action_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn create_quick_action<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object)): Path<(Uuid, String)>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Json<CreateQuickAction>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return invalid_body();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .create_quick_action(&object, input, context(&request_id))
+        .await
+    {
+        Ok(action) => (StatusCode::CREATED, Json(quick_action_json(&action))).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn update_quick_action<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object, action)): Path<(Uuid, String, String)>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Json<UpdateQuickAction>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return invalid_body();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .update_quick_action(&object, &action, input, context(&request_id))
+        .await
+    {
+        Ok(action) => Json(quick_action_json(&action)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn delete_quick_action<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object, action)): Path<(Uuid, String, String)>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    version: Result<Query<ExpectedVersion>, QueryRejection>,
+) -> Response {
+    let Ok(Query(version)) = version else {
+        return invalid_query();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .delete_quick_action(
+            &object,
+            &action,
+            version.expected_version,
+            context(&request_id),
+        )
+        .await
+    {
+        Ok(action) => Json(quick_action_json(&action)).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -2384,6 +2497,65 @@ mod tests {
             "filter[x",
         ] {
             assert!(list_request(Some(bad), me).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn quick_actions_serialise_snake_case_with_the_target_by_api_name() {
+        let now = chrono::Utc::now();
+        let action = QuickAction {
+            id: Uuid::nil(),
+            object_id: Uuid::nil(),
+            name: "add_contact".into(),
+            label: "Add contact".into(),
+            kind: platform_objects::QuickActionKind::Create,
+            position: 2,
+            target_object_id: Some(Uuid::from_u128(7)),
+            target_object: Some("custom:contact".into()),
+            target_field: Some("custom:account".into()),
+            fields: vec!["name".into(), "custom:email".into()],
+            presets: [("custom:role".to_owned(), json!("buyer"))]
+                .into_iter()
+                .collect(),
+            version: 1,
+            created_at: now,
+            created_by: Some(Uuid::from_u128(1)),
+            updated_at: now,
+            updated_by: None,
+        };
+        let value = quick_action_json(&action);
+        assert_eq!(value["kind"], "create");
+        assert_eq!(value["target_object"], "custom:contact");
+        assert_eq!(value["target_field"], "custom:account");
+        assert_eq!(value["fields"], json!(["name", "custom:email"]));
+        assert_eq!(value["presets"], json!({"custom:role": "buyer"}));
+        assert_eq!(value["created_by"]["id"], json!(Uuid::from_u128(1)));
+        assert!(value.get("id").is_none() && value.get("target_object_id").is_none());
+
+        let body: CreateQuickAction = serde_json::from_value(json!({
+            "name": "close", "label": "Close", "kind": "update",
+            "fields": ["custom:close_date"], "presets": {"custom:stage": "closed"}
+        }))
+        .expect("create body");
+        assert_eq!(body.kind, platform_objects::QuickActionKind::Update);
+        assert_eq!(body.position, None);
+        for bad in [
+            json!({"name": "x", "label": "X", "kind": "delete", "fields": ["name"]}),
+            json!({"name": "x", "label": "X", "kind": "update"}),
+            json!({"name": "x", "label": "X", "kind": "update", "fields": ["name"], "extra": 1}),
+        ] {
+            assert!(
+                serde_json::from_value::<CreateQuickAction>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+        for fixed in ["kind", "target_object", "target_field", "name"] {
+            let mut change = json!({"expected_version": 1});
+            change[fixed] = json!("x");
+            assert!(
+                serde_json::from_value::<UpdateQuickAction>(change).is_err(),
+                "{fixed} cannot change"
+            );
         }
     }
 

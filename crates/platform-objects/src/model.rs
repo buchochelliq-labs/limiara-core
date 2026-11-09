@@ -988,6 +988,99 @@ pub struct UpdateValidationRule {
     pub active: Option<bool>,
 }
 
+/// What a quick action does (ADR 0032 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuickActionKind {
+    /// A short form of chosen fields of the record, with preset values.
+    Update,
+    /// A form for a child record pointing at this one.
+    Create,
+}
+
+impl QuickActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Create => "create",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "update" => Some(Self::Update),
+            "create" => Some(Self::Create),
+            _ => None,
+        }
+    }
+}
+
+/// An administrator-defined quick action on an object (ADR 0032): a
+/// shortcut to the normal create and update APIs that grants nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QuickAction {
+    pub id: Uuid,
+    pub object_id: Uuid,
+    /// Unique per object: `[a-z][a-z0-9_]*`.
+    pub name: String,
+    pub label: String,
+    pub kind: QuickActionKind,
+    /// Display order; ties are ordered by name.
+    pub position: i32,
+    /// The child object a create action makes a record of.
+    #[serde(skip)]
+    pub target_object_id: Option<Uuid>,
+    /// API name of the child object, resolved for callers.
+    pub target_object: Option<String>,
+    /// The lookup or master-detail field on the child object that points
+    /// at this object and is set to the current record.
+    pub target_field: Option<String>,
+    /// API names of the fields the form asks for, in order: of this object
+    /// for an update action, of the child object for a create action.
+    pub fields: Vec<String>,
+    /// Constant values applied on save, by field API name.
+    pub presets: BTreeMap<String, Value>,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateQuickAction {
+    pub name: String,
+    pub label: String,
+    pub kind: QuickActionKind,
+    /// Defaults to after the object's existing actions.
+    #[serde(default)]
+    pub position: Option<i32>,
+    /// API name of the child object, for a create action.
+    #[serde(default)]
+    pub target_object: Option<String>,
+    #[serde(default)]
+    pub target_field: Option<String>,
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub presets: BTreeMap<String, Value>,
+}
+
+/// A partial change to a quick action. Its kind and target are fixed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateQuickAction {
+    pub expected_version: i64,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub position: Option<i32>,
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub presets: Option<BTreeMap<String, Value>>,
+}
+
 /// When a record-triggered automation runs (ADR 0022).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

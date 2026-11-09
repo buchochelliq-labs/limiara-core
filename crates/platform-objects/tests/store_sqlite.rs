@@ -76,6 +76,41 @@ async fn sqlite_store_passes_the_validation_rule_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_quick_action_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    conformance::quick_actions::run(store, tenant).await;
+
+    // Every change left its event; none carries a preset value.
+    let pool = databases.pool(tenant).await.expect("pool");
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT event_type, envelope FROM outbox WHERE event_type LIKE 'platform.objects.quick-action-%'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("events");
+    for kind in ["created", "updated", "deleted"] {
+        let event = format!("platform.objects.quick-action-{kind}.v1");
+        assert!(rows.iter().any(|(found, _)| *found == event), "{event}");
+    }
+    assert!(rows
+        .iter()
+        .all(|(_, envelope)| !envelope.contains(conformance::quick_actions::SECRET_PRESET)));
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action LIKE 'objects.quick_action.%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(audited, i64::try_from(rows.len()).expect("count"));
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_formula_field_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

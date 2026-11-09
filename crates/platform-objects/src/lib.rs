@@ -12,6 +12,8 @@
 //! - [`values`] validates and normalises record values and derives the
 //!   pivot rows that index them.
 //! - [`store`] is the storage port with PostgreSQL and SQLite adapters.
+//! - [`quick_actions`] holds administrator-defined record shortcuts
+//!   (ADR 0032).
 //! - [`service`] authorises, validates and records evidence for every change.
 
 pub mod access;
@@ -25,6 +27,7 @@ pub mod model;
 pub mod naming;
 pub mod push;
 pub mod query;
+pub mod quick_actions;
 pub mod related;
 pub mod replica;
 pub mod replica_definitions;

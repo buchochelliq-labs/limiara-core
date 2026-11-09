@@ -493,6 +493,10 @@ impl ObjectService {
         }
         self.record_change(tx.as_mut(), context, Change::ObjectDeleted(&object))
             .await?;
+        // Its quick actions, and the create actions making its records, go
+        // with it (ADR 0032 §4).
+        self.quick_actions_after_object_deleted(tx.as_mut(), &object, context)
+            .await?;
         tx.commit().await?;
         Ok(object)
     }
@@ -904,6 +908,10 @@ impl ObjectService {
             reindex(tx.as_mut(), &remaining).await?;
         }
         self.record_change(tx.as_mut(), context, Change::FieldDeleted(&object, &field))
+            .await?;
+        // Quick actions stop using the field; those that depend on it go
+        // (ADR 0032 §4).
+        self.quick_actions_after_field_deleted(tx.as_mut(), &object, &field, context)
             .await?;
         tx.commit().await?;
         Ok(field)

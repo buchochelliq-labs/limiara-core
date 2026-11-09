@@ -399,6 +399,22 @@ expect 200 "$(call "$member_cookie" DELETE "$rules/no_x_codes?expected_version=1
 audited=$(sql --command="SELECT count(*) FROM audit_log WHERE action LIKE 'objects.validation_rule.%';")
 (( audited == 2 )) || fail "rule changes audited: $audited"
 
+log "quick actions (ADR 0032): checked on save, read by readers, changed by administrators"
+actions="$workspace/objects/custom:project/quick-actions"
+expect 400 "$(call "$member_cookie" POST "$actions" '{"name":"tag","label":"Tag","kind":"update","fields":["custom:nope"]}')" "quick action field check"
+[[ "$(field '.errors[0].code')" == quick_actions.field_unknown && "$(field '.errors[0].field')" == fields.custom:nope ]] || fail "quick action error: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$actions" '{"name":"tag","label":"Tag","kind":"update","fields":["custom:code"],"presets":{"name":"Tagged"}}')" "create quick action"
+[[ "$(field '.kind')" == update && "$(field '.version')" == 1 && "$(field '.presets.name')" == Tagged && "$(field '.target_object')" == null ]] || fail "quick action: $(cat "$body")"
+expect 200 "$(call "$viewer_cookie" GET "$actions")" "members who read the object read its quick actions"
+[[ "$(field '[.data[].name] | join(",")')" == tag ]] || fail "quick actions listed: $(cat "$body")"
+expect 403 "$(call "$viewer_cookie" POST "$actions" '{"name":"mine","label":"Mine","kind":"update","fields":["name"]}')" "changing quick actions needs objects.manage"
+expect 200 "$(call "$member_cookie" PATCH "$actions/tag" '{"expected_version":1,"label":"Tag it"}')" "change quick action"
+[[ "$(field '.version')" == 2 && "$(field '.label')" == "Tag it" ]] || fail "changed quick action: $(cat "$body")"
+expect 409 "$(call "$member_cookie" DELETE "$actions/tag?expected_version=1")" "stale quick action delete"
+expect 200 "$(call "$member_cookie" DELETE "$actions/tag?expected_version=2")" "delete quick action"
+audited=$(sql --command="SELECT count(*) FROM audit_log WHERE action LIKE 'objects.quick_action.%';")
+(( audited == 3 )) || fail "quick action changes audited: $audited"
+
 log "formula fields (ADR 0021): computed on read, read-only"
 expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fields" '{"name":"bad_formula","label":"Bad","field_type":"formula","formula":"LOWER(","formula_type":"text"}')" "formula syntax"
 [[ "$(field '.errors[0].code')" == objects.formula_invalid ]] || fail "formula error: $(cat "$body")"
@@ -647,7 +663,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -829,4 +845,4 @@ API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/sc
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, field history, change data capture, sync, queries, search, validation rules, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
