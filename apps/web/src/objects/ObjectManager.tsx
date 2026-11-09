@@ -244,7 +244,7 @@ export function ValidationRules({client, object, onNotice}: {client: Pick<Object
   return <section className="object-section" aria-labelledby="rules-heading">
     <div className="object-section__header"><h2 id="rules-heading">Validation rules</h2>{editing === null && <Button size="small" onClick={() => setEditing('new')}>New rule</Button>}</div>
     <p>A rule blocks a save when its condition is true and shows its message. Rules run for every member, whatever records they can see.</p>
-    {editing !== null && <RuleForm client={client} object={object} rule={editing === 'new' ? null : editing} onCancel={() => setEditing(null)} onSaved={reload} />}
+    {editing !== null && <RuleForm key={editing === 'new' ? 'new' : `${editing.name}@${editing.version}`} client={client} object={object} rule={editing === 'new' ? null : editing} onCancel={() => setEditing(null)} onSaved={reload} />}
     {load.status === 'loading' && <Skeleton label="Loading validation rules" lines={2} />}
     {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Validation rules could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
     {load.status === 'ready' && load.rules.length === 0 && editing === null && <p className="object-value--empty">No validation rules yet.</p>}

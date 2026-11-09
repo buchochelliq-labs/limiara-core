@@ -80,7 +80,7 @@ export function Automations({client, object, onNotice}: {client: Client; object:
   return <section className="object-section" aria-labelledby="automations-heading">
     <div className="object-section__header"><h2 id="automations-heading">Automations</h2>{editing === null && <Button size="small" onClick={() => setEditing('new')}>New automation</Button>}</div>
     <p>An automation runs when records are saved. It can set fields before a record is saved, or create records and update related records afterwards. Automations run for every member, whatever they can see, and a failure stops the save.</p>
-    {editing !== null && <AutomationForm client={client} object={object} objects={objects} automation={editing === 'new' ? null : editing} onCancel={() => setEditing(null)} onSaved={reload} />}
+    {editing !== null && <AutomationForm key={editing === 'new' ? 'new' : `${editing.name}@${editing.version}`} client={client} object={object} objects={objects} automation={editing === 'new' ? null : editing} onCancel={() => setEditing(null)} onSaved={reload} />}
     {load.status === 'loading' && <Skeleton label="Loading automations" lines={2} />}
     {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Automations could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
     {load.status === 'ready' && load.automations.length === 0 && editing === null && <p className="object-value--empty">No automations yet.</p>}
