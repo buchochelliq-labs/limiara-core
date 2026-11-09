@@ -97,6 +97,7 @@ try {
   await dialog.getByRole('button', {name: 'Save & New'}).click();
   await dialog.getByText('Batch one was saved.').waitFor();
   if (await dialog.getByLabel('Project name').inputValue() !== '') throw new Error('Save & New must start a blank form');
+  if (!(await dialog.getByLabel('Project name').evaluate(element => element === document.activeElement))) throw new Error('Save & New must focus the blank form');
   await dialog.getByLabel('Project name').fill('Batch two');
   await shot(page, '02-save-and-new');
   await dialog.getByRole('button', {name: 'Save', exact: true}).click();

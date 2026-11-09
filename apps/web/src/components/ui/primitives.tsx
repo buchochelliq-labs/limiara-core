@@ -179,7 +179,9 @@ export function Modal({title, onClose, busy = false, children}: ModalProps) {
       if (!items.length) { event.preventDefault(); return; }
       const head = items[0];
       const tail = items[items.length - 1];
-      if (event.shiftKey && (document.activeElement === head || document.activeElement === panel)) { event.preventDefault(); tail?.focus(); }
+      // Focus that left the panel (its control was removed) comes back to it.
+      if (!panel.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? tail : head)?.focus(); }
+      else if (event.shiftKey && (document.activeElement === head || document.activeElement === panel)) { event.preventDefault(); tail?.focus(); }
       else if (!event.shiftKey && document.activeElement === tail) { event.preventDefault(); head?.focus(); }
     };
     document.addEventListener('keydown', onKey);

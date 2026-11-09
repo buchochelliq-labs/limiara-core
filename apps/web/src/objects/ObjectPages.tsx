@@ -293,10 +293,13 @@ export function RecordModal({client, object, record, onClose, onSaved, onNavigat
   const sequence = useSaveAndNew();
   // After Save & New on an edit, the modal goes on to create a record.
   const [editing, setEditing] = useState(record);
+  // A save in flight keeps the modal open, so its result is never lost.
+  const [saving, setSaving] = useState(false);
   const noun = object.label.toLowerCase();
-  return <Modal title={editing ? `Edit ${editing.name}` : `New ${noun}`} onClose={onClose}>
+  return <Modal title={editing ? `Edit ${editing.name}` : `New ${noun}`} onClose={onClose} busy={saving}>
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
-    <RecordForm key={sequence.form} client={client} object={object} record={editing} onCancel={onClose} onSaved={(saved, next) => {
+    {/* Each form after Save & New takes focus, since the one that had it is gone. */}
+    <RecordForm key={sequence.form} focusFirst={sequence.form > 0} onSavingChange={setSaving} client={client} object={object} record={editing} onCancel={onClose} onSaved={(saved, next) => {
       onSaved(saved, next);
       if (next === 'new') { setEditing(undefined); sequence.next(saved); }
     }} />
@@ -314,7 +317,7 @@ export function NewRecordPage({client, apiName, onNavigate, headingRef}: {client
     <PageHeader breadcrumb={`Objects / ${object.label}`} title={`New ${object.label.toLowerCase()}`} headingRef={headingRef} />
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {object.access.create
-      ? <RecordForm key={sequence.form} client={client} object={object} onCancel={() => onNavigate(objectRoute(object.apiName))} onSaved={(saved, next) => next === 'new' ? sequence.next(saved) : onNavigate(recordRoute(object.apiName, saved.id))} />
+      ? <RecordForm key={sequence.form} focusFirst={sequence.form > 0} client={client} object={object} onCancel={() => onNavigate(objectRoute(object.apiName))} onSaved={(saved, next) => next === 'new' ? sequence.next(saved) : onNavigate(recordRoute(object.apiName, saved.id))} />
       : <Alert variant="warning" title="Permission needed">You do not have permission to create {object.pluralLabel.toLowerCase()}.</Alert>}
   </div>;
 }
@@ -398,9 +401,10 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
 export type AfterSave = 'close' | 'new';
 
 /** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
-export function RecordForm({client, object, record, onCancel, onSaved}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void}) {
+export function RecordForm({client, object, record, onCancel, onSaved, onSavingChange, focusFirst = false}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean}) {
   const [draft, setDraft] = useState<Draft>(() => initialDraft(object, record));
-  const [saving, setSaving] = useState(false);
+  const [saving, setSavingState] = useState(false);
+  const setSaving = (value: boolean) => { setSavingState(value); onSavingChange?.(value); };
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [error, setError] = useState('');
   // Both buttons submit the form; the one pressed says what comes next.
@@ -445,7 +449,7 @@ export function RecordForm({client, object, record, onCancel, onSaved}: {client:
 
   return <form className="object-form" onSubmit={event => void submit(event)} noValidate aria-busy={saving || undefined}>
     {error && <Alert variant="danger" title={error}>{issues.length > 0 && <ul>{issues.map(issue => <li key={`${issue.field}-${issue.code}-${issue.detail}`}>{issue.field === 'record' ? issue.detail : <>{object.fields.find(field => field.apiName === issue.field)?.label ?? (issue.field === 'name' ? object.nameLabel : issue.field)}: {issue.detail}</>}</li>)}</ul>}</Alert>}
-    <TextField label={object.nameLabel} required value={String(draft.name ?? '')} error={issueFor('name')} maxLength={255} onChange={event => set('name', event.target.value)} />
+    <TextField label={object.nameLabel} required autoFocus={focusFirst} value={String(draft.name ?? '')} error={issueFor('name')} maxLength={255} onChange={event => set('name', event.target.value)} />
     {editableFields(object).map(field => {
       const value = draft[field.apiName];
       const fieldError = issueFor(field.apiName);
