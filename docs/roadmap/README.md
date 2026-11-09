@@ -91,8 +91,9 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   saved list views remain), record page (highlights, stage path, tabs and
   activity timeline delivered; inline edit remains) and record form host
   components (for engine objects, create and edit open as a modal with
-  Save, Save & New and Cancel, full screen on phones; quick actions and
-  global New actions remain, #179);
+  Save, Save & New and Cancel, full screen on phones; related lists offer
+  New with the parent filled in, and the shell offers a global New menu;
+  admin-defined quick actions remain, #179);
   then the workspace layout builder with customisation overlays; then
   personal preferences. Follow-ups: the API searches people by full name (plus exact
   email) only, not by organisation or role; it cannot yet filter people by
@@ -195,7 +196,7 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
 - Change data capture beyond [ADR 0018](../adr/0018-change-data-capture.md) (#306, #287): the `touched_after` contract on plugin record APIs (Contacts), purged-record tombstones, and workspace-defined platform events published by automation.
 - The query language beyond [ADR 0019](../adr/0019-record-query-language.md) (#304): child subqueries, `HAVING`, date functions in `GROUP BY`, traversal into users (`owner.name`), sorting and grouping through relationships, workspace time zones for relative dates, a `POST` form for long queries, and query cost limits on SQLite.
 - Relationships beyond the master-detail fields of [ADR 0025](../adr/0025-master-detail-relationships.md) and the roll-up summary fields of [ADR 0026](../adr/0026-rollup-summary-fields.md) (#295): roll-up filter criteria, averages and roll-ups over lookups, background recalculation for very large masters, a junction lock order that cannot deadlock with a cascade, multi-level master-detail, moving details between masters as an opt-in field setting, and converting a lookup into a master-detail field on an object that already has records.
-- Related lists and lookup filters beyond [ADR 0028](../adr/0028-related-lists-and-lookup-filters.md) (#295): filters that compare the target with the record being edited, optional filters that only warn, creating a related record from its list with the lookup filled in, choosing a related list's columns and order, and related lists through junction objects.
+- Related lists and lookup filters beyond [ADR 0028](../adr/0028-related-lists-and-lookup-filters.md) (#295): filters that compare the target with the record being edited, optional filters that only warn, choosing a related list's columns and order, and related lists through junction objects.
 - Reports beyond the saved reports of [ADR 0027](../adr/0027-saved-reports.md) (#313, #314): a report builder that writes the query from chosen fields, groupings and filters, matrix reports, folders with sharing, scheduled email subscriptions, CSV and XLSX export, heavy aggregates on the analytics store (#284), and dashboards of report components with running user and refresh.
 - Formulas beyond [ADR 0021](../adr/0021-formulas-and-validation-rules.md) (#298): filtering on formulas that follow lookups or use the time, which needs values kept current from related changes and a schedule.
 - Global search beyond [ADR 0020](../adr/0020-global-search.md) (#305): boosting recently viewed records (with the recently viewed service, #285), synonyms and typo tolerance, server-side highlighting, the search bar on narrow screens, plugin objects with typed stores (Contacts) in the index, and a pluggable external search engine fed from the change log.

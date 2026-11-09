@@ -42,6 +42,7 @@ import {MembersPage, membersRoute} from '../objects/MembersPage';
 import {QueryConsole, queryRoute} from '../objects/QueryConsole';
 import {ReportsPage, reportsRoute} from '../objects/Reports';
 import {GlobalSearch, SearchResultsPage, searchRoute} from '../objects/GlobalSearch';
+import {GlobalNew} from '../objects/GlobalNew';
 
 type AppShellProps = {
   model: ShellViewModel;
@@ -318,7 +319,7 @@ export function AppShell({model, route, search, announcement, onNavigate, onWork
       <button ref={menuButtonRef} className="mobile-menu-button" aria-label="Open navigation" aria-expanded={drawerOpen} aria-controls="mobile-navigation" onClick={() => setDrawerOpen(true)}><List aria-hidden="true" /></button>
       <WorkspaceControl model={model} onWorkspaceChange={onWorkspaceChange} />
       {model.status === 'ready' ? <GlobalSearch key={model.activeWorkspaceId} client={searchClient} onNavigate={navigate} /> : <label className="global-search"><MagnifyingGlass aria-hidden="true" /><span className="sr-only">Search Limiara</span><input type="search" placeholder="Search Limiara" disabled /><kbd>⌘ K</kbd></label>}
-      <div className="topbar-actions"><IconButton label="Help" variant="quiet" icon={<Question aria-hidden="true" />} /><UserMenu model={model} /></div>
+      <div className="topbar-actions">{model.status === 'ready' && <GlobalNew key={model.activeWorkspaceId} client={searchClient} onNavigate={navigate} />}<IconButton label="Help" variant="quiet" icon={<Question aria-hidden="true" />} /><UserMenu model={model} /></div>
     </header>
 
     {drawerOpen && <div className="mobile-drawer-layer"><button className="mobile-drawer-backdrop" aria-label="Close navigation" onClick={() => { setDrawerOpen(false); menuButtonRef.current?.focus(); }} /><div ref={drawerRef} className="mobile-drawer" id="mobile-navigation" role="dialog" aria-modal="true" aria-label="Navigation menu"><div className="mobile-drawer__header"><a className="brand" href="/" onClick={event => { event.preventDefault(); navigate('/'); }}><img src={brandMark} alt="" /><span>Limiara</span></a><IconButton label="Close navigation" variant="quiet" icon={<X aria-hidden="true" />} onClick={() => { setDrawerOpen(false); menuButtonRef.current?.focus(); }} /></div><WorkspaceControl compact model={model} onWorkspaceChange={onWorkspaceChange} /><ShellNavigation mobile model={model} route={route} onNavigate={navigate} /></div></div>}
