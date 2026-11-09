@@ -105,14 +105,23 @@ log "delivering a simulated push"
 # (ADR 0030 §5). Signed out, the wake has no workspace to sync.
 /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app/Info.plist" | grep -q remote-notification ||
   { echo "the app does not declare remote-notification background mode" >&2; exit 1; }
-payload="$work_root/push.json"
-echo '{"aps": {"content-available": 1}}' >"$payload"
-xcrun simctl push "$simulator" "$bundle_id" "$payload"
 # The plugin keeps a trail of each step in the app's temporary directory;
 # the simulator's containers sit on the Mac's own file system.
 container=$(xcrun simctl get_app_container "$simulator" "$bundle_id" data)
 trail="$container/tmp/device-push.log"
+# iOS delivers pushes once registration settles, with a token or a refusal.
 push_log=""
+for _ in $(seq 1 60); do
+  push_log=$(cat "$trail" 2>/dev/null || true)
+  grep -Eq "registered for remote notifications|remote notifications unavailable" <<<"$push_log" && break
+  sleep 1
+done
+echo "--- registration"
+printf '%s\n' "${push_log:-(none: the plugin never started)}"
+pushed_at=$(date '+%Y-%m-%d %H:%M:%S')
+payload="$work_root/push.json"
+echo '{"aps": {"content-available": 1}}' >"$payload"
+xcrun simctl push "$simulator" "$bundle_id" "$payload"
 for _ in $(seq 1 30); do
   sleep 1
   push_log=$(cat "$trail" 2>/dev/null || true)
@@ -127,10 +136,10 @@ if ! grep -q "wake finished: no_data" <<<"$push_log"; then
     --predicate "process == \"$executable\"" 2>/dev/null | tail -n 60 || true
   echo "--- the app's entitlements"
   codesign -d --entitlements - "$app" 2>&1 || true
-  echo "--- the push daemon on this app"
-  xcrun simctl spawn "$simulator" log show --last 10m --style compact \
-    --predicate "process == \"apsd\" AND eventMessage CONTAINS \"$bundle_id\"" 2>/dev/null |
-    tail -n 30 || true
+  echo "--- the system on this app since the push"
+  xcrun simctl spawn "$simulator" log show --start "$pushed_at" --style compact \
+    --predicate "eventMessage CONTAINS \"$bundle_id\" OR process == \"apsd\"" 2>/dev/null |
+    tail -n 60 || true
   grep -q "woken by a push" <<<"$push_log" || { echo "the push did not reach the app" >&2; exit 1; }
   echo "the push did not complete through the controller's wake" >&2
   exit 1
