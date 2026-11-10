@@ -10,6 +10,19 @@ ADR 0017 (field history and change sources) and ADR 0011 (UX). This is a
 design only; nothing in it is implemented yet. Delivery slices are in §8 and
 `docs/roadmap/README.md`.
 
+Decided in review (2026-11-10):
+
+- Person's name is split into first and last name as part of the
+  migration (§1, gap G17).
+- Migrated records are owned by their creator while that user is still a
+  member (§2).
+- The custom-field read permissions are enforced on the server (§4).
+- A manifest may name an optional plugin's objects in a starting
+  allowlist, so Activities includes Person and Organisation itself (§7,
+  gap G18).
+- The 30-day rollback window and the six-month deprecation are accepted
+  provisionally, to be confirmed before slice 5 ships.
+
 ## Context
 
 Contacts (`platform.contacts`) is the last first-party capability with its
@@ -130,7 +143,7 @@ plugin prefixes, so every existing public ID stays valid.
 
 | Object | Label / plural | `name_label` | Prefix | Sharing | History |
 | --- | --- | --- | --- | --- | --- |
-| `platform.contacts:person` | Person / People | Full name | `per` | `read_write` | tracked |
+| `platform.contacts:person` | Person / People | Name | `per` | `read_write` | tracked |
 | `platform.contacts:organisation` | Organisation / Organisations | Name | `org` | `read_write` | tracked |
 
 `read_write` is the starting value because it matches today: every member
@@ -141,7 +154,9 @@ Fields (API names `platform.contacts:<name>`):
 
 | Object | Field | Type | Flags |
 | --- | --- | --- | --- |
-| Person | standard `name` | (full name) | searchable, as every name |
+| Person | `first_name` | text | `max_length` 120, history tracked |
+| Person | `last_name` | text | required, `max_length` 120, history tracked |
+| Person | standard `name` | composed from `first_name` and `last_name` (gap G17) | searchable, as every name |
 | Person | `email` | email | indexed, searchable, `max_length` 320 (see gap G8) |
 | Person | `telephone` | phone | searchable |
 | Person | `organisation` | lookup to `platform.contacts:organisation` | `delete_behaviour = "clear"`, history tracked |
@@ -152,10 +167,25 @@ Fields (API names `platform.contacts:<name>`):
 
 The person → organisation relation is an ordinary lookup, so the
 organisation page gets a People related list (ADR 0028) and the query
-language traverses it (`platform.contacts:organisation.name`). The name
-stays one field: Contacts has always stored a full name, and splitting it
-into first and last names is a product change, not a migration
-requirement (open question 1).
+language traverses it (`platform.contacts:organisation.name`).
+
+**Person's name is split now.** Person gains `first_name` and `last_name`,
+and its standard name is composed from them (G17): the first name, a
+space and the last name, or the last name alone. Members edit the two
+parts and never the name itself, which stays the field that search, lookups,
+list titles and the query language use, so nothing that reads a record's
+name changes. Last name is required, as a person always has a name today.
+
+The migration splits each `full_name` by one rule, also used by the v1 API
+(§3) for writes that send `full_name`: trim and collapse runs of white space
+to one space; a name of one word becomes the last name with no first name;
+otherwise the last word is the last name and everything before it the first
+name. The rule is wrong for some names ("Ludwig van Beethoven", names
+written family name first), so the dry run lists every name of three or
+more words, and administrators may correct the parts through the current
+API before cutover or on the engine afterwards. It does not block the
+migration. A part longer than 120 characters does block it, as do the
+other refusals in §2.
 
 #### Engine gaps
 
@@ -179,6 +209,8 @@ engine work that ships first (slice 1) or an accepted behaviour change.
 | G13 | **JSON custom fields.** The engine has no JSON type. | Accepted change: a `json` custom field becomes a `custom:` long-text field holding the canonical JSON text. The compatibility API parses it back, so v1 clients see no change; the engine API and pages show text. |
 | G14 | **Disabled custom fields.** The engine's field lifecycle is active or deleted (retired, values kept). | Accepted change: disabled and archived definitions become retired fields. Their values stay in the record document, hidden as today's archived values are; a disabled field can no longer be read back. |
 | G15 | **Formula fields in manifests.** Not declarable (roadmap). | Not needed: Contacts declares none. |
+| G17 | **A name composed from fields.** An engine object's name is a stored field that members write directly. | Engine first: an object may declare `name_from` (two or three of its own text fields and a separator). The engine then computes the name on every write from those fields, refuses writes to the name itself (`objects.name_composed`), and recomputes every record's name in a batch job when the declaration changes. The name stays a stored, indexed, searchable column, so reads do not change. |
+| G18 | **Starting allowlist values for an optional plugin's objects.** A manifest may name only objects of plugins it depends on (ADR 0033 §2), and an upgrade never overwrites an installed allowlist. | Engine first: a manifest may declare `optional_dependencies` (plugin ids with a version range). A related-to or lookup field may then list objects of those plugins in its starting allowlist. Such an entry is added to the field when the named object first becomes active in the workspace, including on installations that already exist, and is tracked like an offered related action (ADR 0033 §2): added once per field, never re-added after an administrator removes it, and never required for the field to work. An optional dependency grants nothing; it only allows naming. |
 | G16 | **Workspace page layouts.** Contacts pages carry field zones and published customisation overlays; generic engine pages have no layouts yet. | Handled by the UI slice (§3): a workspace with published overlays or arranged field zones keeps the Contacts pages until the engine has record layouts. |
 
 Unique custom fields compare without case in the engine (ADR 0015 §2);
@@ -205,11 +237,12 @@ the admin CLI.
 | Source | Target |
 | --- | --- |
 | `people.id`, `public_id`; `organisations.id`, `public_id` | the engine record's internal and public id, unchanged |
-| `full_name`, `name` | the standard `name` |
+| `full_name` | `first_name` and `last_name`, split by the rule in §1; the standard name is composed from them |
+| `name` (organisation) | the standard `name` |
 | `email`, `telephone`, `organisation_id`, `tags` | the plugin fields of §1; the lookup by internal id |
 | `version`, `created_at`, `created_by`, `updated_at`, `updated_by`, `touched_at` | the same standard columns, unchanged |
 | `archived_at`, `deleted_at` | the same; recycle-bin records stay in the bin with their deletion time, so the G2 purge keeps the 15-day window |
-| (no owner) | `owner_id` = `created_by` when that user is still a workspace member, otherwise no owner (open question 2) |
+| (no owner) | `owner_id` = `created_by` when that user is still a workspace member, otherwise no owner; the dry run counts records left without an owner |
 | `public_id_counters` | `record_sequence` of each object, raised to at least the counter |
 | `custom_field_definitions` | `custom:` fields on the plugin objects: `foo__c` becomes `custom:foo` (ADR 0015 §3, #294), keeping the definition id as the field id, label, description, required, unique, indexed, options and the G9 governance properties; `validation_schema` limits become `max_length` where the type has one, and workspace validation rules otherwise (`LEN(custom:foo) >= 3`, `custom:size <= 10`) |
 | `custom_fields` values | the record document under the new API names |
@@ -270,7 +303,8 @@ migration does not rewrite evidence.
    workspace needs a scheduled window.
 5. **Verify.** Counts per object and state must match, and a per-record
    checksum over a canonical form (ids, name, every field value, stamps,
-   version, states, owner rule) computed by the same Rust code on both
+   version, states, owner rule; for people, the normalised `full_name`
+   against the composed name) computed by the same Rust code on both
    sides must agree, as must an aggregate digest over the sorted ids. The
    same applies to definitions: a per-definition checksum over the
    canonical metadata listed in step 3 must match its engine field.
@@ -368,7 +402,7 @@ the two objects, so nobody loses or gains record access:
   read; the dry run lists such roles.
 - The custom-field read permissions become server-enforced. Today only the
   web app hides custom fields, so API callers without them lose API access
-  to custom field values; the dry run lists such roles (open question 3).
+  to custom field values; the dry run lists such roles.
 - Extension fields keep their own permissions through G5.
 - After cutover the `contacts.*` permissions no longer decide anything in
   that workspace; role screens mark them as replaced. They leave the
@@ -411,24 +445,20 @@ device's contacts-import capability (ADR 0024 §6) targets
 
 ### 7. Activities follow-up
 
-Once Person is an engine object, administrators may add it to *Who* and add
-Person and Organisation to *Related to*, which also gives them Log a call
-and the Activity timeline. Activities' manifest does not add them itself:
-a manifest may only name objects of plugins it depends on (ADR 0033 §2),
-Activities must not require Contacts, and an upgrade never overwrites an
-installed allowlist, so a manifest default would reach only new
-installations. Instead, the cutover's completion report offers the
-administrator to add Person to *Who* and both objects to *Related to* in
-one step. An optional dependency that lets a manifest name another
-plugin's objects as starting allowlist values when that plugin is present
-is a follow-up (open question 4).
+Activities declares Contacts as an optional dependency (G18) and names
+`platform.contacts:person` in *Who* and both Contacts objects in *Related
+to*. Activities still works without Contacts. When a workspace's Contacts
+objects come into service at cutover, those entries are added to the two
+fields once, which also gives people and organisations Log a call and the
+Activity timeline. An administrator who removes them keeps them removed.
+The cutover's completion report says what was added.
 
 ### 8. Delivery slices
 
 Each slice ships alone and can be reverted without touching data written
 by earlier slices.
 
-1. **Engine gaps** G1 to G11, each its own change with both stores, the
+1. **Engine gaps** G1 to G11, G17 and G18, each its own change with both stores, the
    API and conformance tests. They serve every object and change nothing
    for Contacts.
 2. **Dual definitions.** Contacts' manifest declares the two dormant
@@ -446,7 +476,7 @@ by earlier slices.
    workspace; cutover and rollback become available to administrators.
    Off by default; rolled out workspace by workspace.
 6. **UI.** Generic engine pages for migrated workspaces without page
-   customisations, the Activities offer of §7, and the removal of the
+   customisations, Activities' optional dependency of §7, and the removal of the
    Contacts pages once no workspace needs them (G16).
 7. **Retire the typed store** after every workspace has passed its rollback
    window: delete old rows per workspace, then a release drops the tables,
@@ -505,17 +535,10 @@ by earlier slices.
   reports, bulk jobs and API clients, change data capture and device sync,
   and the platform has one storage model.
 
-## Open questions for the product owner
+## Open questions
 
-1. Should Person gain first and last name fields (with the name as a
-   formula) as part of this work, or later?
-2. Is `created_by` the right owner for migrated records, or should owners
-   start empty, or be one chosen member per workspace?
-3. Should the custom-field read permissions become server-enforced (the
-   default above), or be dropped, so custom fields are visible to every
-   reader as the API already allows?
-4. Should a manifest be able to name an optional plugin's objects in a
-   starting allowlist, so new installations of Activities include Person in
-   *Who* when Contacts is present?
-5. Are a 30-day rollback window and a deprecation of at least six months
-   (and not before the 0.3 contract) acceptable?
+The review settled the first four questions (see Status). One stays open:
+
+- Are a 30-day rollback window and a deprecation of at least six months
+  (and not before the 0.3 contract) right? They are accepted provisionally
+  and must be confirmed before the cutover slice (5) ships.
