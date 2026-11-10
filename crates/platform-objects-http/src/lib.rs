@@ -29,6 +29,11 @@ pub struct Caller {
     pub user_id: Uuid,
     /// The member's system permissions in the workspace.
     pub permissions: BTreeSet<String>,
+    /// Where the request's changes come from (#233), as the host verified
+    /// it: `web` for a browser session, `api_client` or `device` with the id
+    /// behind the bearer token, `device` on a device's command bridge. No
+    /// request header or body sets it, and it never grants anything.
+    pub source: platform_objects::MutationSource,
 }
 
 /// Where the routes find the engine for a caller.

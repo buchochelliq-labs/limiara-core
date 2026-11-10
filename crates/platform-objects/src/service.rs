@@ -40,6 +40,10 @@ pub struct MutationContext {
     pub causation_id: Option<Uuid>,
     /// The automation making the change, when one is (ADR 0022 §5).
     pub automation_id: Option<Uuid>,
+    /// Where the change came from (#233), as the entry point verified it;
+    /// `None` when it did not say. Provenance only: it never changes what
+    /// the caller may do.
+    pub source: Option<crate::MutationSource>,
 }
 
 impl MutationContext {
@@ -48,6 +52,15 @@ impl MutationContext {
             correlation_id,
             causation_id: None,
             automation_id: None,
+            source: None,
+        }
+    }
+
+    /// The same context, recording `source` as where the change came from.
+    pub fn with_source(self, source: crate::MutationSource) -> Self {
+        Self {
+            source: Some(source),
+            ..self
         }
     }
 }
@@ -227,7 +240,16 @@ impl ObjectService {
             correlation_id: context.correlation_id,
             causation_id: context.causation_id,
             automation_id: context.automation_id,
+            source: self.source(context),
         }
+    }
+
+    /// Where a change came from (#233): what the entry point said, or on a
+    /// device's replica, where every change is the device's own, `device`.
+    pub(crate) fn source(&self, context: MutationContext) -> Option<crate::MutationSource> {
+        context
+            .source
+            .or_else(|| self.replica.then(|| crate::MutationSource::device(None)))
     }
 
     pub(crate) async fn record_change(
@@ -1981,6 +2003,7 @@ impl ObjectService {
             changed_at: after.updated_at,
             changed_by: Some(self.caller.user_id()),
             correlation_id: Some(context.correlation_id),
+            source: self.source(context),
         };
         let mut entries = Vec::new();
         match (kind, before) {

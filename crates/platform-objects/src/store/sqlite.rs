@@ -13,7 +13,7 @@ use crate::{
     RecordStatus, RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel,
     SortDirection, ValidationRule, ENGINE_CONTEXT,
 };
-use crate::{RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
+use crate::{MutationSource, RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use platform_audit::AuditEvent;
@@ -748,6 +748,18 @@ CREATE TABLE timeline_sources (
   PRIMARY KEY (tenant_id, object_id),
   CHECK ((open_kind IS 'field_equals') = (open_field_id IS NOT NULL AND open_value IS NOT NULL))
 );
+"#,
+    },
+    // Change sources (#233): where each history entry's change came from.
+    // Entries written before keep both columns null and read as unknown.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0030_change_sources",
+        sql: r#"
+ALTER TABLE record_history ADD COLUMN source_kind TEXT CHECK (source_kind IN ('web',
+  'api_client', 'device', 'automation', 'quick_action', 'assistant', 'import', 'system'));
+ALTER TABLE record_history ADD COLUMN source_detail TEXT CHECK (source_detail IS NULL
+  OR (source_kind IS NOT NULL AND length(source_detail) BETWEEN 1 AND 64));
 "#,
     },
 ];
@@ -2255,8 +2267,9 @@ impl ObjectTx for SqliteObjectTx {
         for entry in entries {
             sqlx::query(
                 "INSERT INTO record_history (tenant_id, id, record_id, object_id, kind, field, \
-                   old_value, new_value, changed_at, changed_by, correlation_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                   old_value, new_value, changed_at, changed_by, correlation_id, source_kind, \
+                   source_detail) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )
             .bind(&self.tenant)
             .bind(entry.id.to_string())
@@ -2269,6 +2282,8 @@ impl ObjectTx for SqliteObjectTx {
             .bind(timestamp(entry.changed_at))
             .bind(text(entry.changed_by))
             .bind(text(entry.correlation_id))
+            .bind(entry.source.map(|source| source.kind.as_str()))
+            .bind(entry.source.as_ref().and_then(MutationSource::detail_str))
             .execute(&mut *self.tx)
             .await?;
         }
@@ -2283,7 +2298,8 @@ impl ObjectTx for SqliteObjectTx {
     ) -> Result<Vec<HistoryEntry>, ObjectError> {
         let mut sql: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT id, record_id, object_id, kind, field, old_value, new_value, changed_at, \
-             changed_by, correlation_id FROM record_history WHERE tenant_id = ",
+             changed_by, correlation_id, source_kind, source_detail FROM record_history \
+             WHERE tenant_id = ",
         );
         sql.push_bind(self.tenant.clone())
             .push(" AND record_id = ")
@@ -2318,6 +2334,11 @@ impl ObjectTx for SqliteObjectTx {
                     changed_at: time(row, "changed_at")?,
                     changed_by: optional_uuid(row, "changed_by")?,
                     correlation_id: optional_uuid(row, "correlation_id")?,
+                    source: MutationSource::from_parts(
+                        row.try_get::<Option<String>, _>("source_kind")?.as_deref(),
+                        row.try_get::<Option<String>, _>("source_detail")?
+                            .as_deref(),
+                    ),
                 })
             })
             .collect()

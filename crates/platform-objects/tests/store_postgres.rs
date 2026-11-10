@@ -818,3 +818,73 @@ async fn postgres_store_passes_the_timeline_conformance_suite() {
         .expect("unscoped");
     assert_eq!(unscoped, 0);
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_change_source_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Change source conformance')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    let report = conformance::sources::run(store, tenant).await;
+
+    // Each creation's audit entry carries the source whole; its event
+    // names only the kind.
+    for (record, source) in &report.created {
+        let metadata: serde_json::Value = sqlx::query_scalar(
+            "SELECT metadata FROM audit_log WHERE tenant_id = $1 \
+             AND action = 'records.record.created' AND target = $2",
+        )
+        .bind(tenant)
+        .bind(format!("record:{record}"))
+        .fetch_one(&migrator)
+        .await
+        .expect("audit");
+        assert_eq!(
+            metadata.get("source").unwrap_or(&serde_json::Value::Null),
+            source,
+            "{record}"
+        );
+        let envelope: serde_json::Value = sqlx::query_scalar(
+            "SELECT envelope FROM outbox WHERE tenant_id = $1 \
+             AND event_type = 'platform.objects.record-created.v1' \
+             AND envelope->'payload'->>'entity_id' = $2",
+        )
+        .bind(tenant)
+        .bind(record)
+        .fetch_one(&migrator)
+        .await
+        .expect("event");
+        assert_eq!(
+            envelope["payload"]
+                .get("source")
+                .unwrap_or(&serde_json::Value::Null),
+            &source["kind"],
+            "{record}"
+        );
+        // A device's or client's id stays out of events. (A bulk job's id
+        // is the event's causation already.)
+        if ["device", "api_client"].contains(&source["kind"].as_str().unwrap_or_default()) {
+            let detail = source["detail"].as_str().expect("detail");
+            assert!(
+                !envelope.to_string().contains(detail),
+                "events carry no detail"
+            );
+        }
+    }
+
+    // History rows written before migration 0040 have no source columns
+    // set and read as unknown; a source kind outside the closed set is
+    // refused by the table.
+    let refused =
+        sqlx::query("UPDATE record_history SET source_kind = 'robot' WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&migrator)
+            .await;
+    assert!(refused.is_err(), "the source kind is a closed set");
+}

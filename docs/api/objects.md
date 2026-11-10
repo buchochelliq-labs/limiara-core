@@ -853,6 +853,20 @@ entries. History follows record visibility, includes records in the recycle
 bin and hides retired fields. Set the flags with `PATCH /objects/{api_name}`
 and `PATCH /objects/{api_name}/fields/{field}`.
 
+Each entry also has `source`: what the change came through (#233, ADR 0017
+"Change source"), as `{"kind": "...", "detail": "..."}`, or `null` for
+entries written before sources were recorded. `kind` is one of `web` (a
+browser session), `api_client` (an API client's token; `detail` is the
+client's id), `device` (a synced device's token or its replica; `detail` is
+the device id when known), `automation` (`detail` is its API name),
+`quick_action` (its API name), `assistant` (a device assistant such as
+`siri`), `import` (a bulk job; `detail` is the job id) or `system`.
+`detail` is omitted when there is none. The server sets the source from
+what authenticated the request; no header or body field sets it, and it
+never changes what the caller may do. Audit entries carry the same
+`source` in their metadata; outbox events carry only `source` as the kind,
+without the detail.
+
 ## Sharing and ownership
 
 Record access follows ADR 0016. Object permissions set the ceiling; within
