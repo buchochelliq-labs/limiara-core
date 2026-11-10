@@ -26,6 +26,7 @@ pub mod reports;
 pub mod rollups;
 pub mod rules;
 pub mod search;
+pub mod sources;
 pub mod sync;
 pub mod timeline;
 

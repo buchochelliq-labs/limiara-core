@@ -46,6 +46,46 @@ are, but it can follow the same discipline.
    retention limits, export and archival to object storage are follow-ups
    recorded in the roadmap.
 
+## Change source
+
+Added for #233 (PostgreSQL migration 0040, SQLite tenant step
+`0030_change_sources`). Every history entry and audit entry records what the
+change came through, as a closed kind with an optional detail:
+`{"kind": "device", "detail": "<device id>"}`. The kinds are `web`,
+`api_client` (client id), `device` (device id), `automation` (API name),
+`quick_action` (API name), `assistant` (`siri`, `gemini`), `import` (bulk job
+id) and `system`. This is a section here rather than a new ADR because it
+adds provenance to existing evidence without moving a platform boundary.
+
+1. **Provenance only.** The source never changes authorization; it travels
+   in `MutationContext` next to the correlation id and is written by the
+   engine, so no plugin or caller can skip it.
+2. **Set by the server, from what it verified.** The workspace API sets
+   `web` for a browser session and `api_client` or `device` with the id
+   behind the bearer token that authenticated the request. Automations name
+   themselves for the saves they make (an after-save action; a before-save
+   automation's values are part of the member's own save and carry its
+   source), bulk job rows name their job as `import`, and plugin lifecycle
+   changes are `system`. A device's replica records `device` for its own
+   changes, and its command bridge names the signed-in device. No request
+   header or body field names a source, so a client cannot claim to be an
+   automation, an assistant or another client.
+3. **Quick actions and assistants are reserved.** The web runs quick
+   actions through the ordinary create and update routes, so those changes
+   record `web`; recording `quick_action` needs a claim the server checks
+   against the object's actions and is a follow-up. `assistant` will come
+   only from a device's local assistant bridge (#232), never over HTTP. A
+   device's push records `device` with the verified device id; a source
+   the device kept locally (such as a quick action) is not sent, so nothing
+   the device says widens what the server records.
+4. **Details are ids and names, never free text.** A detail is at most 64
+   plain ASCII characters. Audit metadata keeps the whole source; outbox
+   events carry only its kind, so a device or client id is not routed with
+   events.
+5. **No backfill.** Entries written before migration 0040 have no source and
+   read as `null`, shown as nothing in the History panel; the panel shows
+   "via web app", "via device", "via automation …" and so on, as text.
+
 ## Alternatives considered
 
 - **Deriving history from audit and events.** Would need values in audit

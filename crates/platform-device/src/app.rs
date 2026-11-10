@@ -1117,18 +1117,21 @@ fn replica_engine(store: Arc<dyn ObjectStore>, profile: &DeviceProfile) -> Objec
 }
 
 fn bridge_for(engine: ObjectService, profile: &DeviceProfile) -> Bridge {
-    Bridge::new(DeviceHost::new(
-        engine,
-        Member {
-            display_name: profile.member.display_name.clone(),
-            email: profile.member.email.clone(),
-            permissions: profile.member.permissions.clone(),
-            roles: profile.member.roles.clone(),
-        },
-        Workspace {
-            name: profile.workspace.name.clone(),
-        },
-    ))
+    Bridge::new(
+        DeviceHost::new(
+            engine,
+            Member {
+                display_name: profile.member.display_name.clone(),
+                email: profile.member.email.clone(),
+                permissions: profile.member.permissions.clone(),
+                roles: profile.member.roles.clone(),
+            },
+            Workspace {
+                name: profile.workspace.name.clone(),
+            },
+        )
+        .with_device(profile.device_id),
+    )
 }
 
 /// Stops the workspace's sync worker before its storage goes: it finishes

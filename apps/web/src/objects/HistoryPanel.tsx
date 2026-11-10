@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {Alert, Button, Skeleton} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, type HistoryEntry, type ObjectDescription, type ObjectRecord, type ObjectsClient, type UserReference} from './api';
+import {formatValue, type ChangeSource, type HistoryEntry, type ObjectDescription, type ObjectRecord, type ObjectsClient, type UserReference} from './api';
 import {failed, type Load} from './ObjectPages';
 
 type Props = {
@@ -16,6 +16,28 @@ const lifecycle: Record<Exclude<HistoryEntry['kind'], 'changed'>, string> = {
   deleted: 'Moved to the recycle bin.',
   undeleted: 'Restored from the recycle bin.',
 };
+
+const assistants: Record<string, string> = {siri: 'Siri', gemini: 'Gemini'};
+
+/**
+ * What a change came through (#233), as "via …" text, or null when it was
+ * not recorded. Details are ids and API names from the server, shown only
+ * where they name something a member recognises (an automation or quick
+ * action); device and client ids are not shown.
+ */
+export function describeSource(source: ChangeSource): string | null {
+  if (!source) return null;
+  switch (source.kind) {
+    case 'web': return 'via web app';
+    case 'api_client': return 'via API client';
+    case 'device': return 'via device';
+    case 'automation': return source.detail ? `via automation ${source.detail}` : 'via automation';
+    case 'quick_action': return source.detail ? `via quick action ${source.detail}` : 'via quick action';
+    case 'assistant': return `via ${(source.detail && assistants[source.detail]) || 'assistant'}`;
+    case 'import': return 'via import';
+    case 'system': return 'via system';
+  }
+}
 
 /**
  * The record's tracked changes, newest first (ADR 0017). Values are data
@@ -67,6 +89,11 @@ export function HistoryPanel({client, object, record, onNavigate}: Props) {
   const user = (reference: UserReference) => reference
     ? <a href={`/users/${encodeURIComponent(reference.id)}`} onClick={event => { event.preventDefault(); onNavigate(`/users/${encodeURIComponent(reference.id)}`); }}>{reference.name ?? 'Former member'}</a>
     : <span className="object-value--empty">Not recorded</span>;
+  // The member who made the change, and what it came through.
+  const changedBy = (entry: HistoryEntry) => {
+    const via = describeSource(entry.source);
+    return <td>{user(entry.changedBy)}{via && <span className="object-history__source"> {via}</span>}</td>;
+  };
   const value = (entry: HistoryEntry, side: 'old' | 'new') => {
     if (entry.field === 'owner') return user(side === 'old' ? entry.oldUser : entry.newUser);
     const raw = side === 'old' ? entry.oldValue : entry.newValue;
@@ -86,8 +113,8 @@ export function HistoryPanel({client, object, record, onNavigate}: Props) {
       <tbody>{entries.map(entry => <tr key={entry.id}>
         <td>{formatRecordTimestamp(entry.changedAt)}</td>
         {entry.kind === 'changed'
-          ? <><th scope="row">{fieldLabel(entry.field ?? '')}</th><td>{user(entry.changedBy)}</td><td>{value(entry, 'old')}</td><td>{value(entry, 'new')}</td></>
-          : <><th scope="row">{lifecycle[entry.kind]}</th><td>{user(entry.changedBy)}</td><td /><td /></>}
+          ? <><th scope="row">{fieldLabel(entry.field ?? '')}</th>{changedBy(entry)}<td>{value(entry, 'old')}</td><td>{value(entry, 'new')}</td></>
+          : <><th scope="row">{lifecycle[entry.kind]}</th>{changedBy(entry)}<td /><td /></>}
       </tr>)}</tbody>
     </table></div>}
     {load.status === 'ready' && cursor && <div><Button variant="secondary" loading={more} onClick={() => void loadMore()}>Show older changes</Button></div>}

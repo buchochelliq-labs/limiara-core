@@ -138,7 +138,23 @@ export type HistoryEntry = {
   newUser: UserReference;
   changedAt: string;
   changedBy: UserReference;
+  /** What the change came through (#233); null when it was not recorded. */
+  source: ChangeSource;
 };
+
+/** Where a change came from (#233), as the server verified it. */
+export type SourceKind = 'web' | 'api_client' | 'device' | 'automation' | 'quick_action' | 'assistant' | 'import' | 'system';
+export type ChangeSource = {kind: SourceKind; detail: string | null} | null;
+const sourceKinds: readonly SourceKind[] = ['web', 'api_client', 'device', 'automation', 'quick_action', 'assistant', 'import', 'system'];
+
+/** Reads a history entry's source; anything this build does not know reads as unrecorded. */
+export function sourceFromApi(value: unknown): ChangeSource {
+  if (typeof value !== 'object' || value === null) return null;
+  const {kind, detail} = value as {kind?: unknown; detail?: unknown};
+  const known = sourceKinds.find(item => item === kind);
+  if (!known) return null;
+  return {kind: known, detail: typeof detail === 'string' && detail ? detail : null};
+}
 
 export type HistoryPage = {entries: HistoryEntry[]; related: Record<string, string>; nextCursor: string | null};
 export type Role = {id: string; name: string};
@@ -349,7 +365,7 @@ export type ObjectsClient = {
 };
 
 type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; version: number};
-type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference};
+type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference; source?: unknown};
 type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; version: number; access?: ObjectAccess; fields?: ApiField[]};
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
 type ApiRecord = Record<string, unknown> & {id: string; name: string; owner: UserReference; created_at: string; created_by: UserReference; updated_at: string; updated_by: UserReference; version: number; is_deleted: boolean; related?: Record<string, string>; access?: RecordRights};
@@ -547,7 +563,7 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
       const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
       const body = await request<{data: ApiHistory[]; related?: Record<string, string>; next_cursor: string | null}>(`${object(apiName)}/records/${encodeURIComponent(id)}/history${query}`, {signal});
       return {
-        entries: body.data.map(entry => ({id: entry.id, kind: entry.kind, field: entry.field ?? null, oldValue: entry.old_value ?? null, newValue: entry.new_value ?? null, oldUser: entry.old_user ?? null, newUser: entry.new_user ?? null, changedAt: entry.changed_at, changedBy: entry.changed_by ?? null})),
+        entries: body.data.map(entry => ({id: entry.id, kind: entry.kind, field: entry.field ?? null, oldValue: entry.old_value ?? null, newValue: entry.new_value ?? null, oldUser: entry.old_user ?? null, newUser: entry.new_user ?? null, changedAt: entry.changed_at, changedBy: entry.changed_by ?? null, source: sourceFromApi(entry.source)})),
         related: body.related ?? {},
         nextCursor: body.next_cursor ?? null,
       };
@@ -843,8 +859,8 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     async history(apiName, id) {
       const found = record(apiName, id);
       return {entries: [
-        {id: 'h2', kind: 'changed', field: 'custom:status', oldValue: 'open', newValue: 'won', oldUser: null, newUser: null, changedAt: found.updatedAt, changedBy: found.updatedBy},
-        {id: 'h1', kind: 'created', field: null, oldValue: null, newValue: null, oldUser: null, newUser: null, changedAt: found.createdAt, changedBy: found.createdBy},
+        {id: 'h2', kind: 'changed', field: 'custom:status', oldValue: 'open', newValue: 'won', oldUser: null, newUser: null, changedAt: found.updatedAt, changedBy: found.updatedBy, source: {kind: 'device', detail: '018f0000-0000-7000-8000-00000000d001'}},
+        {id: 'h1', kind: 'created', field: null, oldValue: null, newValue: null, oldUser: null, newUser: null, changedAt: found.createdAt, changedBy: found.createdBy, source: {kind: 'web', detail: null}},
       ], related: {}, nextCursor: null};
     },
     async getSharing(apiName, id) {

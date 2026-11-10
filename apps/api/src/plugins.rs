@@ -7,6 +7,13 @@ use axum::{
 };
 use platform_db::{PluginCandidateRecord, PluginDesiredState, PluginLifecycleError};
 use platform_objects::service::MutationContext;
+use platform_objects::MutationSource;
+
+/// A plugin's lifecycle changes its objects as the platform does (#233),
+/// next to the member who asked for it.
+fn system_context(correlation_id: Uuid) -> MutationContext {
+    MutationContext::new(correlation_id).with_source(MutationSource::system())
+}
 use platform_objects::store::PostgresObjectStore;
 use platform_objects::{ObjectCaller, ObjectError, ObjectService};
 use plugin_registry::{activation::ActivationInputs, DiscoveryFailure, RegistryPolicy};
@@ -586,7 +593,7 @@ async fn install_plugin_objects(
     }
     let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
     match engine
-        .install_plugin_objects(&manifest, MutationContext::new(correlation_id))
+        .install_plugin_objects(&manifest, system_context(correlation_id))
         .await
     {
         Ok(installed) => {
@@ -653,7 +660,7 @@ async fn settle_plugin_objects(
     correlation_id: Uuid,
 ) -> Result<(), axum::response::Response> {
     let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
-    let context = MutationContext::new(correlation_id);
+    let context = system_context(correlation_id);
     let settled = match desired {
         PluginDesiredState::Enabled => engine.resume_plugin_objects(plugin_id, context).await,
         PluginDesiredState::Disabled | PluginDesiredState::Removed => {

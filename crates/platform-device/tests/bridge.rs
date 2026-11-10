@@ -85,6 +85,7 @@ async fn authenticate(mut request: Request, next: Next) -> Response {
         tenant_id,
         user_id,
         permissions: BTreeSet::new(),
+        source: platform_objects::MutationSource::device(None),
     });
     next.run(request).await
 }

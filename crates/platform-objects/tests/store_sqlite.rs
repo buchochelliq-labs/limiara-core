@@ -443,3 +443,68 @@ async fn sqlite_store_passes_the_timeline_conformance_suite() {
         .expect("timeline sources");
     assert_eq!(kept, 1);
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_change_source_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::sources::run(store.clone(), tenant).await;
+
+    // Each creation's audit entry carries the source whole; its event
+    // names only the kind.
+    let pool = databases.pool(tenant).await.expect("pool");
+    for (record, source) in &report.created {
+        let metadata: String = sqlx::query_scalar(
+            "SELECT metadata FROM audit_log WHERE action = 'records.record.created' AND target = ?1",
+        )
+        .bind(format!("record:{record}"))
+        .fetch_one(&pool)
+        .await
+        .expect("audit");
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).expect("metadata");
+        assert_eq!(
+            metadata.get("source").unwrap_or(&serde_json::Value::Null),
+            source,
+            "{record}"
+        );
+        let envelope: String = sqlx::query_scalar(
+            "SELECT envelope FROM outbox WHERE event_type = 'platform.objects.record-created.v1' \
+             AND json_extract(envelope, '$.payload.entity_id') = ?1",
+        )
+        .bind(record)
+        .fetch_one(&pool)
+        .await
+        .expect("event");
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).expect("envelope");
+        assert_eq!(
+            envelope["payload"]
+                .get("source")
+                .unwrap_or(&serde_json::Value::Null),
+            &source["kind"],
+            "{record}"
+        );
+        // A device's or client's id stays out of events. (A bulk job's id
+        // is the event's causation already.)
+        if ["device", "api_client"].contains(&source["kind"].as_str().unwrap_or_default()) {
+            let detail = source["detail"].as_str().expect("detail");
+            assert!(
+                !envelope.to_string().contains(detail),
+                "events carry no detail"
+            );
+        }
+    }
+
+    // A device's replica records its own changes as the device's.
+    let replica = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        replica.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::sources::replica(store, uuid::Uuid::now_v7()).await;
+}

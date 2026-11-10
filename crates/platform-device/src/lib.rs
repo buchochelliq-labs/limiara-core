@@ -36,7 +36,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use platform_objects::{ObjectService, ReplicaDirectory};
+use platform_objects::{MutationSource, ObjectService, ReplicaDirectory};
 use platform_objects_http::{name_users, referenced_users, Caller, ObjectsHost};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -111,6 +111,9 @@ impl DeviceHost {
             tenant_id: engine.caller().tenant_id(),
             user_id: engine.caller().user_id(),
             permissions: member.permissions.clone(),
+            // Every change made through the bridge is the device's own
+            // (#233); `with_device` names it once the device is signed in.
+            source: MutationSource::device(None),
         };
         Self(Arc::new(Inner {
             engine,
@@ -118,6 +121,13 @@ impl DeviceHost {
             member,
             workspace,
         }))
+    }
+
+    /// Names the signed-in device, as the server's token response did, as
+    /// the source of the changes made through the bridge.
+    pub fn with_device(mut self, device: Uuid) -> Self {
+        Arc::make_mut(&mut self.0).caller.source = MutationSource::device(Some(device));
+        self
     }
 
     /// The caller every request runs as.

@@ -277,10 +277,12 @@ impl ObjectService {
     /// the same transaction. A row that fails is rolled back and its
     /// problem written in another. False when the job was aborted.
     async fn apply_bulk_row(&self, job: &BulkJob, row: BulkRow) -> Result<bool, ObjectError> {
+        // Each row's change names the job as its source (#233).
         let context = MutationContext {
             correlation_id: job.correlation_id,
             causation_id: Some(job.id),
             automation_id: None,
+            source: Some(crate::MutationSource::import(job.id)),
         };
         let mut run = Run::default();
         let mut tx = self.begin().await?;
@@ -405,6 +407,7 @@ pub async fn process_bulk_job(
         correlation_id: job.correlation_id,
         causation_id: Some(job.id),
         automation_id: None,
+        source: Some(crate::MutationSource::import(job.id)),
     };
     let Some(member) =
         member.filter(|member| member.tenant_id() == tenant_id && member.user_id() == job.actor_id)

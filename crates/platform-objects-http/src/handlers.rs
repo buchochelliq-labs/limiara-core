@@ -162,8 +162,9 @@ fn invalid_query() -> Response {
     )
 }
 
-fn context(request_id: &RequestId) -> MutationContext {
-    MutationContext::new(crate::correlation_id(request_id))
+/// The request's context, with the source its host verified (#233).
+fn context(request_id: &RequestId, caller: &Caller) -> MutationContext {
+    MutationContext::new(crate::correlation_id(request_id)).with_source(caller.source)
 }
 
 /// The engine service for this request's verified member.
@@ -405,7 +406,10 @@ pub async fn create_object<H: ObjectsHost>(
         Ok(service) => service,
         Err(response) => return response,
     };
-    match service.create_object(input, context(&request_id)).await {
+    match service
+        .create_object(input, context(&request_id, &caller))
+        .await
+    {
         Ok(object) => (StatusCode::CREATED, Json(object_json(&object, None, true))).into_response(),
         Err(error) => error_response(error),
     }
@@ -454,7 +458,7 @@ pub async fn update_object<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .update_object(&object, input, context(&request_id))
+        .update_object(&object, input, context(&request_id, &caller))
         .await
     {
         Ok(object) => Json(object_json(&object, None, true)).into_response(),
@@ -482,7 +486,11 @@ pub async fn delete_object<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .delete_object(&object, version.expected_version, context(&request_id))
+        .delete_object(
+            &object,
+            version.expected_version,
+            context(&request_id, &caller),
+        )
         .await
     {
         Ok(object) => Json(object_json(&object, None, false)).into_response(),
@@ -505,7 +513,7 @@ pub async fn create_field<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .create_field(&object, input, context(&request_id))
+        .create_field(&object, input, context(&request_id, &caller))
         .await
     {
         Ok(field) => (StatusCode::CREATED, Json(field_json(&field))).into_response(),
@@ -528,7 +536,7 @@ pub async fn update_field<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .update_field(&object, &field, input, context(&request_id))
+        .update_field(&object, &field, input, context(&request_id, &caller))
         .await
     {
         Ok(field) => Json(field_json(&field)).into_response(),
@@ -555,7 +563,7 @@ pub async fn delete_field<H: ObjectsHost>(
             &object,
             &field,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -614,7 +622,7 @@ pub async fn create_validation_rule<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .create_validation_rule(&object, input, context(&request_id))
+        .create_validation_rule(&object, input, context(&request_id, &caller))
         .await
     {
         Ok(rule) => (StatusCode::CREATED, Json(rule_json(&rule))).into_response(),
@@ -637,7 +645,7 @@ pub async fn update_validation_rule<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .update_validation_rule(&object, &rule, input, context(&request_id))
+        .update_validation_rule(&object, &rule, input, context(&request_id, &caller))
         .await
     {
         Ok(rule) => Json(rule_json(&rule)).into_response(),
@@ -664,7 +672,7 @@ pub async fn delete_validation_rule<H: ObjectsHost>(
             &object,
             &rule,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -726,7 +734,7 @@ pub async fn create_quick_action<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .create_quick_action(&object, input, context(&request_id))
+        .create_quick_action(&object, input, context(&request_id, &caller))
         .await
     {
         Ok(action) => (StatusCode::CREATED, Json(quick_action_json(&action))).into_response(),
@@ -749,7 +757,7 @@ pub async fn update_quick_action<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .update_quick_action(&object, &action, input, context(&request_id))
+        .update_quick_action(&object, &action, input, context(&request_id, &caller))
         .await
     {
         Ok(action) => Json(quick_action_json(&action)).into_response(),
@@ -776,7 +784,7 @@ pub async fn delete_quick_action<H: ObjectsHost>(
             &object,
             &action,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -849,7 +857,10 @@ pub async fn create_report<H: ObjectsHost>(
         Ok(service) => service,
         Err(response) => return response,
     };
-    match service.create_report(input, context(&request_id)).await {
+    match service
+        .create_report(input, context(&request_id, &caller))
+        .await
+    {
         Ok(report) => {
             let mut value = report_json(&report, true);
             state.name_users(caller.tenant_id, &mut value).await;
@@ -915,7 +926,10 @@ pub async fn update_report<H: ObjectsHost>(
         Ok(service) => service,
         Err(response) => return response,
     };
-    match service.update_report(id, input, context(&request_id)).await {
+    match service
+        .update_report(id, input, context(&request_id, &caller))
+        .await
+    {
         Ok(report) => {
             let mut value = report_json(&report, true);
             state.name_users(caller.tenant_id, &mut value).await;
@@ -940,7 +954,7 @@ pub async fn delete_report<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .delete_report(id, version.expected_version, context(&request_id))
+        .delete_report(id, version.expected_version, context(&request_id, &caller))
         .await
     {
         Ok(report) => Json(report_json(&report, true)).into_response(),
@@ -1001,7 +1015,7 @@ pub async fn create_automation<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .create_automation(&object, input, context(&request_id))
+        .create_automation(&object, input, context(&request_id, &caller))
         .await
     {
         Ok(automation) => (StatusCode::CREATED, Json(automation_json(&automation))).into_response(),
@@ -1024,7 +1038,7 @@ pub async fn update_automation<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .update_automation(&object, &automation, input, context(&request_id))
+        .update_automation(&object, &automation, input, context(&request_id, &caller))
         .await
     {
         Ok(automation) => Json(automation_json(&automation)).into_response(),
@@ -1051,7 +1065,7 @@ pub async fn delete_automation<H: ObjectsHost>(
             &object,
             &automation,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -1170,7 +1184,13 @@ async fn change_job<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .change_automation_job(&object, &automation, job, retry, context(&request_id))
+        .change_automation_job(
+            &object,
+            &automation,
+            job,
+            retry,
+            context(&request_id, &caller),
+        )
         .await
     {
         Ok(job) => Json(job_json(&job)).into_response(),
@@ -1232,7 +1252,10 @@ pub async fn composite<H: ObjectsHost>(
             Err(response) => return response,
         }
     }
-    let outcomes = match service.composite(&request, context(&request_id)).await {
+    let outcomes = match service
+        .composite(&request, context(&request_id, &caller))
+        .await
+    {
         Ok(outcomes) => outcomes,
         Err(error) => return error_response(error),
     };
@@ -1358,7 +1381,7 @@ pub async fn submit_bulk_job<H: ObjectsHost>(
             &request.object,
             request.operation,
             &request.rows,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -1435,7 +1458,10 @@ pub async fn abort_bulk_job<H: ObjectsHost>(
         Ok(service) => service,
         Err(response) => return response,
     };
-    match service.abort_bulk_job(job, context(&request_id)).await {
+    match service
+        .abort_bulk_job(job, context(&request_id, &caller))
+        .await
+    {
         Ok(job) => respond_bulk(&state, &caller, StatusCode::OK, &job).await,
         Err(error) => error_response(error),
     }
@@ -1496,7 +1522,7 @@ pub async fn set_object_permission<H: ObjectsHost>(
         Err(response) => return response,
     }
     match service
-        .set_object_permission(&object, role_id, access, context(&request_id))
+        .set_object_permission(&object, role_id, access, context(&request_id, &caller))
         .await
     {
         Ok(permission) => Json(json!({"role_id": permission.role_id, "access": permission.access}))
@@ -1644,7 +1670,7 @@ pub async fn create_record<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .create_record(&object, &body, context(&request_id))
+        .create_record(&object, &body, context(&request_id, &caller))
         .await
     {
         Ok(record) => {
@@ -1998,6 +2024,9 @@ fn history_json(entry: &platform_objects::HistoryEntry) -> Value {
         "new_value": entry.new_value,
         "changed_at": entry.changed_at,
         "changed_by": crate::user_reference(entry.changed_by),
+        // Where the change came from (#233); null for entries written
+        // before sources were recorded.
+        "source": entry.source,
     });
     // Owner changes also carry member references, named like `owner`.
     if entry.field.as_deref() == Some("owner") {
@@ -2293,7 +2322,7 @@ pub async fn put_share<H: ObjectsHost>(
             kind,
             grantee,
             body.access,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -2316,7 +2345,13 @@ pub async fn delete_share<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .unshare_record(&object, &record, kind, grantee, context(&request_id))
+        .unshare_record(
+            &object,
+            &record,
+            kind,
+            grantee,
+            context(&request_id, &caller),
+        )
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -2363,7 +2398,7 @@ pub async fn change_owner<H: ObjectsHost>(
             &record,
             change.owner_id,
             change.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -2411,7 +2446,7 @@ pub async fn update_record<H: ObjectsHost>(
             &record,
             expected_version,
             &body,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -2447,7 +2482,7 @@ pub async fn delete_record<H: ObjectsHost>(
             &object,
             &record,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
@@ -2483,7 +2518,7 @@ pub async fn undelete_record<H: ObjectsHost>(
             &object,
             &record,
             version.expected_version,
-            context(&request_id),
+            context(&request_id, &caller),
         )
         .await
     {
