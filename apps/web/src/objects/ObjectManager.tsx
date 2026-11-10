@@ -129,6 +129,68 @@ export function LookupFilterForm({client, object, field, onDone}: {client: Objec
   </form>;
 }
 
+/**
+ * The objects an allowlist form lists: the workspace's objects, then any
+ * allowed before or chosen since that the list does not name, so one
+ * taken out stays listed and can be put back before saving.
+ */
+export function allowlistChoices(targets: readonly ObjectSummary[], original: readonly string[], chosen: readonly string[]): {apiName: string; label: string}[] {
+  const listed = targets.map(target => ({apiName: target.apiName, label: target.label}));
+  for (const apiName of [...original, ...chosen]) {
+    if (!listed.some(item => item.apiName === apiName)) listed.push({apiName, label: apiName});
+  }
+  return listed;
+}
+
+/**
+ * Changes which objects a related-to field may point at (ADR 0033 §1).
+ * Values to an object taken out are kept; create quick actions that fill
+ * the field for that object are deleted.
+ */
+export function AllowlistForm({client, object, field, onDone}: {client: ObjectsClient; object: ObjectDescription; field: ObjectField; onDone: (message?: string) => void}) {
+  const [targets, setTargets] = useState<ObjectSummary[] | null>(null);
+  const [chosen, setChosen] = useState<string[]>(field.referenceObjects ?? []);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<{message: string; issues: ValidationIssue[]} | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    client.listObjects(controller.signal)
+      .then(value => { if (!controller.signal.aborted) setTargets(value.objects); })
+      .catch(() => { if (!controller.signal.aborted) setTargets([]); });
+    return () => controller.abort();
+  }, [client]);
+  const listed = allowlistChoices(targets ?? [], field.referenceObjects ?? [], chosen);
+  const removed = (field.referenceObjects ?? []).filter(apiName => !chosen.includes(apiName));
+  // A workspace field needs at least one object; a plugin's field may allow none (ADR 0033 §2).
+  const minimum = field.origin === 'plugin' ? 0 : 1;
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await client.updateField(object.apiName, field.apiName, field.version, {reference_objects: chosen});
+      onDone(`${field.label} now points at ${chosen.length === 0 ? 'no objects' : chosen.length === 1 ? 'one object' : `${chosen.length} objects`}.`);
+    } catch (reason) {
+      setError(issuesText(reason, 'The objects could not be saved.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <form className="object-form" aria-label={`Objects ${field.label} can point to`} onSubmit={event => { event.preventDefault(); void save(); }}>
+    {error && <Alert variant="danger" title={error.message}><Issues issues={error.issues} /></Alert>}
+    <fieldset className="object-multi">
+      <legend>Objects {field.label} can point to</legend>
+      <span className="ui-field__description">Choose up to {referenceObjectsMax}. Taking an object out keeps the values that point at it, and deletes quick actions that create records through {field.label} on it.</span>
+      {!targets && <span role="status">Loading objects…</span>}
+      {targets && listed.map(target => <label key={target.apiName} className="object-checkbox"><input type="checkbox" checked={chosen.includes(target.apiName)} disabled={!chosen.includes(target.apiName) && chosen.length >= referenceObjectsMax} onChange={event => setChosen(current => event.target.checked ? [...current, target.apiName] : current.filter(item => item !== target.apiName))} />{target.label}</label>)}
+    </fieldset>
+    {removed.length > 0 && <p className="object-form__meta">Taking out: {removed.join(', ')}.</p>}
+    <div className="object-page__actions">
+      <Button type="submit" loading={saving} disabled={chosen.length < minimum}>Save objects</Button>
+      <Button type="button" variant="secondary" onClick={() => onDone()} disabled={saving}>Cancel</Button>
+    </div>
+  </form>;
+}
+
 /** One object's fields and access in the Object Manager. */
 export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {client: ObjectsClient; apiName: string; onNavigate: Navigate; headingRef?: RefObject<HTMLHeadingElement | null>}) {
   const [load, retry] = useObject(client, apiName);
@@ -136,6 +198,7 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
   const [notice, setNotice] = useState('');
   const [canManage, setCanManage] = useState(false);
   const [filtering, setFiltering] = useState<string | null>(null);
+  const [allowing, setAllowing] = useState<string | null>(null);
   const object = load.status === 'ready' ? load.value : undefined;
   useEffect(() => {
     const controller = new AbortController();
@@ -193,11 +256,12 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
               {object.trackHistory && <td>{canManage
                 ? <input type="checkbox" aria-label={`Track history of ${field.label}`} checked={field.trackHistory} onChange={event => void toggleHistory(field, event.target.checked)} />
                 : field.trackHistory ? 'Tracked' : 'Not tracked'}</td>}
-              {canManage && <td>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
+              {canManage && <td>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.type === 'related_to' && <Button size="small" variant="quiet" onClick={() => setAllowing(field.apiName)} aria-label={`Objects ${field.label} can point to`}>Objects</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
             </tr>)}
           </tbody>
         </table></div>
         {filtering && object.fields.some(field => field.apiName === filtering) && <LookupFilterForm key={filtering} client={client} object={object} field={object.fields.find(field => field.apiName === filtering) ?? object.fields[0]!} onDone={message => { setFiltering(null); if (message) { setNotice(message); retry(); } }} />}
+        {allowing && object.fields.some(field => field.apiName === allowing) && <AllowlistForm key={`${allowing}@${object.fields.find(field => field.apiName === allowing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === allowing) ?? object.fields[0]!} onDone={message => { setAllowing(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}
       {canManage && <QuickActions client={client} object={object} onNotice={setNotice} />}

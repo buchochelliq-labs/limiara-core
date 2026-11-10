@@ -454,6 +454,18 @@ try {
   await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
   await page.getByRole('region', {name: 'Milestones'}).getByRole('link', {name: 'Engine review'}).waitFor();
 
+  step('related-to fields: an administrator changes the objects a field can point to (ADR 0033)');
+  await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:milestone')}`);
+  await page.getByRole('button', {name: 'Objects Regarding can point to'}).click();
+  const allowlist = page.getByRole('form', {name: 'Objects Regarding can point to'});
+  await allowlist.getByRole('checkbox', {name: 'Project', exact: true}).uncheck();
+  await allowlist.getByText('Taking out: custom:project.').waitFor();
+  await shot(page, '22-related-to-allowlist');
+  await allowlist.getByRole('button', {name: 'Save objects'}).click();
+  await allowlist.waitFor({state: 'detached'});
+  await page.getByText('Regarding now points at one object.').first().waitFor();
+  await page.getByText('Related to (custom:client)').waitFor();
+
   step('the Activity timeline: log a call from an account and see it in Past (ADR 0033 §4)');
   await page.goto(`${origin}/o/custom:account`);
   await page.getByRole('link', {name: 'Initech'}).click();
