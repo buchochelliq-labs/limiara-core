@@ -130,6 +130,19 @@ export function LookupFilterForm({client, object, field, onDone}: {client: Objec
 }
 
 /**
+ * The objects an allowlist form lists: the workspace's objects, then any
+ * allowed before or chosen since that the list does not name, so one
+ * taken out stays listed and can be put back before saving.
+ */
+export function allowlistChoices(targets: readonly ObjectSummary[], original: readonly string[], chosen: readonly string[]): {apiName: string; label: string}[] {
+  const listed = targets.map(target => ({apiName: target.apiName, label: target.label}));
+  for (const apiName of [...original, ...chosen]) {
+    if (!listed.some(item => item.apiName === apiName)) listed.push({apiName, label: apiName});
+  }
+  return listed;
+}
+
+/**
  * Changes which objects a related-to field may point at (ADR 0033 §1).
  * Values to an object taken out are kept; create quick actions that fill
  * the field for that object are deleted.
@@ -146,9 +159,7 @@ export function AllowlistForm({client, object, field, onDone}: {client: ObjectsC
       .catch(() => { if (!controller.signal.aborted) setTargets([]); });
     return () => controller.abort();
   }, [client]);
-  // Objects already allowed stay listed even when they are not in the list,
-  // so they can still be taken out.
-  const listed = [...(targets ?? []).map(target => ({apiName: target.apiName, label: target.label})), ...chosen.filter(apiName => !(targets ?? []).some(target => target.apiName === apiName)).map(apiName => ({apiName, label: apiName}))];
+  const listed = allowlistChoices(targets ?? [], field.referenceObjects ?? [], chosen);
   const removed = (field.referenceObjects ?? []).filter(apiName => !chosen.includes(apiName));
   // A workspace field needs at least one object; a plugin's field may allow none (ADR 0033 §2).
   const minimum = field.origin === 'plugin' ? 0 : 1;

@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
-import {AllowlistForm, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
+import {AllowlistForm, allowlistChoices, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
@@ -669,6 +669,10 @@ describe('related-to fields (ADR 0033)', () => {
     expect(markup).toContain('Objects Regarding can point to');
     expect(markup).toContain('Loading objects…');
     expect(markup).toContain('Save objects');
+    // An allowed object the list does not name stays offered after it is unchecked.
+    const listed = [{...project, fields: undefined, apiName: 'custom:project', label: 'Project'}];
+    expect(allowlistChoices(listed, ['custom:gone', 'custom:project'], ['custom:project']).map(item => item.apiName)).toEqual(['custom:project', 'custom:gone']);
+    expect(allowlistChoices([], ['custom:gone'], []).map(item => item.label)).toEqual(['custom:gone']);
     const client = createFixtureObjectsClient();
     await client.createObject({name: 'task', label: 'Task', plural_label: 'Tasks'});
     const created = await client.createField('custom:task', {name: 'regarding', label: 'Regarding', field_type: 'related_to', reference_objects: ['custom:project']});
