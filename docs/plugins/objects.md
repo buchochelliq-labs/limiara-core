@@ -123,6 +123,8 @@ Whenever an object enters the field's allowlist, it gains a create quick
 action of that name that makes a record of the declaring object, with the
 field set to the current record, the form asking for `fields` and the
 `presets` applied on save.
+An object that is out of service when it enters the allowlist, because its
+own plugin is disabled, gains the action when that plugin is enabled again.
 
 | Setting | Rule |
 | --- | --- |

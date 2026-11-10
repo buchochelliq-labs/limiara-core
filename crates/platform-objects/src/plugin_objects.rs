@@ -40,6 +40,7 @@ use crate::{
 use chrono::Utc;
 use plugin_contract::{Manifest, ObjectDecl, ObjectFieldDecl};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// The manifest's declarations do not pass validation.
@@ -405,13 +406,33 @@ impl ObjectService {
             // Objects that entered a related-to allowlist while the plugin
             // was not enabled, or that a new declaration names, are offered
             // its related actions now (ADR 0033 §3).
-            for owned in tx.objects_owned_by(plugin_id).await? {
+            let owned = tx.objects_owned_by(plugin_id).await?;
+            for owned in &owned {
                 let object = tx
                     .object_by_id(owned.id)
                     .await?
                     .ok_or(ObjectError::Invariant)?;
                 self.offer_related_actions(tx.as_mut(), &object, None, context)
                     .await?;
+            }
+            // Other plugins' related actions that could not reach these
+            // objects while they were out of service reach them now.
+            let owned_ids: BTreeSet<Uuid> = owned.iter().map(|object| object.id).collect();
+            let mut declaring = BTreeSet::new();
+            for owned in &owned {
+                for field in tx.fields_referencing_object(owned.id).await? {
+                    if field.field_type == FieldType::RelatedTo
+                        && !owned_ids.contains(&field.object_id)
+                    {
+                        declaring.insert((field.object_id, field.id));
+                    }
+                }
+            }
+            for (object_id, field_id) in declaring {
+                if let Some(object) = tx.object_by_id(object_id).await? {
+                    self.offer_related_actions(tx.as_mut(), &object, Some(field_id), context)
+                        .await?;
+                }
             }
         }
         tx.commit().await?;

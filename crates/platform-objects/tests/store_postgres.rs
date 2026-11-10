@@ -777,7 +777,10 @@ async fn postgres_store_passes_the_related_action_conformance_suite() {
             .fetch_one(&migrator)
             .await
             .expect("related actions");
-    assert_eq!(declared, 2, "log_a_call and the upgrade's log_an_email");
+    assert_eq!(
+        declared, 3,
+        "log_a_call and the upgrades' log_an_email and log_a_meeting"
+    );
     // The runtime role sees none without the workspace's context.
     let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM related_actions")
         .fetch_one(&app)
