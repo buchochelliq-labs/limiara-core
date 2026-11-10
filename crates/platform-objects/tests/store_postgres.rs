@@ -289,6 +289,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "quick_actions",
         "field_reference_objects",
         "related_actions",
+        "timeline_sources",
         "automations",
         "automation_runs",
         "automation_jobs",
@@ -779,6 +780,36 @@ async fn postgres_store_passes_the_related_action_conformance_suite() {
     assert_eq!(declared, 2, "log_a_call and the upgrade's log_an_email");
     // The runtime role sees none without the workspace's context.
     let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM related_actions")
+        .fetch_one(&app)
+        .await
+        .expect("unscoped");
+    assert_eq!(unscoped, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_timeline_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Timeline')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    conformance::timeline::run(store, tenant).await;
+
+    // The upgrade dropped Event's declaration; Task's is kept.
+    let kept: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM timeline_sources WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(&migrator)
+            .await
+            .expect("timeline sources");
+    assert_eq!(kept, 1);
+    // The runtime role sees none without the workspace's context.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM timeline_sources")
         .fetch_one(&app)
         .await
         .expect("unscoped");

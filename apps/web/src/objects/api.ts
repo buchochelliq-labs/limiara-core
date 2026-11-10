@@ -93,6 +93,18 @@ export type RecordLink = {id: string; name: string};
 /** The records of another object that point at a record through one field. */
 export type RelatedList = {object: string; objectLabel: string; objectPluralLabel: string; field: string; fieldLabel: string; masterDetail: boolean; records: RecordLink[]; nextCursor: string | null};
 
+/** One record on a record's Activity timeline (ADR 0033 §4). Every value is data from the API, shown as text. */
+export type TimelineItem = {object: string; objectLabel: string; id: string; name: string; date: string | null; dateField: string; dateType: 'date' | 'date_time'; createdAt: string | null; open: boolean; through: string; details: {field: string; label: string; value: string}[]};
+/**
+ * A record's Activity timeline: `sources` counts the timeline sources that
+ * can point at it (none: no Activity section), `open` comes with the first
+ * page, `past` pages with `nextCursor`, and `actions` names the record's
+ * create quick actions that make timeline records.
+ */
+export type Timeline = {sources: number; open: TimelineItem[]; openMore: boolean; past: TimelineItem[]; nextCursor: string | null; actions: string[]};
+/** How a fixture object appears on timelines, as a plugin declares it in `[objects.timeline]`. */
+export type FixtureTimelineSource = {through: string[]; date: string; open?: {field: string; equals: string} | 'upcoming'};
+
 export type ObjectAccess = {read: boolean; create: boolean; edit: boolean; delete: boolean; view_all: boolean; modify_all: boolean};
 
 export const noAccess: ObjectAccess = {read: false, create: false, edit: false, delete: false, view_all: false, modify_all: false};
@@ -304,6 +316,8 @@ export type ObjectsClient = {
   relatedLists(apiName: string, id: string, signal?: AbortSignal): Promise<RelatedList[]>;
   /** One more page of one related list. */
   relatedRecords(apiName: string, id: string, child: string, field: string, cursor: string, signal?: AbortSignal): Promise<RelatedList>;
+  /** A record's Activity timeline (ADR 0033 §4); `cursor` asks for the next page of past records. */
+  timeline(apiName: string, id: string, cursor?: string, signal?: AbortSignal): Promise<Timeline>;
   /** The records a lookup may point at, within its filter; a related-to field names the `target` object to list. */
   lookupCandidates(apiName: string, field: string, search: string, signal?: AbortSignal, target?: string): Promise<{records: RecordLink[]; nextCursor: string | null}>;
   share(apiName: string, id: string, kind: 'user' | 'role', granteeId: string, access: 'read' | 'edit'): Promise<void>;
@@ -392,6 +406,24 @@ function linksFromApi(rows: unknown[]): RecordLink[] {
 
 function relatedFromApi(list: ApiRelated): RelatedList {
   return {object: list.object, objectLabel: list.object_label, objectPluralLabel: list.object_plural_label, field: list.field, fieldLabel: list.field_label, masterDetail: list.master_detail === true, records: linksFromApi(list.data ?? []), nextCursor: list.next_cursor ?? null};
+}
+
+type ApiTimelineItem = {object?: unknown; object_label?: unknown; id?: unknown; name?: unknown; date?: unknown; date_field?: unknown; date_type?: unknown; created_at?: unknown; open?: unknown; through?: unknown; details?: unknown};
+
+const text = (value: unknown): string => typeof value === 'string' ? value : '';
+
+function timelineItemFromApi(item: ApiTimelineItem): TimelineItem {
+  const details = Array.isArray(item.details) ? item.details.flatMap(detail => {
+    if (typeof detail !== 'object' || detail === null) return [];
+    const {field, label, value} = detail as Record<string, unknown>;
+    return typeof value === 'string' ? [{field: text(field), label: text(label), value}] : [];
+  }) : [];
+  return {object: text(item.object), objectLabel: text(item.object_label), id: text(item.id), name: text(item.name) || text(item.id), date: typeof item.date === 'string' ? item.date : null, dateField: text(item.date_field), dateType: item.date_type === 'date_time' ? 'date_time' : 'date', createdAt: typeof item.created_at === 'string' ? item.created_at : null, open: item.open === true, through: text(item.through), details};
+}
+
+export function timelineFromApi(body: {sources?: unknown; open?: unknown; open_more?: unknown; past?: unknown; next_cursor?: unknown; actions?: unknown}): Timeline {
+  const items = (value: unknown) => Array.isArray(value) ? value.filter((item): item is ApiTimelineItem => typeof item === 'object' && item !== null).map(timelineItemFromApi) : [];
+  return {sources: typeof body.sources === 'number' ? body.sources : 0, open: items(body.open), openMore: body.open_more === true, past: items(body.past), nextCursor: typeof body.next_cursor === 'string' ? body.next_cursor : null, actions: Array.isArray(body.actions) ? body.actions.filter((name): name is string => typeof name === 'string') : []};
 }
 
 function reportFromApi(report: ApiReport): Report {
@@ -498,6 +530,10 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     },
     async relatedRecords(apiName, id, child, field, cursor, signal) {
       return relatedFromApi(await request<ApiRelated>(`${object(apiName)}/records/${encodeURIComponent(id)}/related/${encodeURIComponent(child)}/${encodeURIComponent(field)}?cursor=${encodeURIComponent(cursor)}`, {signal}));
+    },
+    async timeline(apiName, id, cursor, signal) {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      return timelineFromApi(await request<Parameters<typeof timelineFromApi>[0]>(`${object(apiName)}/records/${encodeURIComponent(id)}/timeline${query}`, {signal}));
     },
     async lookupCandidates(apiName, field, search, signal, target) {
       const params = new URLSearchParams();
@@ -640,7 +676,8 @@ function field(apiName: string, label: string, type: FieldType, extra: Partial<O
 }
 
 /** An in-memory engine with one Projects object, for tests and offline previews. */
-export function createFixtureObjectsClient(): ObjectsClient {
+export function createFixtureObjectsClient(options: {timelines?: Record<string, FixtureTimelineSource>} = {}): ObjectsClient {
+  const timelines = options.timelines ?? {};
   const reports: Report[] = [];
   const objects: ObjectDescription[] = [{
     apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: 'Client engagements', origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'read_write', grantHierarchy: true, trackHistory: true, version: 1, access: fullAccess,
@@ -766,6 +803,32 @@ export function createFixtureObjectsClient(): ObjectsClient {
       const list = (await this.relatedLists(apiName, id)).find(item => item.object === child && item.field === field);
       if (!list) throw new ObjectsApiError('missing');
       return list;
+    },
+    async timeline(apiName, id, cursor) {
+      record(apiName, id);
+      const today = new Date().toISOString().slice(0, 10);
+      const sources = Object.entries(timelines).flatMap(([source, declared]) => {
+        const described = objects.find(item => item.apiName === source);
+        if (!described) return [];
+        const through = declared.through.filter(name => (records[source] ?? []).some(row => row.values[name] === id) || described.fields.some(item => item.apiName === name && referenceTargets(item).includes(apiName)));
+        return through.length ? [{source: described, declared, through}] : [];
+      });
+      const items = sources.flatMap(({source, declared, through}) => (records[source.apiName] ?? []).filter(row => !row.isDeleted && through.some(name => row.values[name] === id)).map(row => {
+        const raw = row.values[declared.date];
+        const date = typeof raw === 'string' ? raw : null;
+        const open = declared.open === 'upcoming' ? date !== null && date.slice(0, 10) >= today : declared.open ? row.values[declared.open.field] === declared.open.equals : false;
+        const dateField = source.fields.find(item => item.apiName === declared.date);
+        const details = source.fields.filter(item => item.type === 'picklist').slice(0, 3).flatMap(item => typeof row.values[item.apiName] === 'string' ? [{field: item.apiName, label: item.label, value: formatValue(item, row.values[item.apiName])}] : []);
+        const item: TimelineItem = {object: source.apiName, objectLabel: source.label, id: row.id, name: row.name, date, dateField: declared.date, dateType: dateField?.type === 'date_time' ? 'date_time' : 'date', createdAt: row.createdAt, open, through: through.find(name => row.values[name] === id) ?? through[0] ?? '', details};
+        return item;
+      }));
+      const when = (item: TimelineItem) => item.date ?? item.createdAt ?? '';
+      const open = items.filter(item => item.open).sort((left, right) => Number(left.date === null) - Number(right.date === null) || when(left).localeCompare(when(right)));
+      const past = items.filter(item => !item.open).sort((left, right) => when(right).localeCompare(when(left)));
+      const offset = cursor ? Number(cursor) : 0;
+      const page = past.slice(offset, offset + 20);
+      const actions = sources.length ? (quickActions[apiName] ?? []).filter(action => action.kind === 'create' && action.targetObject !== null && action.targetObject in timelines).sort(byPosition).map(action => action.name) : [];
+      return {sources: sources.length, open: cursor ? [] : open.slice(0, 50), openMore: !cursor && open.length > 50, past: page, nextCursor: offset + 20 < past.length ? String(offset + 20) : null, actions};
     },
     async lookupCandidates(apiName, fieldName, search, _signal, object) {
       const found = find(apiName).fields.find(item => item.apiName === fieldName);

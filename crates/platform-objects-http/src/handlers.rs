@@ -2124,6 +2124,30 @@ pub async fn related_records<H: ObjectsHost>(
     }
 }
 
+/// `GET .../records/{id}/timeline`: the record's Activity timeline
+/// (ADR 0033 §4), read as the caller.
+pub async fn record_timeline<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object, record)): Path<(Uuid, String, String)>,
+    Extension(caller): Extension<Caller>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return invalid_query();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .timeline(&object, &record, query.cursor.as_deref())
+        .await
+    {
+        Ok(timeline) => Json(json!(timeline)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
 /// `GET .../fields/{field}/candidates`: the records a lookup may point at,
 /// within its lookup filter.
 pub async fn lookup_candidates<H: ObjectsHost>(

@@ -8,7 +8,8 @@
 // UI contribution endpoint, the object home, create, edit, delete and restore
 // from the recycle bin, quick actions defined in the Object Manager and run
 // from record pages, then the Object Manager creating an object and a
-// field. Nothing here stubs the API. Screenshots go to SCREENSHOT_DIR.
+// field, and logging a call from the Activity timeline. Nothing here stubs
+// the API. Screenshots go to SCREENSHOT_DIR.
 import {createServer, request as httpRequest} from 'node:http';
 import {mkdir, readFile, stat} from 'node:fs/promises';
 import {extname, join, normalize} from 'node:path';
@@ -452,6 +453,21 @@ try {
   await page.getByRole('region', {name: 'Details'}).getByRole('link', {name: 'Analytical Engines'}).click();
   await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
   await page.getByRole('region', {name: 'Milestones'}).getByRole('link', {name: 'Engine review'}).waitFor();
+
+  step('the Activity timeline: log a call from an account and see it in Past (ADR 0033 §4)');
+  await page.goto(`${origin}/o/custom:account`);
+  await page.getByRole('link', {name: 'Initech'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Initech'}).waitFor();
+  const activity = page.getByRole('region', {name: 'Activity'});
+  await activity.getByRole('region', {name: 'Open and upcoming'}).getByRole('link', {name: 'Send the TPS report'}).waitFor();
+  await activity.getByRole('region', {name: 'Past'}).getByRole('link', {name: 'Called Initech'}).waitFor();
+  await activity.getByRole('button', {name: 'Log a call'}).click();
+  dialog = page.getByRole('dialog', {name: 'Log a call'});
+  await dialog.getByLabel('Subject').fill('Browser call');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await activity.getByRole('region', {name: 'Past'}).getByRole('link', {name: 'Browser call'}).waitFor();
+  await shot(page, '21-activity-timeline');
 } catch (error) {
   failed = true;
   console.error(`browser journey failed: ${error instanceof Error ? error.message : String(error)}`);

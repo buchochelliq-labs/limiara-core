@@ -15,7 +15,7 @@ mod devices;
 pub use devices::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0038_related_actions.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0039_timeline_sources.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]

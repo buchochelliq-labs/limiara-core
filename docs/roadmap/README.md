@@ -215,7 +215,12 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   - a default date for a logged call (formula presets such as "today" are out of scope in ADR 0032), and offering related actions to an object that was out of service when it entered the allowlist once it comes back;
   - editing a plugin related-to field's allowlist in the Object Manager, and sending related actions' quick actions to device replicas with the rest of ADR 0032 §5.
 
-  Then the record page's Activity timeline (slice 4).
+  Slice 4 is delivered, so ADR 0033 is complete: the Activity timeline. Plugin objects declare timeline sources (`[objects.timeline]`: through fields, a date, and when a record is open), stored per workspace in `timeline_sources` in both stores; `GET .../records/{id}/timeline` merges them as the viewer into an open group and a cursor-paged past group, and names the record's create quick actions that make timeline records; the web record page shows an Activity section with them. Slice 4 follow-ups:
+  - the tabs layout of ADR 0011 §3 (Activity, Related, Details) on the record page; today the Activity section sits after Related;
+  - completing a task, or rescheduling it, from the timeline;
+  - emails as activities (sending, logging and threading), once an email plugin exists;
+  - timeline entries on devices: the phone app and device replicas do not show the timeline yet (ADR 0024);
+  - a "today" default for a logged call's date, so logged calls sort by their date rather than their creation.
 - Formulas beyond [ADR 0021](../adr/0021-formulas-and-validation-rules.md) (#298): filtering on formulas that follow lookups or use the time, which needs values kept current from related changes and a schedule.
 - Global search beyond [ADR 0020](../adr/0020-global-search.md) (#305): boosting recently viewed records (with the recently viewed service, #285), synonyms and typo tolerance, server-side highlighting, the search bar on narrow screens, plugin objects with typed stores (Contacts) in the index, and a pluggable external search engine fed from the change log.
 - Field history beyond [ADR 0017](../adr/0017-field-history.md) (#311): per-workspace retention limits, export and archival of history to object storage, and hiding entries for fields hidden by field-level security (#316).

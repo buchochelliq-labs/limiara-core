@@ -2,7 +2,7 @@ manifest_version = 1
 id = "platform.activities"
 name = "Activities"
 version = "0.1.0"
-description = "Tasks and events about any record, with a Log a call quick action"
+description = "Tasks and events about any record, with a Log a call quick action and an Activity timeline"
 # A manifest-only plugin (ADR 0033 §3): it links no backend code. Its objects
 # are engine objects the kernel installs through the object engine, so every
 # read and write goes through the engine's tenancy, permissions, sharing,
@@ -58,11 +58,13 @@ label = "Due date"
 field_type = "date"
 indexed = true
 
+# Indexed: the Activity timeline lists open tasks by it.
 [[objects.fields]]
 name = "status"
 label = "Status"
 field_type = "picklist"
 required = true
+indexed = true
 options = [
   { value = "open", label = "Open", default = true },
   { value = "completed", label = "Completed" },
@@ -121,6 +123,13 @@ label = "Log a call"
 fields = ["name", "platform.activities:description"]
 presets = { "platform.activities:type" = "call", "platform.activities:status" = "completed" }
 
+# Tasks appear on the Activity timeline (ADR 0033 §4) of the records their
+# Related to or Who points at: open while their status is open, by due date.
+[objects.timeline]
+through = ["related_to", "who"]
+date = "due_date"
+open = { field = "status", equals = "open" }
+
 # --- Event -------------------------------------------------------------------
 
 [[objects]]
@@ -167,3 +176,9 @@ name = "who"
 label = "Who"
 field_type = "related_to"
 reference_objects = []
+
+# Events appear on the same timelines, upcoming until the day they start.
+[objects.timeline]
+through = ["related_to", "who"]
+date = "starts_at"
+open = "upcoming"

@@ -5,7 +5,7 @@
 #
 # The journey covers object and field definition, naming, key prefixes,
 # picklists, uniqueness, lookups, related-to fields, plugin-declared objects,
-# the Activities plugin and its Log a call action,
+# the Activities plugin and its Log a call action, the Activity timeline,
 # record create/read/update with optimistic
 # versions, filters and search, the recycle bin, object permissions per role,
 # forced RLS on the engine tables, and evidence that names changes without
@@ -667,7 +667,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -987,6 +987,62 @@ expect 200 "$(call "$member_cookie" GET "$task_api/records/$logged_call")" "the 
 [[ "$(app_sql --command="SELECT count(*) FROM related_actions;")" == 0 ]] || fail "related_actions leaks rows without tenant context"
 [[ "$(sql --command="SELECT count(*) FROM related_actions WHERE tenant_id = '$tenant';")" == 1 ]] || fail "Log a call is kept per workspace"
 
+log "the Activity timeline (ADR 0033 §4): tasks and events on the records they point at, as the viewer"
+event_api="$workspace/objects/platform.activities:event"
+timeline="$workspace/objects/custom:account/records/$initech/timeline"
+# The call keeps its value although the account left Related to's allowlist.
+expect 200 "$(call "$member_cookie" GET "$timeline")" "the account's timeline"
+[[ "$(field '.sources')" == 1 && "$(field '[.past[].name] | join(",")')" == "Called Initech" && "$(field '.past[0].through')" == platform.activities:related_to && "$(field '.open | length')" == 0 && "$(field '.actions | length')" == 0 ]] || fail "a kept value still shows: $(cat "$body")"
+[[ "$(field '.past[0].object_label')" == Task && "$(field '.past[0].date')" == null && "$(field '[.past[0].details[] | .label + "=" + .value] | join(",")')" == "Status=Completed,Priority=Normal,Type=Call" ]] || fail "timeline item: $(cat "$body")"
+# Back in both allowlists: Log a call returns, and Event joins the timeline.
+expect 200 "$(call "$member_cookie" GET "$task_api")" "describe tasks"
+related_to_version=$(field '.fields[] | select(.api_name == "platform.activities:related_to") | .version')
+expect 200 "$(call "$member_cookie" PATCH "$task_api/fields/platform.activities:related_to" "{\"expected_version\":$related_to_version,\"reference_objects\":[\"custom:account\"]}")" "the account enters Related to again"
+expect 200 "$(call "$member_cookie" GET "$event_api")" "describe events"
+event_related_version=$(field '.fields[] | select(.api_name == "platform.activities:related_to") | .version')
+expect 200 "$(call "$member_cookie" PATCH "$event_api/fields/platform.activities:related_to" "{\"expected_version\":$event_related_version,\"reference_objects\":[\"custom:account\"]}")" "events may be about accounts"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects" \
+  '{"name":"contact","label":"Contact","plural_label":"Contacts","in_navigation":false}')" "a contact object"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:contact/records" '{"name":"Peter Gibbons"}')" "a contact"
+peter=$(field '.id')
+expect 200 "$(call "$member_cookie" GET "$task_api")" "describe tasks again"
+who_version=$(field '.fields[] | select(.api_name == "platform.activities:who") | .version')
+expect 200 "$(call "$member_cookie" PATCH "$task_api/fields/platform.activities:who" "{\"expected_version\":$who_version,\"reference_objects\":[\"custom:contact\"]}")" "Who points at contacts"
+tomorrow=$(date -u -d tomorrow +%F)
+yesterday=$(date -u -d yesterday +%F)
+expect 201 "$(call "$member_cookie" POST "$task_api/records" "{\"name\":\"Send the TPS report\",\"platform.activities:due_date\":\"$tomorrow\",\"platform.activities:related_to\":\"$initech\",\"platform.activities:who\":\"$peter\"}")" "an open task"
+expect 201 "$(call "$member_cookie" POST "$event_api/records" "{\"name\":\"Quarterly review\",\"platform.activities:starts_at\":\"${tomorrow}T15:00:00Z\",\"platform.activities:related_to\":\"$initech\"}")" "an upcoming event"
+expect 201 "$(call "$member_cookie" POST "$event_api/records" "{\"name\":\"Kick-off lunch\",\"platform.activities:starts_at\":\"${yesterday}T12:00:00Z\",\"platform.activities:related_to\":\"$initech\"}")" "a past event"
+expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline with both sources"
+[[ "$(field '.sources')" == 2 && "$(field '.actions | join(",")')" == log_a_call ]] || fail "sources and timeline actions: $(cat "$body")"
+[[ "$(field '[.open[].name] | join(",")')" == "Send the TPS report,Quarterly review" && "$(field '[.open[].open] | all')" == true ]] || fail "open, soonest first: $(cat "$body")"
+[[ "$(field '[.past[].name] | join(",")')" == "Called Initech,Kick-off lunch" && "$(field '.next_cursor')" == null ]] || fail "past, newest first: $(cat "$body")"
+[[ "$(field '.open[1].object')" == platform.activities:event && "$(field '.open[1].date_type')" == date_time ]] || fail "event item: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:contact/records/$peter/timeline")" "the contact's timeline"
+[[ "$(field '[.open[].name] | join(",")')" == "Send the TPS report" && "$(field '.open[0].through')" == platform.activities:who ]] || fail "reached through Who: $(cat "$body")"
+# Run as the viewer: tasks and events are private, so another member sees none.
+for object in custom:account platform.activities:task platform.activities:event; do
+  expect 200 "$(call "$member_cookie" PUT "$workspace/objects/$object/permissions/$viewer_role" '{"read":true}')" "the viewer reads $object"
+done
+expect 200 "$(call "$viewer_cookie" GET "$timeline")" "the viewer's timeline"
+[[ "$(field '.sources')" == 2 && "$(field '.open | length')" == 0 && "$(field '.past | length')" == 0 ]] || fail "another member's private activities are hidden: $(cat "$body")"
+expect 404 "$(call "$viewer_cookie" GET "$task_api/records/$logged_call/timeline")" "a record the viewer cannot read"
+expect 400 "$(call "$member_cookie" GET "$timeline?cursor=nonsense")" "a cursor the timeline did not issue"
+[[ "$(field '.errors[0].code')" == timeline.cursor_invalid ]] || fail "cursor code: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects" \
+  '{"name":"region","label":"Region","plural_label":"Regions","in_navigation":false}')" "an object no timeline reaches"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:region/records" '{"name":"North"}')" "a region"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:region/records/$(field '.id')/timeline")" "a timeline with no sources"
+[[ "$(field '.sources')" == 0 && "$(field '.open + .past | length')" == 0 ]] || fail "no sources, no error: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$activities/disable")" "disable Activities"
+expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline while Activities is disabled"
+[[ "$(field '.sources')" == 0 ]] || fail "a disabled plugin contributes nothing: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$activities/enable")" "enable Activities again"
+expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline is back"
+[[ "$(field '.sources')" == 2 && "$(field '.past | length')" == 2 ]] || fail "the timeline returns unchanged: $(cat "$body")"
+[[ "$(app_sql --command="SELECT count(*) FROM timeline_sources;")" == 0 ]] || fail "timeline_sources leaks rows without tenant context"
+[[ "$(sql --command="SELECT count(*) FROM timeline_sources WHERE tenant_id = '$tenant';")" == 2 ]] || fail "Task and Event are kept as timeline sources"
+
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
 grant_code code-sync "$verifier"
 expect 200 "$(redeem code-sync "$verifier" "Viewer's synced phone")" "a device for the sync loop"
@@ -1006,4 +1062,4 @@ API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/sc
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'

@@ -727,6 +727,29 @@ CREATE TABLE related_actions (
 CREATE INDEX related_actions_object_idx ON related_actions (tenant_id, object_id);
 "#,
     },
+    // Timeline sources (ADR 0033 §4): how a plugin object's records appear
+    // on the Activity timeline of the records they point at.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0029_timeline_sources",
+        sql: r#"
+CREATE TABLE timeline_sources (
+  tenant_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  owner_plugin TEXT NOT NULL,
+  through TEXT NOT NULL CHECK (json_valid(through) AND json_type(through) = 'array'
+    AND json_array_length(through) BETWEEN 1 AND 5),
+  date_field_id TEXT NOT NULL,
+  open_kind TEXT CHECK (open_kind IN ('field_equals', 'upcoming')),
+  open_field_id TEXT,
+  open_value TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, object_id),
+  CHECK ((open_kind IS 'field_equals') = (open_field_id IS NOT NULL AND open_value IS NOT NULL))
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1216,6 +1239,34 @@ fn related_action_from_row(row: &SqliteRow) -> Result<crate::RelatedAction, Obje
         presets: serde_json::from_value(json("presets")?).map_err(|_| ObjectError::Invariant)?,
         offered_to: serde_json::from_value(json("offered_to")?)
             .map_err(|_| ObjectError::Invariant)?,
+        created_at: time(row, "created_at")?,
+        updated_at: time(row, "updated_at")?,
+    })
+}
+
+const TIMELINE_COLUMNS: &str = "object_id, owner_plugin, through, date_field_id, open_kind, \
+     open_field_id, open_value, created_at, updated_at";
+
+fn timeline_from_row(row: &SqliteRow) -> Result<crate::TimelineSource, ObjectError> {
+    let kind: Option<String> = row.try_get("open_kind")?;
+    let open = match kind.as_deref() {
+        None => None,
+        Some("upcoming") => Some(crate::TimelineOpen::Upcoming),
+        Some("field_equals") => Some(crate::TimelineOpen::FieldEquals {
+            field_id: optional_uuid(row, "open_field_id")?.ok_or(ObjectError::Invariant)?,
+            value: row
+                .try_get::<Option<String>, _>("open_value")?
+                .ok_or(ObjectError::Invariant)?,
+        }),
+        Some(_) => return Err(ObjectError::Invariant),
+    };
+    Ok(crate::TimelineSource {
+        object_id: uuid(row, "object_id")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        through: serde_json::from_str(&row.try_get::<String, _>("through")?)
+            .map_err(|_| ObjectError::Invariant)?,
+        date_field_id: uuid(row, "date_field_id")?,
+        open,
         created_at: time(row, "created_at")?,
         updated_at: time(row, "updated_at")?,
     })
@@ -2700,6 +2751,62 @@ impl ObjectTx for SqliteObjectTx {
         sqlx::query("DELETE FROM related_actions WHERE tenant_id = ?1 AND id = ?2")
             .bind(&self.tenant)
             .bind(id.to_string())
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn timeline_sources(&mut self) -> Result<Vec<crate::TimelineSource>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {TIMELINE_COLUMNS} FROM timeline_sources WHERE tenant_id = ?1 ORDER BY object_id"
+        ))
+        .bind(&self.tenant)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(timeline_from_row).collect()
+    }
+
+    async fn put_timeline_source(
+        &mut self,
+        source: &crate::TimelineSource,
+    ) -> Result<(), ObjectError> {
+        let (kind, field, value) = match &source.open {
+            None => (None, None, None),
+            Some(crate::TimelineOpen::Upcoming) => (Some("upcoming"), None, None),
+            Some(crate::TimelineOpen::FieldEquals { field_id, value }) => (
+                Some("field_equals"),
+                Some(field_id.to_string()),
+                Some(value.clone()),
+            ),
+        };
+        sqlx::query(
+            "INSERT INTO timeline_sources (tenant_id, object_id, owner_plugin, through, \
+             date_field_id, open_kind, open_field_id, open_value, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+             ON CONFLICT (tenant_id, object_id) DO UPDATE SET through = excluded.through, \
+             date_field_id = excluded.date_field_id, open_kind = excluded.open_kind, \
+             open_field_id = excluded.open_field_id, open_value = excluded.open_value, \
+             updated_at = excluded.updated_at",
+        )
+        .bind(&self.tenant)
+        .bind(source.object_id.to_string())
+        .bind(&source.owner_plugin)
+        .bind(encode(&source.through)?)
+        .bind(source.date_field_id.to_string())
+        .bind(kind)
+        .bind(field)
+        .bind(value)
+        .bind(timestamp(source.created_at))
+        .bind(timestamp(source.updated_at))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_timeline_source(&mut self, object_id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query("DELETE FROM timeline_sources WHERE tenant_id = ?1 AND object_id = ?2")
+            .bind(&self.tenant)
+            .bind(object_id.to_string())
             .execute(&mut *self.tx)
             .await?;
         Ok(())

@@ -409,3 +409,23 @@ async fn sqlite_store_passes_the_related_action_conformance_suite() {
         .expect("related actions");
     assert_eq!(declared, 2, "log_a_call and the upgrade's log_an_email");
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_timeline_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    conformance::timeline::run(store, tenant).await;
+
+    let pool = databases.pool(tenant).await.expect("pool");
+    // The upgrade dropped Event's declaration; Task's is kept.
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM timeline_sources")
+        .fetch_one(&pool)
+        .await
+        .expect("timeline sources");
+    assert_eq!(kept, 1);
+}

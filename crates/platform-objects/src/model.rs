@@ -1133,6 +1133,36 @@ pub struct RelatedAction {
     pub updated_at: DateTime<Utc>,
 }
 
+/// How a plugin object's records appear on the Activity timeline of the
+/// records they point at (ADR 0033 §4), kept per workspace from the
+/// plugin's manifest (`[objects.timeline]`). Fields are held by id, so a
+/// source follows its fields whatever happens to their labels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TimelineSource {
+    /// The plugin object whose records are listed.
+    pub object_id: Uuid,
+    pub owner_plugin: String,
+    /// Its lookup or related-to fields that may point at the viewed record,
+    /// in the declaration's order.
+    pub through: Vec<Uuid>,
+    /// Its date or date-time field ordering the timeline.
+    pub date_field_id: Uuid,
+    /// When a record is open; `None` lists every record as past.
+    pub open: Option<TimelineOpen>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// When a timeline record counts as open (ADR 0033 §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TimelineOpen {
+    /// While a picklist has a value.
+    FieldEquals { field_id: Uuid, value: String },
+    /// While the timeline date is today or later, in UTC.
+    Upcoming,
+}
+
 /// A partial change to a quick action. Its kind and target are fixed.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

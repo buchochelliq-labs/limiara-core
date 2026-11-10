@@ -26,6 +26,7 @@ pub mod rollups;
 pub mod rules;
 pub mod search;
 pub mod sync;
+pub mod timeline;
 
 use platform_objects::service::ListRecords;
 use platform_objects::*;

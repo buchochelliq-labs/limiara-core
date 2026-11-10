@@ -165,12 +165,55 @@ What the engine does with them:
   (ADR 0032 §3); members without `create` on the declaring object cannot
   use it.
 
+## Activity timeline
+
+An object may declare how its records appear on the Activity timeline
+(ADR 0033 §4) of the records they point at, at most once:
+
+```toml
+[objects.timeline]
+through = ["related_to", "who"]                # lookup or related-to fields that point at the viewed record
+date = "due_date"                              # the date or date-time field ordering the timeline
+open = { field = "status", equals = "open" }   # optional: open while this picklist has this value
+```
+
+`open = "upcoming"` instead makes a record open while its `date` is today or
+later (UTC).
+
+| Setting | Rule |
+| --- | --- |
+| `through` | 1 to 5 distinct short names of the object's lookup or related-to fields, in order of preference: an item names the first one that points at the viewed record. |
+| `date` | The short name of an indexed `date` or `date_time` field: the timeline filters and sorts on it. It is required, so `"upcoming"` always has a date. |
+| `open` | Optional. `{ field, equals }` names an indexed picklist and one of its options; `"upcoming"` makes a record open while its date is today or later. Without `open`, every record is past. |
+
+Unknown keys are refused, and a broken rule refuses the manifest when it is
+read (`ManifestError::InvalidObjectField`, naming `timeline/through`,
+`timeline/date` or `timeline/open`).
+
+What the engine does with it:
+
+- **Kept per workspace.** Installing or upgrading the plugin stores the
+  declaration with its fields' ids (`timeline_sources` in both stores, per
+  workspace, with forced RLS in PostgreSQL); a new version that drops it
+  drops it.
+- **Domain-neutral.** The kernel serves every source the same way
+  (`GET .../records/{id}/timeline`, see the [objects API](../api/objects.md)):
+  it does not know what a task or an event is.
+- **As the viewer.** Records are read through the query language with the
+  viewer's permissions and sharing, like related lists. A suspended object
+  (its plugin disabled) and an object the viewer cannot read contribute
+  nothing.
+- **Which records.** A source is followed through each `through` field that
+  can point at the viewed record's object: a lookup to it, a related-to
+  field whose allowlist names it, or one still holding a value to one of
+  its records after the object left the allowlist.
+
 ## Enabling, upgrading and disabling
 
 | Plugin change | What happens to its objects in the workspace |
 | --- | --- |
 | Enable | The kernel creates the declared objects and fields that are missing, and brings the labels, descriptions, options and flags of existing ones in line with the manifest. Then they come into service. |
-| Enable again, or enable a new version | The same, idempotently. A field the manifest no longer declares stays, with its values. A picklist option it no longer declares stays, inactive. A related-to field keeps the workspace's allowlist. New related actions are offered to the objects already allowed. |
+| Enable again, or enable a new version | The same, idempotently. A field the manifest no longer declares stays, with its values. A picklist option it no longer declares stays, inactive. A related-to field keeps the workspace's allowlist. New related actions are offered to the objects already allowed. Timeline declarations are replaced, or dropped with the manifest's. |
 | Disable | The objects are suspended: describe, lists, records, queries, search, related lists, global New, navigation and device replicas treat them as missing. Nothing is deleted. |
 | Enable after disabling | They come back unchanged, records included. |
 | Remove | They stay suspended and keep their records for export. Reinstalling brings them back. No purge happens yet. |
