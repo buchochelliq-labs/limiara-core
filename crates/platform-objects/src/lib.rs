@@ -56,7 +56,7 @@ pub use replica::{
     TrustedClock, TrustedInstant,
 };
 pub use replica_definitions::{
-    DefinitionsApplied, RemoteField, RemoteObject, RemoteRollup, RemoteRule,
+    DefinitionsApplied, RemoteField, RemoteObject, RemoteQuickAction, RemoteRollup, RemoteRule,
 };
 pub use reports::{CreateReport, Report, ReportChart, ReportVisibility, UpdateReport};
 pub use search::{SearchGroup, SearchHit, SearchRequest};

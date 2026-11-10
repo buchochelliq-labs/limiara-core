@@ -560,3 +560,156 @@ async fn an_expired_lease_answers_as_the_server_would() {
         .await;
     assert_eq!(status, 200, "{page}");
 }
+
+fn quick_action(value: Value) -> CreateQuickAction {
+    serde_json::from_value(value).expect("quick action")
+}
+
+#[tokio::test]
+async fn quick_actions_reach_the_device_and_run_offline() {
+    let world = World::new().await;
+    // A self-lookup, so an account's create action makes another account.
+    world
+        .admin
+        .create_field(
+            ACCOUNT,
+            CreateField {
+                name: "parent".into(),
+                label: "Parent".into(),
+                field_type: FieldType::Lookup,
+                description: None,
+                required: false,
+                unique: false,
+                indexed: false,
+                searchable: false,
+                track_history: false,
+                max_length: None,
+                scale: None,
+                options: Vec::new(),
+                default_value: None,
+                reference_object: Some(ACCOUNT.into()),
+                reference_objects: None,
+                delete_behaviour: None,
+                formula: None,
+                formula_type: None,
+                rollup: None,
+                lookup_filter: None,
+            },
+            context(),
+        )
+        .await
+        .expect("parent field");
+    for action in [
+        json!({"name": "add_branch", "label": "Add branch", "kind": "create",
+               "target_object": ACCOUNT, "target_field": "custom:parent",
+               "fields": ["name"], "presets": {"custom:notes": "branch office"}}),
+        json!({"name": "note", "label": "Note", "kind": "update", "fields": ["custom:notes"]}),
+    ] {
+        world
+            .admin
+            .create_quick_action(ACCOUNT, quick_action(action), context())
+            .await
+            .expect("quick action");
+    }
+
+    // The actions moved the metadata version, so the next sync takes them.
+    let report = world.client.sync_once(context()).await.expect("sync");
+    let definitions = report.definitions.expect("definitions refreshed");
+    assert_eq!(
+        definitions.quick_actions,
+        vec!["custom:account.add_branch", "custom:account.note"],
+        "{definitions:?}"
+    );
+    assert!(definitions.deferred_quick_actions.is_empty());
+
+    // The shell lists them over the bridge, with the server's shape.
+    let actions_path = world.path("/objects/custom:account/quick-actions");
+    let (status, listed) = world.call("GET", &actions_path, None).await;
+    assert_eq!(status, 200, "{listed}");
+    let names: Vec<&str> = listed["data"]
+        .as_array()
+        .expect("actions")
+        .iter()
+        .filter_map(|action| action["name"].as_str())
+        .collect();
+    assert_eq!(names, ["add_branch", "note"], "{listed}");
+    let add_branch = &listed["data"][0];
+    assert_eq!(add_branch["kind"], "create");
+    assert_eq!(add_branch["target_object"], ACCOUNT);
+    assert_eq!(add_branch["target_field"], "custom:parent");
+    assert_eq!(
+        add_branch["presets"],
+        json!({"custom:notes": "branch office"})
+    );
+
+    // Running the create action is the ordinary create, as the shell sends
+    // it: the form's fields, the presets and the reference to this record.
+    let (_, page) = world
+        .call("GET", &world.path("/objects/custom:account/records"), None)
+        .await;
+    let acme = page["data"][0]["id"].as_str().expect("acme").to_owned();
+    let mut values = add_branch["presets"].clone();
+    values["name"] = json!("Acme Paris");
+    values["custom:parent"] = json!(acme);
+    let (status, created) = world
+        .call(
+            "POST",
+            &world.path("/objects/custom:account/records"),
+            Some(values),
+        )
+        .await;
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(created["custom:notes"], "branch office");
+    assert_eq!(created["custom:parent"], json!(acme));
+    let branch = created["id"].as_str().expect("id").to_owned();
+
+    // The actions themselves are the server's to change.
+    let (status, refused) = world
+        .call(
+            "POST",
+            &actions_path,
+            Some(json!({"name": "mine", "label": "Mine", "kind": "update", "fields": ["name"]})),
+        )
+        .await;
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(refused["code"], "sync.server_only");
+
+    // The record pushes like any local write, and the server checks it.
+    let report = world.client.sync_once(context()).await.expect("push");
+    assert!(
+        !report.pushed.is_empty() && report.pushed.iter().all(|pushed| pushed.failed.is_empty()),
+        "{report:?}"
+    );
+    let on_server = world
+        .admin
+        .get_record(ACCOUNT, &branch, false)
+        .await
+        .expect("pushed");
+    assert_eq!(
+        on_server.values.get("custom:notes"),
+        Some(&json!("branch office"))
+    );
+    assert_eq!(on_server.values.get("custom:parent"), Some(&json!(acme)));
+
+    // An action the server deletes leaves the device with the next sync.
+    let note = world
+        .admin
+        .quick_actions(ACCOUNT)
+        .await
+        .expect("server actions")
+        .into_iter()
+        .find(|action| action.name == "note")
+        .expect("note");
+    world
+        .admin
+        .delete_quick_action(ACCOUNT, "note", note.version, context())
+        .await
+        .expect("delete");
+    let report = world.client.sync_once(context()).await.expect("sync");
+    assert_eq!(
+        report.definitions.expect("definitions").quick_actions,
+        vec!["custom:account.note"]
+    );
+    let (_, listed) = world.call("GET", &actions_path, None).await;
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(1), "{listed}");
+}

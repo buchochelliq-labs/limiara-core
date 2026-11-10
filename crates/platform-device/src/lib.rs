@@ -20,9 +20,11 @@
 //! answers `404 resource.unavailable` there.
 //!
 //! Only the writes the sync loop takes to the server run on the device:
-//! record changes. Definitions, validation rules, automations, object
-//! permissions, sharing, saved reports and bulk jobs are made on the
-//! server, and the bridge answers `403 sync.server_only` for them.
+//! record changes. Definitions, validation rules, quick actions,
+//! automations, object permissions, sharing, saved reports and bulk jobs
+//! are made on the server, and the bridge answers `403 sync.server_only`
+//! for them. Running a quick action is a record change (ADR 0032 §3), and
+//! the replica lists the actions it took with its definitions.
 
 pub mod app;
 

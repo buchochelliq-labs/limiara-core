@@ -1,16 +1,18 @@
 //! The workspace API's JSON as engine types. The shapes are those of
 //! `crates/platform-objects-http/src/handlers.rs` (`record_json`, `object_json`, `field_json`,
-//! `rule_json`) and docs/api/objects.md.
+//! `rule_json`, `quick_action_json`) and docs/api/objects.md.
 
 use crate::transport::{ChangeEntry, ChangesPage};
 use crate::SyncError;
 use chrono::{DateTime, Utc};
 use platform_objects::{
-    AccessFlags, DeleteBehaviour, FieldType, Origin, PicklistOption, RemoteField, RemoteObject,
-    RemoteRecord, RemoteRollup, RemoteRule, RollupFunction, SharingModel,
+    AccessFlags, DeleteBehaviour, FieldType, Origin, PicklistOption, QuickActionKind, RemoteField,
+    RemoteObject, RemoteQuickAction, RemoteRecord, RemoteRollup, RemoteRule, RollupFunction,
+    SharingModel,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Keys of a record that are not field values: the standard fields of ADR
@@ -178,11 +180,28 @@ struct RuleBody {
     version: i64,
 }
 
+#[derive(Deserialize)]
+struct QuickActionBody {
+    name: String,
+    label: String,
+    kind: QuickActionKind,
+    position: i32,
+    #[serde(default)]
+    target_object: Option<String>,
+    #[serde(default)]
+    target_field: Option<String>,
+    fields: Vec<String>,
+    #[serde(default)]
+    presets: BTreeMap<String, Value>,
+    version: i64,
+}
+
 /// An object as `GET /objects/{api_name}` describes it, with its rules
-/// when the server shows them.
+/// and quick actions when the server shows them.
 pub fn remote_object(
     described: &Value,
     rules: Option<&[Value]>,
+    quick_actions: Option<&[Value]>,
 ) -> Result<RemoteObject, SyncError> {
     let body: ObjectBody = serde_json::from_value(described.clone())
         .map_err(|error| SyncError::protocol(format!("an object description: {error}")))?;
@@ -202,6 +221,29 @@ pub fn remote_object(
                             version: rule.version,
                         })
                         .map_err(|error| SyncError::protocol(format!("a validation rule: {error}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        None => None,
+    };
+    let quick_actions = match quick_actions {
+        Some(actions) => Some(
+            actions
+                .iter()
+                .map(|action| {
+                    serde_json::from_value::<QuickActionBody>(action.clone())
+                        .map(|action| RemoteQuickAction {
+                            name: action.name,
+                            label: action.label,
+                            kind: action.kind,
+                            position: action.position,
+                            target_object: action.target_object,
+                            target_field: action.target_field,
+                            fields: action.fields,
+                            presets: action.presets,
+                            version: action.version,
+                        })
+                        .map_err(|error| SyncError::protocol(format!("a quick action: {error}")))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ),
@@ -258,6 +300,7 @@ pub fn remote_object(
             })
             .collect(),
         rules,
+        quick_actions,
     })
 }
 
@@ -353,6 +396,55 @@ mod tests {
             record.values.keys().collect::<Vec<_>>(),
             vec!["custom:parent", "custom:tier"]
         );
+    }
+
+    #[test]
+    fn quick_actions_travel_with_their_object() {
+        let described = json!({
+            "api_name": "custom:account",
+            "label": "Account",
+            "plural_label": "Accounts",
+            "origin": "workspace",
+            "key_prefix": "a0B",
+            "name_label": "Account name",
+            "sharing_model": "read_write",
+            "grant_hierarchy": true,
+            "track_history": false,
+            "searchable": true,
+            "in_navigation": true,
+            "version": 1,
+            "fields": []
+        });
+        let action = json!({
+            "name": "add_contact",
+            "label": "Add contact",
+            "kind": "create",
+            "position": 0,
+            "target_object": "custom:contact",
+            "target_field": "custom:employer",
+            "fields": ["name"],
+            "presets": {"custom:tier": "gold"},
+            "version": 2,
+            "created_at": "2026-11-01T10:00:00Z",
+            "created_by": null,
+            "updated_at": "2026-11-01T10:00:00Z",
+            "updated_by": null
+        });
+        let object =
+            remote_object(&described, None, Some(std::slice::from_ref(&action))).expect("object");
+        let actions = object.quick_actions.expect("actions");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].kind, QuickActionKind::Create);
+        assert_eq!(actions[0].target_field.as_deref(), Some("custom:employer"));
+        assert_eq!(actions[0].presets.get("custom:tier"), Some(&json!("gold")));
+        assert!(remote_object(&described, None, None)
+            .expect("object")
+            .quick_actions
+            .is_none());
+        assert!(matches!(
+            remote_object(&described, None, Some(&[json!({"name": "x"})])),
+            Err(SyncError::Protocol(_))
+        ));
     }
 
     #[test]
