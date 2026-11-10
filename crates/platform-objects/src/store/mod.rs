@@ -301,6 +301,16 @@ pub trait ObjectTx: Send {
         action: &crate::RelatedAction,
     ) -> Result<(), ObjectError>;
     async fn delete_related_action(&mut self, id: Uuid) -> Result<(), ObjectError>;
+    /// Every timeline source the workspace keeps, suspended objects' too,
+    /// by object id (ADR 0033 §4).
+    async fn timeline_sources(&mut self) -> Result<Vec<crate::TimelineSource>, ObjectError>;
+    /// Inserts an object's timeline source, or replaces it.
+    async fn put_timeline_source(
+        &mut self,
+        source: &crate::TimelineSource,
+    ) -> Result<(), ObjectError>;
+    /// Removes an object's timeline source, if it has one.
+    async fn delete_timeline_source(&mut self, object_id: Uuid) -> Result<(), ObjectError>;
     /// An object's automations, by name (ADR 0022).
     async fn automations(&mut self, object_id: Uuid)
         -> Result<Vec<crate::Automation>, ObjectError>;

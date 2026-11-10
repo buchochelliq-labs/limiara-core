@@ -279,6 +279,10 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
             get(handlers::related_records::<H>),
         )
         .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/timeline",
+            get(handlers::record_timeline::<H>),
+        )
+        .route(
             "/api/v1/workspaces/:workspace_id/objects/:object/fields/:field/candidates",
             get(handlers::lookup_candidates::<H>),
         )

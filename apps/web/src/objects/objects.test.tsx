@@ -14,6 +14,8 @@ import {formatCell, QueryConsole, queryProblem, QueryResults} from './QueryConso
 import {AutomationForm, automationDoes, AutomationJobs, AutomationRuns, Automations, automationWhen} from './Automations';
 import {GlobalSearch, searchable, searchOptions, searchResultsRoute, SearchResultsPage} from './GlobalSearch';
 import {barExtents, ReportChartView, reportRoute, ReportsPage} from './Reports';
+import {ActivityTimeline, isOverdue, TimelineSection} from './ActivityTimeline';
+import {timelineFromApi, type Timeline, type TimelineItem} from './api';
 
 const workspace = '018f0000-0000-7000-8000-000000000001';
 const noop = () => undefined;
@@ -808,5 +810,86 @@ describe('quick actions (ADR 0032)', () => {
     expect(created).toContain('value="T-1"');
     expect(created).not.toContain('>Status');
     expect(created).toContain('Save &amp; New');
+  });
+});
+
+describe('activity timeline (ADR 0033 §4)', () => {
+  const item = (extra: Partial<TimelineItem>): TimelineItem => ({object: 'platform.activities:task', objectLabel: 'Task', id: 'tsk1', name: 'Call <b>Acme</b>', date: null, dateField: 'platform.activities:due_date', dateType: 'date', createdAt: '2026-11-09T10:00:00Z', open: false, through: 'platform.activities:related_to', details: [], ...extra});
+  const logACall: QuickAction = {name: 'log_a_call', label: 'Log a call', kind: 'create', position: 0, targetObject: 'platform.activities:task', targetField: 'platform.activities:related_to', fields: ['name'], presets: {}, version: 1};
+  const other: QuickAction = {...logACall, name: 'add_contact', label: 'Add contact', targetObject: 'custom:contact'};
+  const ready = (timeline: Timeline) => ({status: 'ready' as const, value: timeline});
+  const section = (timeline: Timeline, past = timeline.past, nextCursor = timeline.nextCursor) => renderToStaticMarkup(<TimelineSection load={ready(timeline)} past={past} nextCursor={nextCursor} more="idle" actions={[logACall, other]} recordName="Acme" onRetry={noop} onMore={noop} onRun={noop} onNavigate={noop} />);
+
+  it('reads the timeline route with its cursor and maps the response', async () => {
+    const fetcher = respond(200, {sources: 2, open: [{object: 'platform.activities:event', object_label: 'Event', id: 'evt1', name: 'Kick-off', date: '2026-11-11T10:00:00Z', date_field: 'platform.activities:starts_at', date_type: 'date_time', created_at: '2026-11-01T00:00:00Z', open: true, through: 'platform.activities:who', details: [{field: 'x', label: 'Status', value: 'Open'}, {bad: 1}]}], open_more: false, past: [], next_cursor: 'c2', actions: ['log_a_call', 7]});
+    const timeline = await createObjectsApiClient(workspace, fetcher).timeline('custom:account', 'a 1', 'c1');
+    expect(String(vi.mocked(fetcher).mock.calls[0]?.[0])).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aaccount/records/a%201/timeline?cursor=c1`);
+    expect(timeline.sources).toBe(2);
+    expect(timeline.open[0]).toMatchObject({objectLabel: 'Event', dateType: 'date_time', open: true, through: 'platform.activities:who', details: [{label: 'Status', value: 'Open'}]});
+    expect(timeline.nextCursor).toBe('c2');
+    expect(timeline.actions).toEqual(['log_a_call']);
+    expect(timelineFromApi({})).toEqual({sources: 0, open: [], openMore: false, past: [], nextCursor: null, actions: []});
+  });
+
+  it('lists open then past items as text, with the timeline\'s actions only', () => {
+    const timeline: Timeline = {sources: 2, open: [item({id: 'tsk2', name: 'Send agenda', open: true, date: '2000-01-01'}), item({id: 'tsk3', name: 'Later', open: true, date: '2999-01-01'})], openMore: false, past: [item({details: [{field: 'platform.activities:type', label: 'Type', value: 'Call <i>'}]})], nextCursor: 'next', actions: ['log_a_call']};
+    const markup = section(timeline);
+    expect(markup).toContain('<h2 id="activity-heading">Activity</h2>');
+    expect(markup).toContain('Open and upcoming');
+    expect(markup.indexOf('Open and upcoming')).toBeLessThan(markup.indexOf('>Past<'));
+    expect(markup).toContain('Call &lt;b&gt;Acme&lt;/b&gt;');
+    expect(markup).not.toContain('<b>Acme</b>');
+    expect(markup).toContain('Type: Call &lt;i&gt;');
+    expect(markup).toContain('href="/o/platform.activities%3Atask/tsk1"');
+    expect(markup).toContain('>Task</span>');
+    expect(markup.match(/Overdue/g)).toHaveLength(1);
+    expect(markup).toContain('Logged ');
+    expect(markup).toContain('Log a call');
+    expect(markup).not.toContain('Add contact');
+    expect(markup).toContain('aria-label="Add activity to Acme"');
+    expect(markup).toContain('Show more');
+    expect(section({...timeline, nextCursor: null}, timeline.past, null)).not.toContain('Show more');
+  });
+
+  it('shows empty, loading and error states, and nothing without sources', () => {
+    const none: Timeline = {sources: 0, open: [], openMore: false, past: [], nextCursor: null, actions: []};
+    expect(section(none)).toBe('');
+    expect(section({...none, sources: 1})).toContain('No activity yet.');
+    const loading = renderToStaticMarkup(<ActivityTimeline client={createFixtureObjectsClient()} apiName="custom:project" recordId="0000000000000001" recordName="Apollo" actions={[]} onRun={noop} onNavigate={noop} />);
+    expect(loading).toContain('Loading activity');
+    const failedLoad = renderToStaticMarkup(<TimelineSection load={{status: 'unavailable'}} past={[]} nextCursor={null} more="idle" actions={[]} recordName="Apollo" onRetry={noop} onMore={noop} onRun={noop} onNavigate={noop} />);
+    expect(failedLoad).toContain('Activity could not be loaded');
+    expect(failedLoad).toContain('Try again');
+  });
+
+  it('flags only open items whose date has passed', () => {
+    expect(isOverdue(item({open: true, date: '2000-01-01'}))).toBe(true);
+    expect(isOverdue(item({open: true, date: '2999-01-01'}))).toBe(false);
+    expect(isOverdue(item({open: false, date: '2000-01-01'}))).toBe(false);
+    expect(isOverdue(item({open: true, dateType: 'date_time', date: '2000-01-01T10:00:00Z'}))).toBe(true);
+    expect(isOverdue(item({open: true}))).toBe(false);
+  });
+
+  it('builds timelines from declared sources in the fixture', async () => {
+    const client = createFixtureObjectsClient({timelines: {'custom:task': {through: ['custom:regarding'], date: 'custom:due', open: {field: 'custom:status', equals: 'open'}}}});
+    expect((await client.timeline('custom:project', '0000000000000001')).sources).toBe(0);
+    await client.createObject({name: 'task', label: 'Task', plural_label: 'Tasks'});
+    await client.createField('custom:task', {name: 'regarding', label: 'Regarding', field_type: 'related_to', reference_objects: ['custom:project']});
+    await client.createField('custom:task', {name: 'due', label: 'Due', field_type: 'date'});
+    await client.createField('custom:task', {name: 'status', label: 'Status', field_type: 'picklist', options: [{value: 'open', label: 'Open', default: true}, {value: 'done', label: 'Done'}]});
+    await client.createQuickAction('custom:project', {name: 'log_a_call', label: 'Log a call', kind: 'create', target_object: 'custom:task', target_field: 'custom:regarding', fields: ['name'], presets: {'custom:status': 'done'}});
+    await client.createRecord('custom:task', {name: 'Later', 'custom:regarding': '0000000000000001', 'custom:due': '2999-01-01', 'custom:status': 'open'});
+    await client.createRecord('custom:task', {name: 'Done before', 'custom:regarding': '0000000000000001', 'custom:due': '2000-01-01', 'custom:status': 'done'});
+    for (let index = 0; index < 21; index++) await client.createRecord('custom:task', {name: `Call ${index}`, 'custom:regarding': '0000000000000001', 'custom:status': 'done'});
+    const first = await client.timeline('custom:project', '0000000000000001');
+    expect(first.sources).toBe(1);
+    expect(first.actions).toEqual(['log_a_call']);
+    expect(first.open.map(entry => entry.name)).toEqual(['Later']);
+    expect(first.past).toHaveLength(20);
+    expect(first.past[0]?.details).toEqual([{field: 'custom:status', label: 'Status', value: 'Done'}]);
+    const second = await client.timeline('custom:project', '0000000000000001', first.nextCursor ?? undefined);
+    expect(second.open).toEqual([]);
+    expect(second.past.map(entry => entry.name)).toContain('Done before');
+    expect(second.nextCursor).toBeNull();
   });
 });

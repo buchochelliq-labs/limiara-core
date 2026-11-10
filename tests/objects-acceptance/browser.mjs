@@ -8,7 +8,8 @@
 // UI contribution endpoint, the object home, create, edit, delete and restore
 // from the recycle bin, quick actions defined in the Object Manager and run
 // from record pages, then the Object Manager creating an object and a
-// field. Nothing here stubs the API. Screenshots go to SCREENSHOT_DIR.
+// field, and logging a call from the Activity timeline. Nothing here stubs
+// the API. Screenshots go to SCREENSHOT_DIR.
 import {createServer, request as httpRequest} from 'node:http';
 import {mkdir, readFile, stat} from 'node:fs/promises';
 import {extname, join, normalize} from 'node:path';
@@ -459,11 +460,26 @@ try {
   const allowlist = page.getByRole('form', {name: 'Objects Regarding can point to'});
   await allowlist.getByRole('checkbox', {name: 'Project', exact: true}).uncheck();
   await allowlist.getByText('Taking out: custom:project.').waitFor();
-  await shot(page, '21-related-to-allowlist');
+  await shot(page, '22-related-to-allowlist');
   await allowlist.getByRole('button', {name: 'Save objects'}).click();
   await allowlist.waitFor({state: 'detached'});
   await page.getByText('Regarding now points at one object.').first().waitFor();
   await page.getByText('Related to (custom:client)').waitFor();
+
+  step('the Activity timeline: log a call from an account and see it in Past (ADR 0033 §4)');
+  await page.goto(`${origin}/o/custom:account`);
+  await page.getByRole('link', {name: 'Initech'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Initech'}).waitFor();
+  const activity = page.getByRole('region', {name: 'Activity'});
+  await activity.getByRole('region', {name: 'Open and upcoming'}).getByRole('link', {name: 'Send the TPS report'}).waitFor();
+  await activity.getByRole('region', {name: 'Past'}).getByRole('link', {name: 'Called Initech'}).waitFor();
+  await activity.getByRole('button', {name: 'Log a call'}).click();
+  dialog = page.getByRole('dialog', {name: 'Log a call'});
+  await dialog.getByLabel('Subject').fill('Browser call');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await activity.getByRole('region', {name: 'Past'}).getByRole('link', {name: 'Browser call'}).waitFor();
+  await shot(page, '21-activity-timeline');
 } catch (error) {
   failed = true;
   console.error(`browser journey failed: ${error instanceof Error ? error.message : String(error)}`);

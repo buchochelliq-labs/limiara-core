@@ -22,6 +22,9 @@
 //! - **Related actions** a plugin object declares are kept with it on
 //!   install and offered to the objects its related-to fields allow when it
 //!   resumes (`crate::related_actions`).
+//! - **Timeline sources** a plugin object declares are kept with it on
+//!   install, replaced on upgrade and dropped with the declaration
+//!   (`crate::timeline`).
 //!
 //! New objects are created suspended: the kernel resumes them once the
 //! plugin is enabled, so a failure between installing and enabling never
@@ -155,6 +158,8 @@ impl ObjectService {
                 .await?
                 .ok_or(ObjectError::Invariant)?;
             self.put_plugin_related_actions(tx.as_mut(), plugin_id, &object, declared)
+                .await?;
+            self.put_plugin_timeline(tx.as_mut(), plugin_id, &object, declared)
                 .await?;
         }
         tx.commit().await?;

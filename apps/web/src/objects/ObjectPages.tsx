@@ -4,6 +4,7 @@ import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
 import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
+import {ActivityTimeline} from './ActivityTimeline';
 import './objects.css';
 
 type Navigate = (route: string) => void;
@@ -227,6 +228,8 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       </dl>
     </section>
     <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} refresh={relatedRefresh} onNavigate={onNavigate} />
+    {/* Its actions reuse the quick-action modal above; a save refreshes it with the related lists. */}
+    <ActivityTimeline client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} actions={available} refresh={relatedRefresh} onRun={action => { setError(''); setRunning(action); }} onNavigate={onNavigate} />
     <section aria-label="System information" className="object-section">
       <h2>System information</h2>
       <dl className="object-fields">

@@ -274,6 +274,7 @@ Related lists and lookup filters are described in ADR 0028.
 | `GET /objects/{api_name}/records/{id}/related` | The first 5 records of each related list |
 | `GET /objects/{api_name}/records/{id}/related/{object}/{field}?cursor=` | The next 50 records of one related list |
 | `GET /objects/{api_name}/fields/{field}/candidates` | The records a lookup may take, with optional `search` and `cursor`; a related-to field needs `object`, one its allowlist names |
+| `GET /objects/{api_name}/records/{id}/timeline?cursor=` | The record's Activity timeline (ADR 0033 §4): open records and a page of past ones |
 
 A record has one related list for each lookup or master-detail field that
 points at its object, and each related-to field whose allowlist names it,
@@ -304,6 +305,57 @@ page. `search` matches text the name contains, at most 80 characters. A
 related-to field's candidates are those of the object named by `object`;
 leaving it out, or naming an object the field does not allow, fails with
 `records.reference_object_not_allowed` on `object`.
+
+### Activity timeline
+
+`GET /objects/{api_name}/records/{id}/timeline` lists the records of plugin
+objects that declare a timeline (`[objects.timeline]`, see
+[Declaring objects](../plugins/objects.md)) and point at the record through
+one of their declared fields, merged across sources. It runs as the caller,
+like related lists: a record the caller cannot read is `404`, and only
+records the caller may see are listed. Sources whose plugin is disabled, or
+whose object the caller cannot read, contribute nothing.
+
+```json
+{"sources": 2,
+ "open": [{"object": "platform.activities:task", "object_label": "Task",
+   "id": "tsk00000000001AB", "name": "Send the proposal",
+   "date": "2026-11-12", "date_field": "platform.activities:due_date",
+   "date_type": "date", "created_at": "2026-11-10T09:12:00.000000Z",
+   "open": true, "through": "platform.activities:related_to",
+   "details": [{"field": "platform.activities:status", "label": "Status", "value": "Open"},
+               {"field": "platform.activities:priority", "label": "Priority", "value": "Normal"},
+               {"field": "platform.activities:type", "label": "Type", "value": "To do"}]}],
+ "open_more": false,
+ "past": [{"object": "platform.activities:event", "object_label": "Event",
+   "id": "evt00000000002CD", "name": "Kick-off",
+   "date": "2026-11-09T10:00:00.000000Z", "date_field": "platform.activities:starts_at",
+   "date_type": "date_time", "created_at": "2026-11-01T08:00:00.000000Z",
+   "open": false, "through": "platform.activities:related_to", "details": []}],
+ "next_cursor": null,
+ "actions": ["log_a_call"]}
+```
+
+- `sources` counts the sources that can point at the record and that the
+  caller can read. With none the response is empty, not an error, and the
+  web record page shows no Activity section.
+- `open` holds open records (a declared picklist value, or a date today or
+  later for `"upcoming"`), soonest date first, then those without a date,
+  oldest first: at most 50, with `open_more` when there are more. It comes
+  only with the first page.
+- `past` holds every other record, newest first by its date, or by
+  `created_at` when it has none; a date counts from midnight UTC. Pages
+  hold 20; pass `next_cursor` back as `cursor`. A cursor another timeline
+  issued, or an altered one, is `400 timeline.cursor_invalid` on `cursor`.
+- Each item carries its object's API name and label, the record's `id` and
+  `name`, its `date` with `date_field` and `date_type` (`date` or
+  `date_time`), `created_at`, `open`, the `through` field that points at
+  the record, and `details`: up to three of the object's picklist values,
+  as their labels, in field order. Everything else is read from the record.
+- `actions` names the record's create quick actions whose target object is
+  a timeline source the caller can read, in quick-action order: the web
+  page offers these in the Activity section. Whether the member may run
+  one is still decided by the target object's `create` access.
 
 ## Change data capture
 

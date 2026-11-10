@@ -42,6 +42,7 @@ pub mod service;
 pub mod sharing;
 pub mod store;
 pub mod sync;
+pub mod timeline;
 pub mod values;
 
 pub use access::{ObjectAccess, ObjectCaller};
@@ -62,6 +63,7 @@ pub use search::{SearchGroup, SearchHit, SearchRequest};
 pub use service::{MutationContext, ObjectService};
 pub use sharing::{GranteeKind, RecordRights, RecordShare, ShareAccess, Visibility};
 pub use store::{ObjectStore, ObjectTx, RollupQuery};
+pub use timeline::{Timeline, TimelineDetail, TimelineItem};
 
 use serde::Serialize;
 use thiserror::Error;
