@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Alert, Badge, Button, Skeleton} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
 import {formatValue, type ObjectsClient, type QuickAction, type Timeline, type TimelineItem} from './api';
@@ -83,8 +83,15 @@ export function ActivityTimeline({client, apiName, recordId, recordName, actions
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState<'idle' | 'loading' | 'error'>('idle');
   const [attempt, setAttempt] = useState(0);
+  // Each first-page load starts a new generation; a Show more page from an
+  // earlier one is dropped, so it never lands on top of a refreshed list.
+  const generation = useRef(0);
+  const paging = useRef<AbortController | null>(null);
   useEffect(() => {
     const controller = new AbortController();
+    generation.current += 1;
+    paging.current?.abort();
+    paging.current = null;
     // A refresh after a save keeps what is shown until the new timeline arrives.
     if (refresh === 0) setLoad({status: 'loading'});
     client.timeline(apiName, recordId, undefined, controller.signal)
@@ -101,13 +108,19 @@ export function ActivityTimeline({client, apiName, recordId, recordName, actions
 
   const showMore = async () => {
     if (!cursor) return;
+    const mine = generation.current;
+    const controller = new AbortController();
+    paging.current?.abort();
+    paging.current = controller;
     setMore('loading');
     try {
-      const page = await client.timeline(apiName, recordId, cursor);
+      const page = await client.timeline(apiName, recordId, cursor, controller.signal);
+      if (controller.signal.aborted || mine !== generation.current) return;
       setPast(current => [...current, ...page.past]);
       setCursor(page.nextCursor);
       setMore('idle');
     } catch {
+      if (controller.signal.aborted || mine !== generation.current) return;
       setMore('error');
     }
   };
