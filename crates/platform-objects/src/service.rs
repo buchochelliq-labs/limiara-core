@@ -1282,7 +1282,15 @@ impl ObjectService {
                 (Some(target), Some(access)) if !trusted.contains(&field.api_name) => {
                     self.can_see(tx, access, &mut objects, target).await?
                 }
-                (Some(target), _) => target.deleted_at.is_none(),
+                // Automations skip member visibility, but never point at a
+                // record of a suspended plugin object (ADR 0033 §2).
+                (Some(target), _) => {
+                    target.deleted_at.is_none()
+                        && tx
+                            .object_by_id(target.object_id)
+                            .await?
+                            .is_some_and(|object| object.is_active())
+                }
                 (None, _) => false,
             };
             // New values meet the field's lookup filter (ADR 0028). Like

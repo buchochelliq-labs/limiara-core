@@ -461,6 +461,45 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         Some("Apollo")
     );
 
+    // A rule reading through the lookup into the plugin object, and an
+    // automation that points the lookup at a plugin record.
+    admin
+        .create_validation_rule(
+            "custom:project",
+            CreateValidationRule {
+                name: "ticket_not_forbidden".into(),
+                description: None,
+                condition: "custom:ticket.example.tracker:summary = 'forbidden'".into(),
+                message: "That ticket cannot be used".into(),
+                error_field: None,
+                active: Some(true),
+            },
+            context(),
+        )
+        .await
+        .expect("a rule reading through a lookup into a plugin object");
+    admin
+        .create_automation(
+            "custom:project",
+            serde_json::from_value(json!({
+                "name": "redirect", "trigger": "update", "timing": "before_save",
+                "condition": "name = 'Redirect'",
+                "actions": [{"type": "update_record", "values": [
+                    {"field": "custom:ticket", "formula": format!("'{}'", apollo.public_id)}]}]}))
+            .expect("automation"),
+            context(),
+        )
+        .await
+        .expect("an automation setting the lookup");
+    let unlinked = admin
+        .create_record(
+            "custom:project",
+            &body(json!({"name": "Unlinked"})),
+            context(),
+        )
+        .await
+        .expect("a project without a ticket");
+
     // --- Disabling hides the plugin's objects everywhere --------------------
     let mut suspended = installer
         .suspend_plugin_objects(PLUGIN, context())
@@ -554,6 +593,18 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .await
         .expect_err("a new value cannot follow a suspended object");
     assert!(codes(&pointing).contains(&"records.reference_not_found"));
+    // Automations skip member visibility, but not suspension.
+    let redirected = admin
+        .update_record(
+            "custom:project",
+            &unlinked.public_id,
+            unlinked.version,
+            &body(json!({"name": "Redirect"})),
+            context(),
+        )
+        .await
+        .expect_err("an automation cannot point at a suspended object");
+    assert!(codes(&redirected).contains(&"records.reference_not_found"));
     // Nor can new definitions start depending on them.
     let mut late = field("late", FieldType::Lookup);
     late.reference_object = Some(TICKET.into());

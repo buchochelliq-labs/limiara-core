@@ -377,6 +377,49 @@ async fn transition(
     let Some(pool) = state.pool.as_ref() else {
         return unavailable();
     };
+    // The registry transition and the objects' settlement are separate
+    // transactions, so requests for the same plugin in one workspace run
+    // one at a time: otherwise an enable could resume objects after a
+    // later disable suspended them. The lock lives in its own transaction,
+    // released when it ends, even if this request is dropped.
+    let mut serial = match pool.begin().await {
+        Ok(serial) => serial,
+        Err(_) => return unavailable(),
+    };
+    if sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('plugin_objects:' || $1::text || ':' || $2, 0))")
+        .bind(workspace_id)
+        .bind(plugin_id)
+        .execute(&mut *serial)
+        .await
+        .is_err()
+    {
+        return unavailable();
+    }
+    let response = transition_serialised(
+        state,
+        principal,
+        workspace_id,
+        plugin_id,
+        desired,
+        correlation_id,
+    )
+    .await;
+    // Nothing was written in this transaction; ending it releases the lock.
+    let _ = serial.rollback().await;
+    response
+}
+
+async fn transition_serialised(
+    state: &AppState,
+    principal: &crate::auth::WorkspacePrincipal,
+    workspace_id: Uuid,
+    plugin_id: &str,
+    desired: PluginDesiredState,
+    correlation_id: Uuid,
+) -> axum::response::Response {
+    let Some(pool) = state.pool.as_ref() else {
+        return unavailable();
+    };
     let actor_id = principal.session.user.id;
     // Engine objects the plugin declares (ADR 0033 §2) are installed before
     // the plugin is enabled, so a refused installation leaves it as it was.
