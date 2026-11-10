@@ -500,6 +500,11 @@ Built (2026-10-19):
        left out. The object's active rules come with it, since every
        member who can read an object may read them (ADR 0021, "Reading
        rules"), so the device checks the member's edits offline;
+     - the object's quick actions come with it too (ADR 0032 §5, #236);
+       the replica keeps those whose fields, presets and, for a create
+       action, child object and reference field it holds in service, and
+       defers the rest to the server, so the phone offers the same actions
+       and running one is an ordinary local write;
      - a key prefix or field type that differs from the replica's is
        `sync.definitions_diverged`: the device starts its replica again;
      - an object the member can read only now has its records read in

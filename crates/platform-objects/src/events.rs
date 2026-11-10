@@ -377,8 +377,8 @@ impl Change<'_> {
 
     /// Whether this change alters definitions a synced device validates and
     /// reads with (ADR 0024 §3): objects, fields, object permissions,
-    /// validation rules and automations. It moves the workspace metadata
-    /// version.
+    /// validation rules, automations and quick actions (ADR 0032 §5). It
+    /// moves the workspace metadata version.
     pub fn is_metadata(&self) -> bool {
         matches!(
             self,
@@ -396,6 +396,9 @@ impl Change<'_> {
                 | Self::AutomationCreated(..)
                 | Self::AutomationUpdated(..)
                 | Self::AutomationDeleted(..)
+                | Self::QuickActionCreated(..)
+                | Self::QuickActionUpdated(..)
+                | Self::QuickActionDeleted(..)
         )
     }
 

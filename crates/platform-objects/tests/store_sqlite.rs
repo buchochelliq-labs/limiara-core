@@ -267,6 +267,17 @@ async fn sqlite_store_keeps_related_to_fields_in_a_replica() {
 }
 
 #[tokio::test]
+async fn sqlite_store_keeps_quick_actions_in_a_replica() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::quick_action_replicas::run(store).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_sync_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

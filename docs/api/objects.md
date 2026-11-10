@@ -379,7 +379,7 @@ lists.
 
 Each page also carries `metadata_version`, the workspace's definitions
 version (ADR 0024). It increases with every change to an object, field,
-object permission, validation rule or automation, and never with record
+object permission, validation rule, automation or quick action, and never with record
 changes, which leave no entry for definitions. It is read after the page's
 entries, so it is never older than the definitions they were made under. A
 stream sends `event: metadata` with `{"metadata_version": n}` before the
@@ -403,8 +403,8 @@ nothing revoked are left out. A request names at most 1,000 record ids
 several requests.
 
 A synced device takes its definitions from the routes above: `GET
-/objects`, then `GET /objects/{api_name}` and its validation rules for each
-object, whenever a change page's `metadata_version` is newer than the one it
+/objects`, then `GET /objects/{api_name}`, its validation rules and its
+quick actions for each object, whenever a change page's `metadata_version` is newer than the one it
 applied. It reads each changed record with `include_deleted=true`, and pushes
 its queued changes as composite requests (ADR 0024). A related-to field
 keeps, on the device, only the objects of its allowlist the device holds.
@@ -561,7 +561,20 @@ nothing: running it uses the normal record create and update APIs.
   a create action's `target_field` or target object deletes the action,
   as does taking this object out of a related-to `target_field`'s
   allowlist, and deleting an object deletes its own actions. Each change publishes
-  its quick-action event in the same transaction.
+  its quick-action event in the same transaction and moves the workspace
+  `metadata_version`, including the related actions a plugin adds.
+- A synced device takes each object's actions from this `GET` with its
+  other definitions (ADR 0032 §5, #236) and keeps only those it can run
+  offline: their `fields` and `presets` are fields the device holds on
+  this object and, for a create action, its `target_object` is held and in
+  service and its `target_field` still points here. Any other action, such
+  as one that names a lookup to an object the member cannot read, or makes
+  records of a plugin object suspended with its plugin, stays with the
+  server and comes back with what it needs; the sync report lists it as
+  deferred. A device answers this `GET` from its replica, with the same
+  shape, and refuses action changes with `403 sync.server_only`. Running an
+  action on the device is the ordinary local create or update as the
+  member, which the server checks again when it is pushed.
 
 ## Formula fields
 

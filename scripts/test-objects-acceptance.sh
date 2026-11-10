@@ -1062,12 +1062,16 @@ expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline is back"
 [[ "$(sql --command="SELECT count(*) FROM timeline_sources WHERE tenant_id = '$tenant';")" == 2 ]] || fail "Task and Event are kept as timeline sources"
 
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
+# Quick actions travel with the definitions (ADR 0032 §5, #236): one made
+# here and the Activities plugin's Log a call reach the device.
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/quick-actions" '{"name":"phone_tag","label":"Tag","kind":"update","fields":["name"]}')" "a quick action for the device"
 grant_code code-sync "$verifier"
 expect 200 "$(redeem code-sync "$verifier" "Viewer's synced phone")" "a device for the sync loop"
 PLATFORM_SYNC_API="$api_base" PLATFORM_SYNC_WORKSPACE="$tenant" PLATFORM_SYNC_TOKEN="$(field '.access_token')" \
-  PLATFORM_SYNC_OBJECT=custom:project \
+  PLATFORM_SYNC_OBJECT=custom:project PLATFORM_SYNC_QUICK_ACTIONS="custom:project.phone_tag custom:account.log_a_call" \
   cargo test --locked -p platform-sync --test api_acceptance -- --ignored --nocapture \
   || fail "the device did not sync with the API"
+expect 200 "$(call "$member_cookie" DELETE "$workspace/objects/custom:project/quick-actions/phone_tag?expected_version=1")" "the device's quick action is removed again"
 
 log "the browser: object pages and the Object Manager against the real API"
 # A device the administrator revokes from Settings → Devices (#390).
