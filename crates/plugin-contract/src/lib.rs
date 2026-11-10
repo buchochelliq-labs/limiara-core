@@ -4,7 +4,7 @@ pub mod ui;
 
 pub use objects::{
     ObjectDecl, ObjectDeleteBehaviour, ObjectFieldDecl, ObjectFieldOption, ObjectFieldType,
-    ObjectSharingDecl,
+    ObjectSharingDecl, RelatedActionDecl,
 };
 
 use regex::Regex;
@@ -789,7 +789,7 @@ fn validate_ui_references(ui: &UiDecl) -> Result<(), ManifestError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, ManifestError};
+    use super::{Manifest, ManifestError, ObjectFieldType, PluginDistribution};
 
     fn base_manifest(extra: &str) -> String {
         format!(
@@ -1294,11 +1294,24 @@ delete_behaviour = "restrict""#,
             )
         );
         objects_manifest("example.work", &depending).expect("a dependency's object");
+        // A plugin's related-to field may start with no targets: the
+        // workspace's administrators choose them (ADR 0033 §2).
+        objects_manifest(
+            "example.work",
+            &with_field("name = \"about\"\nlabel = \"About\"\nfield_type = \"related_to\""),
+        )
+        .expect("an empty allowlist");
+        let eleven = (0..11)
+            .map(|index| format!("\"example.work:t{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         assert!(object_reason(objects_manifest(
             "example.work",
-            &with_field("name = \"about\"\nlabel = \"About\"\nfield_type = \"related_to\"")
+            &with_field(&format!(
+                "name = \"about\"\nlabel = \"About\"\nfield_type = \"related_to\"\nreference_objects = [{eleven}]"
+            ))
         ))
-        .contains("1 to 10"));
+        .contains("at most 10"));
         assert!(object_reason(objects_manifest(
             "example.work",
             &with_field("name = \"stage\"\nlabel = \"Stage\"\nfield_type = \"picklist\"")
@@ -1326,5 +1339,181 @@ delete_behaviour = "restrict""#,
             )
         ))
         .contains("duplicate field name"));
+    }
+
+    #[test]
+    fn the_activities_plugin_declares_tasks_events_and_log_a_call() {
+        let manifest =
+            Manifest::parse_toml(include_str!("../../../plugins/activities/plugin.toml"))
+                .expect("the Activities manifest parses");
+        assert_eq!(manifest.id, "platform.activities");
+        assert_eq!(
+            manifest.supply_chain.distribution,
+            Some(PluginDistribution::CoreOob)
+        );
+        let names: Vec<_> = manifest.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["task", "event"]);
+        let task = &manifest.objects[0];
+        assert_eq!(task.key_prefix, "tsk");
+        assert_eq!(task.name_label.as_deref(), Some("Subject"));
+        for object in &manifest.objects {
+            for field in ["related_to", "who"] {
+                let declared = object
+                    .fields
+                    .iter()
+                    .find(|declared| declared.name == field)
+                    .expect("related-to field");
+                assert_eq!(declared.field_type, ObjectFieldType::RelatedTo);
+                assert!(
+                    declared.reference_objects.is_empty(),
+                    "administrators choose the targets"
+                );
+            }
+        }
+        let status = task
+            .fields
+            .iter()
+            .find(|field| field.name == "status")
+            .expect("status");
+        assert_eq!(
+            status
+                .options
+                .iter()
+                .map(|option| (option.value.as_str(), option.default))
+                .collect::<Vec<_>>(),
+            [("open", true), ("completed", false)]
+        );
+        assert_eq!(task.related_actions.len(), 1);
+        let log_a_call = &task.related_actions[0];
+        assert_eq!(log_a_call.field, "related_to");
+        assert_eq!(log_a_call.name, "log_a_call");
+        assert_eq!(log_a_call.label, "Log a call");
+        assert_eq!(
+            log_a_call.fields,
+            ["name", "platform.activities:description"]
+        );
+        assert_eq!(
+            log_a_call.presets.get("platform.activities:type"),
+            Some(&serde_json::json!("call"))
+        );
+        assert_eq!(
+            log_a_call.presets.get("platform.activities:status"),
+            Some(&serde_json::json!("completed"))
+        );
+        let event = &manifest.objects[1];
+        assert!(event.related_actions.is_empty());
+        let start = event
+            .fields
+            .iter()
+            .find(|field| field.name == "starts_at")
+            .expect("start");
+        assert!(start.required);
+        assert_eq!(start.field_type, ObjectFieldType::DateTime);
+        // Stored manifests are JSON and read back unchanged.
+        let round_trip: Manifest =
+            serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
+                .expect("stored manifests read back");
+        assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    #[test]
+    fn related_actions_are_validated_when_the_manifest_is_read() {
+        let manifest = |action: &str| {
+            objects_manifest(
+                "example.work",
+                &format!(
+                    r#"{TASK}
+[[objects.fields]]
+name = "about"
+label = "About"
+field_type = "related_to"
+
+[[objects.fields]]
+name = "note"
+label = "Note"
+field_type = "text"
+max_length = 10
+
+[[objects.fields]]
+name = "stage"
+label = "Stage"
+field_type = "picklist"
+options = [{{ value = "open", label = "Open" }}, {{ value = "done", label = "Done" }}]
+
+[[objects.fields]]
+name = "due"
+label = "Due"
+field_type = "date"
+
+[[objects.fields]]
+name = "parent"
+label = "Parent"
+field_type = "lookup"
+reference_object = "example.work:task"
+
+[[objects.related_actions]]
+{action}
+"#
+                ),
+            )
+        };
+        let valid = r#"field = "about"
+name = "log_work"
+label = "Log work"
+fields = ["name", "example.work:note"]
+presets = { "example.work:stage" = "done", "example.work:due" = "2026-11-10", "name" = "Work" }"#;
+        let parsed = manifest(valid).expect("a valid related action");
+        assert_eq!(parsed.objects[0].related_actions[0].presets.len(), 3);
+        let refused = |change: &str| object_reason(manifest(change));
+        assert!(
+            refused(&valid.replace("field = \"about\"", "field = \"note\"")).contains("related-to")
+        );
+        assert!(
+            refused(&valid.replace("field = \"about\"", "field = \"nope\"")).contains("related-to")
+        );
+        assert!(refused(&valid.replace("\"log_work\"", "\"Log work\"")).contains("name"));
+        assert!(refused(&valid.replace("label = \"Log work\"", "label = \"\"")).contains("label"));
+        assert!(
+            refused(&valid.replace("\"example.work:note\"]", "\"example.work:nope\"]"))
+                .contains("fields")
+        );
+        assert!(refused(&valid.replace("\"example.work:note\"]", "\"note\"]")).contains("fields"));
+        assert!(
+            refused(&valid.replace("\"example.work:note\"]", "\"example.work:about\"]"))
+                .contains("current record")
+        );
+        assert!(refused(
+            &valid.replace("fields = [\"name\", \"example.work:note\"]", "fields = []")
+        )
+        .contains("1 to 20"));
+        assert!(refused(&valid.replace("\"done\"", "\"closed\"")).contains("constant"));
+        assert!(refused(&valid.replace("\"2026-11-10\"", "\"10/11/2026\"")).contains("constant"));
+        assert!(refused(&valid.replace("\"2026-11-10\"", "7")).contains("constant"));
+        assert!(refused(&valid.replace(
+            "\"name\" = \"Work\"",
+            "\"example.work:note\" = \"far too long a note\""
+        ))
+        .contains("constant"));
+        assert!(refused(&valid.replace(
+            "\"name\" = \"Work\"",
+            "\"example.work:parent\" = \"tsk0000000001\""
+        ))
+        .contains("constant"));
+        assert!(refused(&valid.replace(
+            "\"name\" = \"Work\"",
+            "\"example.work:about\" = \"tsk0000000001\""
+        ))
+        .contains("current record"));
+        assert!(
+            refused(&valid.replace("\"name\" = \"Work\"", "\"example.work:nope\" = \"x\""))
+                .contains("presets")
+        );
+        let twice = format!("{valid}\n\n[[objects.related_actions]]\n{valid}");
+        assert!(refused(&twice).contains("duplicate related action"));
+        // Unknown keys are refused rather than ignored.
+        assert!(matches!(
+            manifest(&format!("{valid}\nkind = \"update\"")),
+            Err(ManifestError::Parse(_))
+        ));
     }
 }

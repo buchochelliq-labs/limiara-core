@@ -553,6 +553,34 @@ platform = ">=0.1.0,<0.2.0"
     }
 
     #[test]
+    fn first_party_packages_pass_the_core_policy_on_both_backends() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let paths = [
+            root.join("plugins/contacts/plugin.toml"),
+            root.join("plugins/activities/plugin.toml"),
+        ];
+        for backend in [
+            plugin_contract::StorageBackend::Postgres,
+            plugin_contract::StorageBackend::Sqlite,
+        ] {
+            let report = discover(
+                &paths,
+                &RegistryPolicy {
+                    storage_backend: backend,
+                    ..policy()
+                },
+            );
+            assert!(report.failures.is_empty(), "{:?}", report.failures);
+            let ids: Vec<_> = report
+                .accepted
+                .iter()
+                .map(|plugin| plugin.manifest.id.as_str())
+                .collect();
+            assert!(ids.contains(&"platform.activities"), "{ids:?}");
+        }
+    }
+
+    #[test]
     fn plugins_without_an_adapter_for_the_storage_backend_are_rejected() {
         let root = fixture();
         let artifact = b"linked-native:fixture@0.1.0\n";

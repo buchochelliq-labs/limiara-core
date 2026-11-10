@@ -288,6 +288,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "validation_rules",
         "quick_actions",
         "field_reference_objects",
+        "related_actions",
         "automations",
         "automation_runs",
         "automation_jobs",
@@ -741,4 +742,48 @@ async fn postgres_store_passes_the_plugin_object_conformance_suite() {
             .expect("foreign");
     assert_eq!(foreign, 0);
     tx.commit().await.expect("commit");
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_related_action_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Related actions')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let report = conformance::related_actions::run(store, tenant).await;
+
+    // Each skipped related action is audited once, with its reason, and
+    // publishes no event: nothing changed.
+    let skipped: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 \
+         AND action = 'objects.quick_action.skipped' \
+         AND metadata->>'plugin' = 'platform.activities' AND metadata ? 'reason'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(skipped, report.skipped);
+    let declared: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM related_actions WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(&migrator)
+            .await
+            .expect("related actions");
+    assert_eq!(
+        declared, 3,
+        "log_a_call and the upgrades' log_an_email and log_a_meeting"
+    );
+    // The runtime role sees none without the workspace's context.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM related_actions")
+        .fetch_one(&app)
+        .await
+        .expect("unscoped");
+    assert_eq!(unscoped, 0);
 }

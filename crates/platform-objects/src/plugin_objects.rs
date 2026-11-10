@@ -19,6 +19,10 @@
 //!   of service while it is not enabled, and bring them back unchanged. A
 //!   suspended object is not active, so every read treats it as missing.
 //!
+//! - **Related actions** a plugin object declares are kept with it on
+//!   install and offered to the objects its related-to fields allow when it
+//!   resumes (`crate::related_actions`).
+//!
 //! New objects are created suspended: the kernel resumes them once the
 //! plugin is enabled, so a failure between installing and enabling never
 //! shows objects of a plugin that is not enabled.
@@ -33,6 +37,7 @@ use crate::{
 use chrono::Utc;
 use plugin_contract::{Manifest, ObjectDecl, ObjectFieldDecl};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// The manifest's declarations do not pass validation.
@@ -143,6 +148,14 @@ impl ObjectService {
                 )
                 .await?;
             }
+            // Related actions name the fields just installed. They are
+            // offered once the objects are in service, when resuming.
+            let object = tx
+                .object_by_api_name(&api_name)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            self.put_plugin_related_actions(tx.as_mut(), plugin_id, &object, declared)
+                .await?;
         }
         tx.commit().await?;
         Ok(installed)
@@ -384,6 +397,39 @@ impl ObjectService {
             .await?;
             changed.push(object.api_name);
         }
+        if !suspended {
+            // Objects that entered a related-to allowlist while the plugin
+            // was not enabled, or that a new declaration names, are offered
+            // its related actions now (ADR 0033 §3).
+            let owned = tx.objects_owned_by(plugin_id).await?;
+            for owned in &owned {
+                let object = tx
+                    .object_by_id(owned.id)
+                    .await?
+                    .ok_or(ObjectError::Invariant)?;
+                self.offer_related_actions(tx.as_mut(), &object, None, context)
+                    .await?;
+            }
+            // Other plugins' related actions that could not reach these
+            // objects while they were out of service reach them now.
+            let owned_ids: BTreeSet<Uuid> = owned.iter().map(|object| object.id).collect();
+            let mut declaring = BTreeSet::new();
+            for owned in &owned {
+                for field in tx.fields_referencing_object(owned.id).await? {
+                    if field.field_type == FieldType::RelatedTo
+                        && !owned_ids.contains(&field.object_id)
+                    {
+                        declaring.insert((field.object_id, field.id));
+                    }
+                }
+            }
+            for (object_id, field_id) in declaring {
+                if let Some(object) = tx.object_by_id(object_id).await? {
+                    self.offer_related_actions(tx.as_mut(), &object, Some(field_id), context)
+                        .await?;
+                }
+            }
+        }
         tx.commit().await?;
         Ok(changed)
     }
@@ -435,7 +481,7 @@ fn field_update(
     existing: &FieldDefinition,
     declared: &CreateField,
 ) -> Result<Option<UpdateField>, ObjectError> {
-    let shape = values::field_shape(declared).map_err(ObjectError::Validation)?;
+    let shape = values::field_shape_for(declared, true).map_err(ObjectError::Validation)?;
     let reference_changed = declared.reference_object.as_deref()
         != existing.reference_object.as_deref()
         && existing.field_type == FieldType::Lookup;
@@ -522,11 +568,8 @@ fn field_update(
             changed = true;
         }
     }
-    if existing.field_type == FieldType::RelatedTo
-        && shape.reference_objects != existing.reference_objects
-    {
-        update.reference_objects = Some(shape.reference_objects.clone());
-        changed = true;
-    }
+    // A related-to field's allowlist is the workspace's once the field
+    // exists: the manifest's list is only the starting value, and upgrades
+    // never change it (ADR 0033 §2).
     Ok(changed.then_some(update))
 }

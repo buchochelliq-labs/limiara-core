@@ -700,6 +700,33 @@ CREATE INDEX object_definitions_owner_plugin_idx
   ON object_definitions (tenant_id, owner_plugin) WHERE owner_plugin IS NOT NULL;
 "#,
     },
+    // Related actions (ADR 0033 §3): create quick actions a plugin object
+    // offers to every object entering one of its related-to fields'
+    // allowlists, with the objects already offered them.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0028_related_actions",
+        sql: r#"
+CREATE TABLE related_actions (
+  tenant_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  owner_plugin TEXT NOT NULL,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 63),
+  label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 80),
+  fields TEXT NOT NULL CHECK (json_valid(fields) AND json_type(fields) = 'array'
+    AND json_array_length(fields) BETWEEN 1 AND 20),
+  presets TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(presets) AND json_type(presets) = 'object'),
+  offered_to TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(offered_to) AND json_type(offered_to) = 'array'),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, field_id, name)
+);
+CREATE INDEX related_actions_object_idx ON related_actions (tenant_id, object_id);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1168,6 +1195,29 @@ fn quick_action_from_row(row: &SqliteRow) -> Result<crate::QuickAction, ObjectEr
         created_by: optional_uuid(row, "created_by")?,
         updated_at: time(row, "updated_at")?,
         updated_by: optional_uuid(row, "updated_by")?,
+    })
+}
+
+const RELATED_ACTION_COLUMNS: &str = "id, object_id, field_id, owner_plugin, name, label, \
+     fields, presets, offered_to, created_at, updated_at";
+
+fn related_action_from_row(row: &SqliteRow) -> Result<crate::RelatedAction, ObjectError> {
+    let json = |column: &str| -> Result<serde_json::Value, ObjectError> {
+        serde_json::from_str(&row.try_get::<String, _>(column)?).map_err(|_| ObjectError::Invariant)
+    };
+    Ok(crate::RelatedAction {
+        id: uuid(row, "id")?,
+        object_id: uuid(row, "object_id")?,
+        field_id: uuid(row, "field_id")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        name: row.try_get("name")?,
+        label: row.try_get("label")?,
+        fields: serde_json::from_value(json("fields")?).map_err(|_| ObjectError::Invariant)?,
+        presets: serde_json::from_value(json("presets")?).map_err(|_| ObjectError::Invariant)?,
+        offered_to: serde_json::from_value(json("offered_to")?)
+            .map_err(|_| ObjectError::Invariant)?,
+        created_at: time(row, "created_at")?,
+        updated_at: time(row, "updated_at")?,
     })
 }
 
@@ -2602,6 +2652,59 @@ impl ObjectTx for SqliteObjectTx {
         Ok(result.rows_affected() == 1)
     }
 
+    async fn related_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::RelatedAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RELATED_ACTION_COLUMNS} FROM related_actions \
+             WHERE tenant_id = ?1 AND object_id = ?2 ORDER BY field_id, name"
+        ))
+        .bind(&self.tenant)
+        .bind(object_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(related_action_from_row).collect()
+    }
+
+    async fn put_related_action(
+        &mut self,
+        action: &crate::RelatedAction,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO related_actions (tenant_id, id, object_id, field_id, owner_plugin, name, \
+             label, fields, presets, offered_to, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+             ON CONFLICT (tenant_id, id) DO UPDATE SET label = excluded.label, \
+             fields = excluded.fields, presets = excluded.presets, \
+             offered_to = excluded.offered_to, updated_at = excluded.updated_at",
+        )
+        .bind(&self.tenant)
+        .bind(action.id.to_string())
+        .bind(action.object_id.to_string())
+        .bind(action.field_id.to_string())
+        .bind(&action.owner_plugin)
+        .bind(&action.name)
+        .bind(&action.label)
+        .bind(encode(&action.fields)?)
+        .bind(encode(&action.presets)?)
+        .bind(encode(&action.offered_to)?)
+        .bind(timestamp(action.created_at))
+        .bind(timestamp(action.updated_at))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_related_action(&mut self, id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query("DELETE FROM related_actions WHERE tenant_id = ?1 AND id = ?2")
+            .bind(&self.tenant)
+            .bind(id.to_string())
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
     async fn automations(
         &mut self,
         object_id: Uuid,
@@ -3320,6 +3423,11 @@ impl ObjectTx for SqliteObjectTx {
     ) -> Result<(), ObjectError> {
         append_audit(&mut self.tx, audit).await?;
         append_outbox(&mut self.tx, event).await?;
+        Ok(())
+    }
+
+    async fn append_audit(&mut self, audit: &AuditEvent) -> Result<(), ObjectError> {
+        append_audit(&mut self.tx, audit).await?;
         Ok(())
     }
 

@@ -1,0 +1,169 @@
+manifest_version = 1
+id = "platform.activities"
+name = "Activities"
+version = "0.1.0"
+description = "Tasks and events about any record, with a Log a call quick action"
+# A manifest-only plugin (ADR 0033 §3): it links no backend code. Its objects
+# are engine objects the kernel installs through the object engine, so every
+# read and write goes through the engine's tenancy, permissions, sharing,
+# validation, audit and events. The artifact is a marker the registry
+# verifies like any other package.
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "core-oob"
+source_repository = "https://github.com/buchochelliq-labs/limiara-core"
+source_revision = "a080eabfea64f7725a64bd8aa0c38895e6509af0"
+build_provenance = "https://github.com/buchochelliq-labs/limiara-core/attestations/platform.activities.intoto.jsonl"
+artifact_digest = "sha256:7a76675bb01d6766ba69c69af02ad37d64c54f20ea7f019cae657c29a5d2b9e1"
+artifact_path = "artifact/native.link"
+signature = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.activities-0.1.0/platform.activities.sig"
+sbom = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.activities-0.1.0/platform.activities.spdx.json"
+
+# Its records live in the object engine, which both stores host.
+[storage]
+backends = ["postgres", "sqlite"]
+
+# No code runs, so the plugin asks for nothing. Who may read or write tasks
+# and events is each workspace's object permissions per role, as for any
+# engine object; the plugin declares no permissions of its own.
+[capabilities]
+database = false
+audit = false
+event_publish = []
+event_consume = []
+outbound_http = []
+secrets = []
+object_storage = false
+
+# --- Task --------------------------------------------------------------------
+
+[[objects]]
+name = "task"
+label = "Task"
+plural_label = "Tasks"
+description = "Something to do, or a call, email or meeting that happened, about a record"
+name_label = "Subject"
+key_prefix = "tsk"
+# Activities often hold what was said; each workspace opens them up.
+sharing_model = "private"
+in_navigation = true
+
+[[objects.fields]]
+name = "due_date"
+label = "Due date"
+field_type = "date"
+indexed = true
+
+[[objects.fields]]
+name = "status"
+label = "Status"
+field_type = "picklist"
+required = true
+options = [
+  { value = "open", label = "Open", default = true },
+  { value = "completed", label = "Completed" },
+]
+
+[[objects.fields]]
+name = "priority"
+label = "Priority"
+field_type = "picklist"
+required = true
+options = [
+  { value = "high", label = "High" },
+  { value = "normal", label = "Normal", default = true },
+  { value = "low", label = "Low" },
+]
+
+[[objects.fields]]
+name = "type"
+label = "Type"
+field_type = "picklist"
+required = true
+options = [
+  { value = "to_do", label = "To do", default = true },
+  { value = "call", label = "Call" },
+  { value = "email", label = "Email" },
+  { value = "meeting", label = "Meeting" },
+  { value = "other", label = "Other" },
+]
+
+[[objects.fields]]
+name = "description"
+label = "Description"
+field_type = "long_text"
+
+# What the task is about. The allowlist starts empty: each workspace's
+# administrators choose the objects (ADR 0033 §2).
+[[objects.fields]]
+name = "related_to"
+label = "Related to"
+field_type = "related_to"
+reference_objects = []
+
+# Who the task involved. Administrators point it at person-like objects.
+[[objects.fields]]
+name = "who"
+label = "Who"
+field_type = "related_to"
+reference_objects = []
+
+# Every object that enters Related to's allowlist gets a Log a call action
+# that records a completed call about the current record.
+[[objects.related_actions]]
+field = "related_to"
+name = "log_a_call"
+label = "Log a call"
+fields = ["name", "platform.activities:description"]
+presets = { "platform.activities:type" = "call", "platform.activities:status" = "completed" }
+
+# --- Event -------------------------------------------------------------------
+
+[[objects]]
+name = "event"
+label = "Event"
+plural_label = "Events"
+description = "A meeting or appointment about a record"
+name_label = "Subject"
+key_prefix = "evt"
+sharing_model = "private"
+in_navigation = true
+
+[[objects.fields]]
+name = "starts_at"
+label = "Start"
+field_type = "date_time"
+required = true
+indexed = true
+
+[[objects.fields]]
+name = "ends_at"
+label = "End"
+field_type = "date_time"
+
+[[objects.fields]]
+name = "location"
+label = "Location"
+field_type = "text"
+max_length = 255
+
+[[objects.fields]]
+name = "description"
+label = "Description"
+field_type = "long_text"
+
+[[objects.fields]]
+name = "related_to"
+label = "Related to"
+field_type = "related_to"
+reference_objects = []
+
+[[objects.fields]]
+name = "who"
+label = "Who"
+field_type = "related_to"
+reference_objects = []

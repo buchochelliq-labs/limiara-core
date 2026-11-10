@@ -142,9 +142,13 @@ pub struct FieldShape {
 /// Checks the shape of a related-to field's allowlist: only related-to
 /// fields have one, and it names 1 to 10 distinct objects. Whether they
 /// exist is the service's to check. Returns the trimmed names.
+/// A related-to field's allowlist: 1 to 10 distinct names, or 0 to 10 for a
+/// plugin's own field (`plugin_owned`), whose targets the workspace's
+/// administrators choose after the plugin installs it (ADR 0033 §2).
 pub fn reference_objects(
     kind: FieldType,
     names: Option<&[String]>,
+    plugin_owned: bool,
 ) -> Result<Vec<String>, ValidationIssue> {
     let invalid = |detail: &str| {
         ValidationIssue::new(
@@ -165,9 +169,10 @@ pub fn reference_objects(
     if kind != FieldType::RelatedTo {
         return Err(invalid("only related-to fields have a list of objects"));
     }
-    if names.is_empty() || names.len() > REFERENCE_OBJECTS_MAX {
+    let least = usize::from(!plugin_owned);
+    if names.len() < least || names.len() > REFERENCE_OBJECTS_MAX {
         return Err(invalid(&format!(
-            "choose between 1 and {REFERENCE_OBJECTS_MAX} objects"
+            "choose between {least} and {REFERENCE_OBJECTS_MAX} objects"
         )));
     }
     let mut seen = BTreeSet::new();
@@ -194,6 +199,15 @@ pub const FORMULA_TYPES: [FieldType; 7] = [
 ];
 
 pub fn field_shape(input: &CreateField) -> Result<FieldShape, Vec<ValidationIssue>> {
+    field_shape_for(input, false)
+}
+
+/// [`field_shape`] for a field a plugin declares (`plugin_owned`), whose
+/// related-to allowlist may start empty (ADR 0033 §2).
+pub fn field_shape_for(
+    input: &CreateField,
+    plugin_owned: bool,
+) -> Result<FieldShape, Vec<ValidationIssue>> {
     let mut issues = Vec::new();
     let kind = input.field_type;
     let max_length = match kind {
@@ -289,11 +303,13 @@ pub fn field_shape(input: &CreateField) -> Result<FieldShape, Vec<ValidationIssu
             "a lookup needs the object it points to, and only lookups have one",
         ));
     }
-    let reference_objects = reference_objects(kind, input.reference_objects.as_deref())
-        .unwrap_or_else(|issue| {
-            issues.push(issue);
-            Vec::new()
-        });
+    let reference_objects =
+        reference_objects(kind, input.reference_objects.as_deref(), plugin_owned).unwrap_or_else(
+            |issue| {
+                issues.push(issue);
+                Vec::new()
+            },
+        );
     if kind == FieldType::MasterDetail && (input.unique || input.default_value.is_some()) {
         issues.push(ValidationIssue::new(
             "field_type",
