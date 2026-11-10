@@ -481,6 +481,8 @@ expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/reco
 expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/records" '{"name":"Announced launch"}')" "publish an event"
 published=$(sql --command="SELECT count(*) FROM outbox WHERE event_type = 'platform.objects.workspace-event.v1' AND envelope::text LIKE '%project_started%' AND envelope::text LIKE '%ANNOUNCED LAUNCH%';")
 [[ "$published" == 1 ]] || fail "one workspace event with its fields: $published"
+event_source=$(sql --command="SELECT envelope->'payload'->>'source' FROM outbox WHERE event_type = 'platform.objects.workspace-event.v1' AND envelope::text LIKE '%project_started%';")
+[[ "$event_source" == automation ]] || fail "a workspace event names its source kind: $event_source"
 quiet=$(sql --command="SELECT count(*) FROM outbox WHERE event_type = 'platform.objects.workspace-event.v1' AND envelope::text LIKE '%QUIET%';")
 [[ "$quiet" == 0 ]] || fail "the action's own condition held it back"
 audited_event=$(sql --command="SELECT count(*) FROM audit_log WHERE action = 'objects.workspace_event.published' AND metadata::text NOT LIKE '%ANNOUNCED%';")

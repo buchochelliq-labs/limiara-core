@@ -616,6 +616,17 @@ pub fn workspace_event(
     record: &Record,
     fields: serde_json::Map<String, Value>,
 ) -> (AuditEvent, EventEnvelope) {
+    let mut payload = json!({
+        "event": name,
+        "object": object.api_name,
+        "record": record.public_id,
+        "automation": automation.name,
+        "automation_id": automation.id,
+        "fields": fields,
+    });
+    // Like every engine event, it names where the change came from by
+    // kind only; the detail stays in the audit entry (#233).
+    insert_source_kind(&mut payload, context.source);
     let event = EventEnvelope::with_context(
         WORKSPACE_EVENT_V1,
         ENGINE_CONTEXT,
@@ -623,14 +634,7 @@ pub fn workspace_event(
         Some(context.actor_id),
         context.correlation_id,
         context.causation_id,
-        json!({
-            "event": name,
-            "object": object.api_name,
-            "record": record.public_id,
-            "automation": automation.name,
-            "automation_id": automation.id,
-            "fields": fields,
-        }),
+        payload,
     );
     let mut metadata = json!({
         "event": name,
