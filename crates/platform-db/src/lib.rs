@@ -15,7 +15,7 @@ mod devices;
 pub use devices::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0036_related_to.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0037_plugin_objects.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]
@@ -1039,6 +1039,33 @@ pub async fn transition_tenant_plugin(
         state: desired.as_str().into(),
         verified_digest,
     })
+}
+
+/// The version and manifest a transition to enabled would activate: the
+/// plugin's latest verified usable candidate. The kernel reads it first to
+/// install the engine objects the manifest declares (ADR 0033 §2).
+pub async fn usable_plugin_candidate(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    plugin_id: &str,
+) -> Result<Option<(String, serde_json::Value)>, PluginLifecycleError> {
+    let mut tx = begin_tenant_tx(pool, tenant_id)
+        .await
+        .map_err(|DbError::Sqlx(error)| error)?;
+    let candidate: Option<(String, serde_json::Value)> = sqlx::query_as(
+        r#"
+        SELECT c.latest_usable_version, v.manifest
+        FROM plugin_catalogue c
+        JOIN plugin_versions v
+          ON v.plugin_id = c.plugin_id AND v.version = c.latest_usable_version
+        WHERE c.plugin_id = $1 AND v.lifecycle_state = 'health_checked'
+        "#,
+    )
+    .bind(plugin_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(candidate)
 }
 
 /// Removed installations, across tenants, whose retention window has passed

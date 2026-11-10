@@ -661,3 +661,84 @@ async fn postgres_store_passes_the_client_id_conformance_suite() {
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
     conformance::client_ids::run(store, tenant).await;
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_plugin_object_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (id, name) in [(tenant, "Plugin objects"), (other, "Plugin objects, other")] {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let report = conformance::plugin_objects::run(store.clone(), tenant).await;
+
+    // The installation's evidence names the plugin that made each change,
+    // next to the member who changed the plugin's state (ADR 0033 §2).
+    let by_plugin: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'objects.object.created' \
+         AND metadata->>'plugin' = 'example.tracker' AND actor_id IS NOT NULL",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(by_plugin, 2);
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outbox WHERE tenant_id = $1 \
+         AND envelope->'payload'->>'plugin' = 'example.tracker'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("events");
+    assert!(events >= 2, "events name the plugin too");
+    for id in &report.record_ids {
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM records WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant)
+                .bind(id)
+                .fetch_one(&migrator)
+                .await
+                .expect("record");
+        assert_eq!(kept, 1, "removal keeps records for export");
+    }
+
+    // Only plugin objects can be suspended, and a plugin object names its
+    // owner in its own namespace.
+    let workspace_suspended = sqlx::query(
+        "UPDATE object_definitions SET suspended = true \
+         WHERE tenant_id = $1 AND origin = 'workspace'",
+    )
+    .bind(tenant)
+    .execute(&migrator)
+    .await;
+    assert!(workspace_suspended.is_err());
+    let foreign_owner = sqlx::query(
+        "UPDATE object_definitions SET owner_plugin = 'example.other' \
+         WHERE tenant_id = $1 AND origin = 'plugin'",
+    )
+    .bind(tenant)
+    .execute(&migrator)
+    .await;
+    assert!(foreign_owner.is_err());
+
+    // Another workspace sees none of the plugin's objects.
+    let mut tx = platform_db::begin_tenant_tx(&app, other)
+        .await
+        .expect("other tenant");
+    let foreign: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM object_definitions WHERE origin = 'plugin'")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("foreign");
+    assert_eq!(foreign, 0);
+    tx.commit().await.expect("commit");
+}

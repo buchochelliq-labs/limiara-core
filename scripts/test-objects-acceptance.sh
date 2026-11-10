@@ -4,7 +4,8 @@
 # runtime and members work with their records through the generic engine.
 #
 # The journey covers object and field definition, naming, key prefixes,
-# picklists, uniqueness, lookups, related-to fields, record create/read/update with optimistic
+# picklists, uniqueness, lookups, related-to fields, plugin-declared objects,
+# record create/read/update with optimistic
 # versions, filters and search, the recycle bin, object permissions per role,
 # forced RLS on the engine tables, and evidence that names changes without
 # carrying record values.
@@ -102,6 +103,7 @@ platform:
   plugins:
     manifest_paths:
       - plugins/contacts/plugin.toml
+      - fixtures/plugins/tracker/plugin.toml
 EOF
 
 env PLATFORM_DEFAULT_CONFIG_FILE="$repository_root/config/default.yml" \
@@ -891,6 +893,50 @@ allowlists=$(sql --command="SELECT count(*) FROM field_reference_objects WHERE t
 (( allowlists == 1 )) || fail "the allowlist is stored per field: $allowlists"
 [[ "$(app_sql --command="SELECT count(*) FROM field_reference_objects;")" == 0 ]] || fail "field_reference_objects leaks rows without tenant context"
 
+log "plugins declare engine objects (ADR 0033 §2): enabling installs them, disabling hides them"
+tracker="$workspace/plugins/example.tracker"
+ticket_api="$workspace/objects/example.tracker:ticket"
+expect 404 "$(call "$member_cookie" GET "$ticket_api")" "no tracker objects before the plugin is enabled"
+expect 200 "$(call "$member_cookie" POST "$tracker/enable")" "enable the tracker"
+expect 200 "$(call "$member_cookie" GET "$ticket_api")" "describe a plugin object"
+[[ "$(field '.origin')" == plugin && "$(field '.owner_plugin')" == example.tracker && "$(field '.key_prefix')" == tkt ]] || fail "plugin object metadata: $(cat "$body")"
+[[ "$(field '[.fields[] | select(.origin == "plugin") | .api_name] | join(",")')" == "example.tracker:status,example.tracker:summary,example.tracker:milestone" ]] || fail "plugin fields: $(cat "$body")"
+summary_version=$(field '.fields[] | select(.api_name == "example.tracker:summary") | .version')
+ticket_object_version=$(field '.version')
+expect 409 "$(call "$member_cookie" PATCH "$ticket_api/fields/example.tracker:summary" "{\"expected_version\":$summary_version,\"label\":\"Mine\"}")" "administrators cannot change a plugin's field"
+[[ "$(field '.code')" == objects.plugin_owned ]] || fail "plugin field code: $(cat "$body")"
+expect 409 "$(call "$member_cookie" DELETE "$ticket_api/fields/example.tracker:summary?expected_version=$summary_version")" "administrators cannot delete a plugin's field"
+[[ "$(field '.code')" == objects.plugin_owned ]] || fail "plugin field delete code: $(cat "$body")"
+expect 409 "$(call "$member_cookie" DELETE "$ticket_api?expected_version=$ticket_object_version")" "administrators cannot delete a plugin's object"
+[[ "$(field '.code')" == objects.plugin_owned ]] || fail "plugin object delete code: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$ticket_api/fields" '{"name":"priority","label":"Priority","field_type":"number"}')" "administrators add custom fields to plugin objects"
+[[ "$(field '.api_name')" == custom:priority && "$(field '.origin')" == workspace ]] || fail "custom field on a plugin object: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/example.tracker:milestone/records" '{"name":"Launch"}')" "a milestone"
+launch=$(field '.id')
+[[ "$launch" == tkm* ]] || fail "plugin key prefix in public ids: $launch"
+expect 201 "$(call "$member_cookie" POST "$ticket_api/records" "{\"name\":\"Ship it\",\"example.tracker:summary\":\"Ship the release\",\"example.tracker:milestone\":\"$launch\",\"custom:priority\":2}")" "a ticket"
+ship=$(field '.id')
+ship_version=$(field '.version')
+[[ "$(field '."example.tracker:status"')" == open && "$(field ".related[\"$launch\"]")" == Launch ]] || fail "ticket values: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$tracker/enable")" "enabling again is idempotent"
+expect 200 "$(call "$member_cookie" GET "$ticket_api")" "describe after re-enabling"
+[[ "$(field '.version')" == "$ticket_object_version" && "$(field '.fields | length')" == 4 ]] || fail "re-enabling changed the object: $(cat "$body")"
+by_plugin=$(sql --command="SELECT count(*) FROM audit_log WHERE tenant_id = '$tenant' AND action = 'objects.object.created' AND metadata->>'plugin' = 'example.tracker' AND actor_id = '$member';")
+[[ "$by_plugin" == 2 ]] || fail "installation evidence names the plugin and the member: $by_plugin"
+expect 200 "$(call "$member_cookie" POST "$tracker/disable")" "disable the tracker"
+expect 404 "$(call "$member_cookie" GET "$ticket_api")" "a disabled plugin's objects are hidden"
+expect 404 "$(call "$member_cookie" GET "$ticket_api/records/$ship")" "and so are their records"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects")" "list objects while disabled"
+[[ "$(field '[.data[].api_name | select(startswith("example.tracker"))] | length')" == 0 ]] || fail "listed while disabled: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$tracker/enable")" "enable the tracker again"
+expect 200 "$(call "$member_cookie" GET "$ticket_api/records/$ship")" "records come back unchanged"
+[[ "$(field '.version')" == "$ship_version" && "$(field '."custom:priority" == 2')" == true ]] || fail "record after re-enabling: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$tracker/disable")" "disable before removing"
+expect 200 "$(call "$member_cookie" POST "$tracker/remove")" "remove the tracker"
+kept=$(sql --command="SELECT count(*) FROM records r JOIN object_definitions o ON o.tenant_id = r.tenant_id AND o.id = r.object_id WHERE r.tenant_id = '$tenant' AND o.owner_plugin = 'example.tracker' AND o.suspended;")
+[[ "$kept" == 2 ]] || fail "removal keeps the plugin's records for export: $kept"
+expect 404 "$(call "$member_cookie" GET "$ticket_api")" "a removed plugin's objects are hidden"
+
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
 grant_code code-sync "$verifier"
 expect 200 "$(redeem code-sync "$verifier" "Viewer's synced phone")" "a device for the sync loop"
@@ -910,4 +956,4 @@ API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/sc
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'

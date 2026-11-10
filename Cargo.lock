@@ -2470,6 +2470,7 @@ dependencies = [
  "platform-id",
  "platform-outbox",
  "platform-storage",
+ "plugin-contract",
  "regex",
  "serde",
  "serde_json",

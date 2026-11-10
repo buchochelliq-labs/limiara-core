@@ -417,6 +417,12 @@ pub struct ObjectDefinition {
     pub searchable: bool,
     pub in_navigation: bool,
     pub status: DefinitionStatus,
+    /// Whether the object is out of service because its owning plugin is
+    /// not enabled in the workspace (ADR 0033 §2). A suspended object is
+    /// not active: it reads as missing everywhere, and its records and
+    /// definitions are kept unchanged until the plugin is enabled again.
+    #[serde(skip)]
+    pub suspended: bool,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<Uuid>,
@@ -427,8 +433,16 @@ pub struct ObjectDefinition {
 }
 
 impl ObjectDefinition {
+    /// Whether the object is in service: not deleted, and not suspended
+    /// with its plugin.
     pub fn is_active(&self) -> bool {
-        self.status == DefinitionStatus::Active
+        self.status == DefinitionStatus::Active && !self.suspended
+    }
+
+    /// Whether a plugin owns the definition, so only its installation may
+    /// change it (ADR 0033 §2).
+    pub fn is_plugin_owned(&self) -> bool {
+        self.origin == Origin::Plugin
     }
 
     pub fn field(&self, api_name: &str) -> Option<&FieldDefinition> {

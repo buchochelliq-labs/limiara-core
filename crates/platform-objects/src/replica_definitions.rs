@@ -349,6 +349,7 @@ async fn put_object(
                 searchable: remote.searchable,
                 in_navigation: remote.in_navigation,
                 status: DefinitionStatus::Active,
+                suspended: false,
                 version: remote.version.max(1),
                 created_at: now,
                 created_by: Some(actor),

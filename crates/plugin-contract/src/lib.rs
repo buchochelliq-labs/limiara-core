@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
+pub mod objects;
 pub mod ui;
+
+pub use objects::{
+    ObjectDecl, ObjectDeleteBehaviour, ObjectFieldDecl, ObjectFieldOption, ObjectFieldType,
+    ObjectSharingDecl,
+};
 
 use regex::Regex;
 use semver::{Version, VersionReq};
@@ -303,6 +309,10 @@ pub struct Manifest {
     pub worker: WorkerDecl,
     #[serde(default)]
     pub extensions: ExtensionsDecl,
+    /// Engine objects the plugin declares in its own namespace (ADR 0033
+    /// §2), created or migrated in a workspace when it enables the plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<ObjectDecl>,
     #[serde(default)]
     pub storage: StorageDecl,
     #[serde(default)]
@@ -347,6 +357,17 @@ pub enum ManifestError {
         key: String,
         reason: &'static str,
     },
+    #[error("invalid object {object}: {reason}")]
+    InvalidObject {
+        object: String,
+        reason: &'static str,
+    },
+    #[error("invalid object field {object}/{field}: {reason}")]
+    InvalidObjectField {
+        object: String,
+        field: String,
+        reason: &'static str,
+    },
 }
 impl Manifest {
     pub fn parse_toml(input: &str) -> Result<Self, ManifestError> {
@@ -389,6 +410,7 @@ impl Manifest {
         validate_ui_references(&self.ui)?;
         self.validate_worker_contributions()?;
         self.validate_extension_fields()?;
+        self.validate_objects()?;
         self.validate_field_zones()?;
         let mut backends = self.storage.backends.clone();
         backends.sort();
@@ -406,6 +428,25 @@ impl Manifest {
         } else {
             self.storage.backends.contains(&backend)
         }
+    }
+
+    fn validate_objects(&self) -> Result<(), ManifestError> {
+        objects::validate_objects(
+            &self.id,
+            &self.objects,
+            self.dependencies.keys().map(String::as_str),
+        )
+        .map_err(|issue| match issue.field {
+            Some(field) => ManifestError::InvalidObjectField {
+                object: issue.object,
+                field,
+                reason: issue.reason,
+            },
+            None => ManifestError::InvalidObject {
+                object: issue.object,
+                reason: issue.reason,
+            },
+        })
     }
 
     fn validate_field_zones(&self) -> Result<(), ManifestError> {
@@ -1128,5 +1169,162 @@ path = "../outside.json"
         ))
         .expect_err("metadata cannot escape the plugin artifact");
         assert!(matches!(error, ManifestError::InvalidUiReference { .. }));
+    }
+
+    #[test]
+    fn the_tracker_fixture_declares_two_objects() {
+        let manifest = Manifest::parse_toml(include_str!(
+            "../../../fixtures/plugins/tracker/plugin.toml"
+        ))
+        .expect("fixture parses");
+        assert_eq!(manifest.objects.len(), 2);
+        assert_eq!(manifest.objects[1].fields.len(), 3);
+        assert_eq!(
+            manifest.objects[1].fields[2].reference_object.as_deref(),
+            Some("example.tracker:milestone")
+        );
+        let round_trip: Manifest =
+            serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
+                .expect("stored manifests read back");
+        assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    fn objects_manifest(id: &str, objects: &str) -> Result<Manifest, ManifestError> {
+        Manifest::parse_toml(&base_manifest(objects).replace("platform.contacts", id))
+    }
+
+    fn object_reason(result: Result<Manifest, ManifestError>) -> &'static str {
+        match result {
+            Err(ManifestError::InvalidObject { reason, .. })
+            | Err(ManifestError::InvalidObjectField { reason, .. }) => reason,
+            other => panic!("expected an object error, got {other:?}"),
+        }
+    }
+
+    const TASK: &str = r#"
+[[objects]]
+name = "task"
+label = "Task"
+plural_label = "Tasks"
+key_prefix = "tsk"
+"#;
+
+    #[test]
+    fn declared_objects_are_validated_when_the_manifest_is_read() {
+        objects_manifest("example.work", TASK).expect("a minimal object");
+        assert!(object_reason(objects_manifest("example.my-work", TASK)).contains("namespace"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &TASK.replace("tsk", "1sk")
+        ))
+        .contains("key_prefix"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &TASK.replace("tsk", "Tsk")
+        ))
+        .contains("key_prefix"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &TASK.replace("\"task\"", "\"Task\"")
+        ))
+        .contains("name"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &format!("{TASK}{}", TASK.replace("tsk", "tsl"))
+        ))
+        .contains("duplicate object name"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &format!("{TASK}{}", TASK.replace("\"task\"", "\"chore\""))
+        ))
+        .contains("duplicate key prefix"));
+        let many: String = (0..21)
+            .map(|index| {
+                TASK.replace("\"task\"", &format!("\"task{index}\""))
+                    .replace("tsk", &format!("t{index:02}"))
+            })
+            .collect();
+        assert!(object_reason(objects_manifest("example.work", &many)).contains("at most 20"));
+        // Unknown keys are refused rather than ignored.
+        assert!(matches!(
+            objects_manifest("example.work", &format!("{TASK}formula = \"x\"\n")),
+            Err(ManifestError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn declared_fields_use_engine_types_and_known_targets() {
+        let with_field = |field: &str| format!("{TASK}\n[[objects.fields]]\n{field}\n");
+        objects_manifest(
+            "example.work",
+            &with_field(
+                r#"name = "parent"
+label = "Parent"
+field_type = "lookup"
+reference_object = "example.work:task"
+delete_behaviour = "restrict""#,
+            ),
+        )
+        .expect("a lookup to its own object");
+        assert!(matches!(
+            objects_manifest(
+                "example.work",
+                &with_field("name = \"total\"\nlabel = \"Total\"\nfield_type = \"formula\"")
+            ),
+            Err(ManifestError::Parse(_))
+        ));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"owner\"\nlabel = \"Owner\"\nfield_type = \"lookup\"\nreference_object = \"custom:project\""
+            )
+        ))
+        .contains("reference_object"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"person\"\nlabel = \"Person\"\nfield_type = \"lookup\"\nreference_object = \"example.people:person\""
+            )
+        ))
+        .contains("depends on"));
+        let depending = format!(
+            "[dependencies.\"example.people\"]\nversion = \">=0.1.0\"\nreasons = [\"composition\"]\n{}",
+            with_field(
+                "name = \"about\"\nlabel = \"About\"\nfield_type = \"related_to\"\nreference_objects = [\"example.people:person\", \"example.work:task\"]"
+            )
+        );
+        objects_manifest("example.work", &depending).expect("a dependency's object");
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field("name = \"about\"\nlabel = \"About\"\nfield_type = \"related_to\"")
+        ))
+        .contains("1 to 10"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field("name = \"stage\"\nlabel = \"Stage\"\nfield_type = \"picklist\"")
+        ))
+        .contains("options"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"done\"\nlabel = \"Done\"\nfield_type = \"boolean\"\nunique = true"
+            )
+        ))
+        .contains("unique"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"note\"\nlabel = \"Note\"\nfield_type = \"text\"\nmax_length = 300"
+            )
+        ))
+        .contains("max_length"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &format!(
+                "{}[[objects.fields]]\nname = \"note\"\nlabel = \"Again\"\nfield_type = \"text\"\n",
+                with_field("name = \"note\"\nlabel = \"Note\"\nfield_type = \"text\"")
+            )
+        ))
+        .contains("duplicate field name"));
     }
 }

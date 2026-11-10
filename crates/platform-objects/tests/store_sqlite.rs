@@ -342,3 +342,41 @@ async fn sqlite_store_passes_the_replica_lease_conformance_suite() {
     let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
     conformance::lease::run(store).await;
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_plugin_object_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::plugin_objects::run(store, tenant).await;
+
+    let pool = databases.pool(tenant).await.expect("pool");
+    // The installation's evidence names the plugin that made each change.
+    let by_plugin: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.object.created' \
+         AND json_extract(metadata, '$.plugin') = 'example.tracker'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(by_plugin, 2);
+    let suspensions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.object.suspended'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("suspensions");
+    assert_eq!(suspensions, 4, "two objects, suspended twice");
+    for id in report.record_ids {
+        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM records WHERE id = ?1")
+            .bind(id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("record");
+        assert_eq!(kept, 1);
+    }
+}

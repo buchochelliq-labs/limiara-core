@@ -76,6 +76,12 @@ pub trait ObjectTx: Send {
     async fn object_by_id(&mut self, id: Uuid) -> Result<Option<ObjectDefinition>, ObjectError>;
     /// Every key prefix used by any object, deleted ones included.
     async fn key_prefixes(&mut self) -> Result<Vec<String>, ObjectError>;
+    /// The objects a plugin owns that are not deleted, suspended or not,
+    /// without fields, by API name (ADR 0033 §2).
+    async fn objects_owned_by(
+        &mut self,
+        plugin_id: &str,
+    ) -> Result<Vec<ObjectDefinition>, ObjectError>;
     /// Active reference fields on any object that point to `object_id`:
     /// lookups and master-detail fields to it, and related-to fields whose
     /// allowlist names it.

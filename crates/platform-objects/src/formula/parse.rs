@@ -207,6 +207,9 @@ fn lex(text: &str) -> Result<Vec<(Token, usize)>, FormulaError> {
                     {
                         at += 1;
                     }
+                    // A plugin's dotted namespace is one word (ADR 0015 §3).
+                    let after_colon = matches!(tokens.last(), Some((Token::Colon, _)));
+                    at = crate::naming::namespace_word_end(&chars, start, at, after_colon);
                     Token::Word(chars[start..at].iter().collect())
                 }
                 other => {

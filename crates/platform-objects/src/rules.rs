@@ -41,10 +41,14 @@ pub(crate) async fn formula_objects(
                 if objects.contains_key(&target) {
                     continue;
                 }
+                // A suspended plugin object (ADR 0033 §2) stays in the
+                // catalog: rules and formulas that read through a lookup
+                // into it keep compiling, so disabling a plugin never
+                // blocks saves on the objects that point at it.
                 if let Some(object) = tx
                     .object_by_id(target)
                     .await?
-                    .filter(ObjectDefinition::is_active)
+                    .filter(|object| object.status == crate::DefinitionStatus::Active)
                 {
                     objects.insert(target, object);
                     next.push(target);
