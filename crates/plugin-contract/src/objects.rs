@@ -20,6 +20,12 @@
 //! engine adds to every object that enters one of its related-to fields'
 //! allowlists, making a record of this object with that field set to the
 //! current record.
+//!
+//! An object may also declare how its records appear on the *Activity
+//! timeline* of the records they point at (`[objects.timeline]`, ADR 0033
+//! §4): through which of its lookup or related-to fields, ordered by which
+//! date, and when a record counts as open. The kernel knows nothing of what
+//! the records are; it serves every declared source the same way.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,6 +88,47 @@ pub struct ObjectDecl {
     /// fields allow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related_actions: Vec<RelatedActionDecl>,
+    /// How this object's records appear on the Activity timeline of the
+    /// records they point at (ADR 0033 §4). At most one per object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineDecl>,
+}
+
+/// Fields a timeline declaration reaches the viewed record through.
+pub const MAX_TIMELINE_THROUGH: usize = 5;
+
+/// A timeline source (ADR 0033 §4): this object's records are listed on the
+/// timeline of every record one of the `through` fields points at.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineDecl {
+    /// Short names of 1 to 5 of the object's lookup or related-to fields,
+    /// in order of preference: an item names the first that matched.
+    pub through: Vec<String>,
+    /// Short name of the object's date or date-time field that orders the
+    /// timeline. It must be indexed, as the timeline filters and sorts on it.
+    pub date: String,
+    /// When a record is open: listed under "Open and upcoming" rather than
+    /// "Past". Without it, every record is past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<TimelineOpenDecl>,
+}
+
+/// When a timeline record counts as open.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TimelineOpenDecl {
+    /// While one of the object's picklists has a value, such as a task's
+    /// status being `open`. The picklist must be indexed.
+    Field { field: String, equals: String },
+    /// `"upcoming"`: while the timeline date is today or later (UTC).
+    Keyword(TimelineOpenKeyword),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TimelineOpenKeyword {
+    Upcoming,
 }
 
 /// A create quick action (ADR 0032) that every object entering the
@@ -428,6 +475,92 @@ pub fn validate_objects<'a>(
             }
             validate_related_action(plugin_id, object, action).map_err(issue)?;
         }
+        if let Some(timeline) = &object.timeline {
+            validate_timeline(object, timeline).map_err(|(part, reason)| ObjectDeclIssue {
+                object: object.name.clone(),
+                field: Some(format!("timeline/{part}")),
+                reason,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks a timeline declaration against the object that makes it. The
+/// error names the part at fault: `through`, `date` or `open`.
+fn validate_timeline(
+    object: &ObjectDecl,
+    timeline: &TimelineDecl,
+) -> Result<(), (&'static str, &'static str)> {
+    let declared = |name: &str| object.fields.iter().find(|field| field.name == name);
+    if timeline.through.is_empty() || timeline.through.len() > MAX_TIMELINE_THROUGH {
+        return Err(("through", "a timeline is reached through 1 to 5 fields"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &timeline.through {
+        if !seen.insert(name.as_str()) {
+            return Err(("through", "a timeline names each through field once"));
+        }
+        match declared(name) {
+            Some(field)
+                if matches!(
+                    field.field_type,
+                    ObjectFieldType::Lookup | ObjectFieldType::RelatedTo
+                ) => {}
+            _ => {
+                return Err((
+                    "through",
+                    "through must name the object's lookup or related-to fields",
+                ))
+            }
+        }
+    }
+    match declared(&timeline.date) {
+        Some(field)
+            if matches!(
+                field.field_type,
+                ObjectFieldType::Date | ObjectFieldType::DateTime
+            ) =>
+        {
+            if !field.indexed {
+                return Err((
+                    "date",
+                    "the timeline date must be indexed: the timeline filters and sorts on it",
+                ));
+            }
+        }
+        _ => {
+            return Err((
+                "date",
+                "date must name one of the object's date or date-time fields",
+            ))
+        }
+    }
+    match &timeline.open {
+        None | Some(TimelineOpenDecl::Keyword(TimelineOpenKeyword::Upcoming)) => {}
+        Some(TimelineOpenDecl::Field { field, equals }) => match declared(field) {
+            Some(picklist) if picklist.field_type == ObjectFieldType::Picklist => {
+                if !picklist
+                    .options
+                    .iter()
+                    .any(|option| option.value == *equals)
+                {
+                    return Err(("open", "open.equals must be one of the picklist's options"));
+                }
+                if !picklist.indexed {
+                    return Err((
+                        "open",
+                        "the open picklist must be indexed: the timeline filters on it",
+                    ));
+                }
+            }
+            _ => {
+                return Err((
+                    "open",
+                    "open.field must name one of the object's picklist fields",
+                ))
+            }
+        },
     }
     Ok(())
 }

@@ -1,13 +1,13 @@
 # Using Activities
 
-**Status:** experimental. Design: [ADR 0033 §3](../adr/0033-activities.md).
+**Status:** experimental. Design: [ADR 0033 §3 and §4](../adr/0033-activities.md).
 Plugin: `platform.activities`, in `plugins/activities`.
 
 Activities record the work done on a record: tasks to do, calls and emails
 that happened, and meetings. Each one can point at the record it is about
 and at the person it involved. The Activities plugin ships two objects and
-a **Log a call** quick action. The Activity timeline on the record page is
-not built yet (see the [roadmap](../roadmap/README.md)).
+a **Log a call** quick action, and lists them in an **Activity** section on
+the pages of the records they point at.
 
 ## Turning it on
 
@@ -90,3 +90,29 @@ saves a completed task of type Call with *Related to* set to the record.
   action that creates tasks through *Related to*.
 - It grants nothing: only members who may create tasks can use it, and it
   saves through the same checks as the full task form.
+
+## The Activity section
+
+Every record page that tasks or events can point at, through *Related to*
+or *Who*, shows an **Activity** section after the related lists.
+
+- **Open and upcoming** lists open tasks and events that start today or
+  later, soonest first, then open tasks without a due date. An open task
+  whose due date has passed is marked **Overdue**. Up to 50 are shown.
+- **Past** lists completed tasks and past events, newest first. A task
+  without a due date, such as a logged call, sits where it was logged.
+  **Show more** loads 20 more at a time.
+- Each entry shows whether it is a task or an event, links to it, and shows
+  its date and its status, priority and type.
+- The section offers the page's quick actions that create tasks or events,
+  such as **Log a call**. Saving one refreshes the section.
+- You see only the tasks and events you may see: with private sharing,
+  other members' activities stay theirs.
+- A record that no activity can point at shows no Activity section, and
+  neither does any page while the plugin is disabled.
+- An activity whose object was taken out of *Related to*'s list still
+  appears on the record it points at.
+
+Not yet: tabs on the record page, completing a task from the section, and
+emails. See the [roadmap](../roadmap/README.md).
+

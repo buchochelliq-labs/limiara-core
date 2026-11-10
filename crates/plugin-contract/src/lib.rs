@@ -4,7 +4,7 @@ pub mod ui;
 
 pub use objects::{
     ObjectDecl, ObjectDeleteBehaviour, ObjectFieldDecl, ObjectFieldOption, ObjectFieldType,
-    ObjectSharingDecl, RelatedActionDecl,
+    ObjectSharingDecl, RelatedActionDecl, TimelineDecl, TimelineOpenDecl, TimelineOpenKeyword,
 };
 
 use regex::Regex;
@@ -789,7 +789,10 @@ fn validate_ui_references(ui: &UiDecl) -> Result<(), ManifestError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, ManifestError, ObjectFieldType, PluginDistribution};
+    use super::{
+        Manifest, ManifestError, ObjectFieldType, PluginDistribution, TimelineOpenDecl,
+        TimelineOpenKeyword,
+    };
 
     fn base_manifest(extra: &str) -> String {
         format!(
@@ -1409,6 +1412,24 @@ delete_behaviour = "restrict""#,
             .expect("start");
         assert!(start.required);
         assert_eq!(start.field_type, ObjectFieldType::DateTime);
+        // Both appear on the Activity timeline (ADR 0033 §4).
+        let task_timeline = task.timeline.as_ref().expect("task timeline");
+        assert_eq!(task_timeline.through, ["related_to", "who"]);
+        assert_eq!(task_timeline.date, "due_date");
+        assert_eq!(
+            task_timeline.open,
+            Some(TimelineOpenDecl::Field {
+                field: "status".into(),
+                equals: "open".into()
+            })
+        );
+        let event_timeline = event.timeline.as_ref().expect("event timeline");
+        assert_eq!(event_timeline.through, ["related_to", "who"]);
+        assert_eq!(event_timeline.date, "starts_at");
+        assert_eq!(
+            event_timeline.open,
+            Some(TimelineOpenDecl::Keyword(TimelineOpenKeyword::Upcoming))
+        );
         // Stored manifests are JSON and read back unchanged.
         let round_trip: Manifest =
             serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
@@ -1515,5 +1536,119 @@ presets = { "example.work:stage" = "done", "example.work:due" = "2026-11-10", "n
             manifest(&format!("{valid}\nkind = \"update\"")),
             Err(ManifestError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn timelines_are_validated_when_the_manifest_is_read() {
+        let manifest = |timeline: &str| {
+            objects_manifest(
+                "example.work",
+                &format!(
+                    r#"{TASK}
+[[objects.fields]]
+name = "about"
+label = "About"
+field_type = "related_to"
+
+[[objects.fields]]
+name = "parent"
+label = "Parent"
+field_type = "lookup"
+reference_object = "example.work:task"
+
+[[objects.fields]]
+name = "note"
+label = "Note"
+field_type = "text"
+
+[[objects.fields]]
+name = "stage"
+label = "Stage"
+field_type = "picklist"
+indexed = true
+options = [{{ value = "open", label = "Open" }}, {{ value = "done", label = "Done" }}]
+
+[[objects.fields]]
+name = "kind"
+label = "Kind"
+field_type = "picklist"
+options = [{{ value = "open", label = "Open" }}]
+
+[[objects.fields]]
+name = "due"
+label = "Due"
+field_type = "date"
+indexed = true
+
+[[objects.fields]]
+name = "at"
+label = "At"
+field_type = "date_time"
+indexed = true
+
+[[objects.fields]]
+name = "loose"
+label = "Loose"
+field_type = "date"
+
+[objects.timeline]
+{timeline}
+"#
+                ),
+            )
+        };
+        let valid = r#"through = ["about", "parent"]
+date = "due"
+open = { field = "stage", equals = "open" }"#;
+        let parsed = manifest(valid).expect("a valid timeline");
+        let timeline = parsed.objects[0].timeline.as_ref().expect("timeline");
+        assert_eq!(timeline.through, ["about", "parent"]);
+        manifest("through = [\"about\"]\ndate = \"at\"\nopen = \"upcoming\"")
+            .expect("an upcoming timeline");
+        manifest("through = [\"about\"]\ndate = \"due\"").expect("a timeline with no open records");
+        let refused = |change: &str| object_reason(manifest(change));
+        assert!(refused(&valid.replace("[\"about\", \"parent\"]", "[]")).contains("1 to 5"));
+        assert!(refused(&valid.replace(
+            "[\"about\", \"parent\"]",
+            "[\"about\", \"parent\", \"about\"]"
+        ))
+        .contains("once"));
+        let six = format!("[{}]", ["\"about\""; 6].join(", "));
+        assert!(refused(&valid.replace("[\"about\", \"parent\"]", &six)).contains("1 to 5"));
+        assert!(
+            refused(&valid.replace("\"parent\"]", "\"note\"]")).contains("lookup or related-to")
+        );
+        assert!(
+            refused(&valid.replace("\"parent\"]", "\"nope\"]")).contains("lookup or related-to")
+        );
+        assert!(refused(&valid.replace("date = \"due\"", "date = \"note\""))
+            .contains("date or date-time"));
+        assert!(refused(&valid.replace("date = \"due\"", "date = \"nope\""))
+            .contains("date or date-time"));
+        assert!(refused(&valid.replace("date = \"due\"", "date = \"loose\"")).contains("indexed"));
+        assert!(refused(&valid.replace("\"stage\"", "\"note\"")).contains("picklist"));
+        assert!(
+            refused(&valid.replace("equals = \"open\"", "equals = \"closed\"")).contains("options")
+        );
+        assert!(refused(&valid.replace("\"stage\"", "\"kind\"")).contains("indexed"));
+        // Anything else is refused rather than ignored.
+        for wrong in [
+            valid.replace(
+                "open = { field = \"stage\", equals = \"open\" }",
+                "open = \"later\"",
+            ),
+            format!("{valid}\nkind = \"calls\""),
+            valid.replace("equals", "is"),
+        ] {
+            assert!(
+                matches!(manifest(&wrong), Err(ManifestError::Parse(_))),
+                "{wrong}"
+            );
+        }
+        // Stored manifests are JSON and read back unchanged.
+        let round_trip: Manifest =
+            serde_json::from_value(serde_json::to_value(&parsed).expect("json"))
+                .expect("stored manifests read back");
+        assert_eq!(round_trip.objects, parsed.objects);
     }
 }

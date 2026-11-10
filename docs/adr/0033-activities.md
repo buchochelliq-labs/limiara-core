@@ -26,7 +26,13 @@ declaration (`plugin_contract::objects::RelatedActionDecl`), the engine's
 `platform_objects::related_actions`, the allowlist exception to the
 `objects.plugin_owned` guard in `ObjectService::update_field`, PostgreSQL
 migration 0038 and SQLite tenant step 0028; the plugin is listed in
-`config/default.yml` and exercised by `scripts/test-objects-acceptance.sh`.
+`config/default.yml` and exercised by `scripts/test-objects-acceptance.sh`. Slice 4's Activity timeline is implemented by the manifest's
+`[objects.timeline]` declaration (`plugin_contract::objects::TimelineDecl`),
+the engine's `platform_objects::timeline`, the route
+`GET .../records/{id}/timeline`, PostgreSQL migration 0039 and SQLite tenant
+step 0029, and the web record page's Activity section
+(`apps/web/src/objects/ActivityTimeline.tsx`). With it, ADR 0033 is
+complete; follow-ups are listed in `docs/roadmap/README.md`.
 
 ## Context
 
@@ -202,6 +208,42 @@ tasks and upcoming events, then the past activities that point at the
 record through *related to* or *who*. Like related lists, it runs as the
 viewer, so it shows only what the viewer may see. It also offers the
 record's activity quick actions.
+
+As implemented in slice 4:
+
+- **Timeline sources are declared, not known.** The kernel stays
+  domain-neutral: a plugin object declares `[objects.timeline]` with its
+  `through` fields (1 to 5 lookup or related-to fields), an indexed `date`
+  or date-time field, and optionally when a record is `open`: while an
+  indexed picklist has a value, or `"upcoming"`, while the date is today or
+  later in UTC. Installing and upgrading keep it per workspace
+  (`timeline_sources`, by field id); a version that drops it drops it.
+  Task is open while its status is open, by due date; Event is upcoming
+  until the day it starts, by start.
+- **One generic route.** `GET .../records/{id}/timeline` reads, as the
+  viewer and through the query language, every source whose object is in
+  service and readable, through each `through` field that can point at the
+  record's object: a lookup to it, a related-to field allowing it, or one
+  still holding a value to it after the object left the allowlist. The
+  viewer must be able to read the record (otherwise `404`).
+- **Two groups.** `open` holds up to 50 records, soonest date first, then
+  undated ones oldest first, with the first page only. `past` is newest
+  first by date, or by creation for undated records (a logged call), a date
+  counting from midnight UTC, 20 a page. Its cursor keeps one query-language
+  cursor per source and kind, so pages merge sources without reading any
+  record twice; a foreign cursor is `timeline.cursor_invalid`.
+- **Items are small.** An item names its object, record, date and date
+  field, whether it is open, the `through` field that matched, and up to
+  three of its object's picklist values as labels.
+- **Quick actions are marked in the timeline response.** `actions` names
+  the record's create quick actions whose target is a timeline source the
+  viewer can read; the page offers those in the Activity section and runs
+  them through the existing quick-action modal. Quick actions themselves
+  are unchanged, so this grants nothing (ADR 0032 §3).
+- **No sources, no section.** `sources` counts the followed sources; with
+  none the response is empty rather than an error, and the page shows no
+  Activity section. Tabs (ADR 0011 §3) are a follow-up: the section sits
+  after the related lists for now.
 
 ## Alternatives considered
 

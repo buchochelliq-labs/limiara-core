@@ -332,6 +332,49 @@ fn related_action_from_row(row: &PgRow) -> Result<crate::RelatedAction, ObjectEr
     })
 }
 
+const TIMELINE_COLUMNS: &str = "object_id, owner_plugin, through, date_field_id, open_kind, \
+     open_field_id, open_value, created_at, updated_at";
+
+fn timeline_from_row(row: &PgRow) -> Result<crate::TimelineSource, ObjectError> {
+    let kind: Option<String> = row.try_get("open_kind")?;
+    let open = match kind.as_deref() {
+        None => None,
+        Some("upcoming") => Some(crate::TimelineOpen::Upcoming),
+        Some("field_equals") => Some(crate::TimelineOpen::FieldEquals {
+            field_id: row
+                .try_get::<Option<Uuid>, _>("open_field_id")?
+                .ok_or(ObjectError::Invariant)?,
+            value: row
+                .try_get::<Option<String>, _>("open_value")?
+                .ok_or(ObjectError::Invariant)?,
+        }),
+        Some(_) => return Err(ObjectError::Invariant),
+    };
+    Ok(crate::TimelineSource {
+        object_id: row.try_get("object_id")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        through: serde_json::from_value(row.try_get::<Value, _>("through")?)
+            .map_err(|_| ObjectError::Invariant)?,
+        date_field_id: row.try_get("date_field_id")?,
+        open,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+/// A timeline source's open rule as its three columns.
+fn timeline_open_columns(
+    open: Option<&crate::TimelineOpen>,
+) -> (Option<&'static str>, Option<Uuid>, Option<String>) {
+    match open {
+        None => (None, None, None),
+        Some(crate::TimelineOpen::Upcoming) => (Some("upcoming"), None, None),
+        Some(crate::TimelineOpen::FieldEquals { field_id, value }) => {
+            (Some("field_equals"), Some(*field_id), Some(value.clone()))
+        }
+    }
+}
+
 const AUTOMATION_COLUMNS: &str = "id, object_id, name, description, trigger, timing, condition, \
      actions, schedule, active, version, created_at, created_by, updated_at, updated_by";
 
@@ -1891,6 +1934,54 @@ impl ObjectTx for PostgresObjectTx {
         sqlx::query("DELETE FROM related_actions WHERE tenant_id = $1 AND id = $2")
             .bind(self.tenant_id)
             .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn timeline_sources(&mut self) -> Result<Vec<crate::TimelineSource>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {TIMELINE_COLUMNS} FROM timeline_sources WHERE tenant_id = $1 ORDER BY object_id"
+        ))
+        .bind(self.tenant_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(timeline_from_row).collect()
+    }
+
+    async fn put_timeline_source(
+        &mut self,
+        source: &crate::TimelineSource,
+    ) -> Result<(), ObjectError> {
+        let (kind, field, value) = timeline_open_columns(source.open.as_ref());
+        sqlx::query(
+            "INSERT INTO timeline_sources (tenant_id, object_id, owner_plugin, through, \
+             date_field_id, open_kind, open_field_id, open_value, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             ON CONFLICT (tenant_id, object_id) DO UPDATE SET through = EXCLUDED.through, \
+             date_field_id = EXCLUDED.date_field_id, open_kind = EXCLUDED.open_kind, \
+             open_field_id = EXCLUDED.open_field_id, open_value = EXCLUDED.open_value, \
+             updated_at = EXCLUDED.updated_at",
+        )
+        .bind(self.tenant_id)
+        .bind(source.object_id)
+        .bind(&source.owner_plugin)
+        .bind(serde_json::to_value(&source.through).map_err(|_| ObjectError::Invariant)?)
+        .bind(source.date_field_id)
+        .bind(kind)
+        .bind(field)
+        .bind(value)
+        .bind(source.created_at)
+        .bind(source.updated_at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_timeline_source(&mut self, object_id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query("DELETE FROM timeline_sources WHERE tenant_id = $1 AND object_id = $2")
+            .bind(self.tenant_id)
+            .bind(object_id)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
