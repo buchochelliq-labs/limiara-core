@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
-import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
+import {AllowlistForm, allowlistChoices, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
@@ -663,6 +663,24 @@ describe('related-to fields (ADR 0033)', () => {
     expect(task.fields[0]?.referenceObjects).toEqual(['custom:account', 'custom:project']);
     expect(actionTargets([task], 'custom:account').map(targetLabel)).toEqual(['Task (Regarding)']);
     expect(actionTargets([task], 'custom:deal')).toEqual([]);
+  });
+
+  it('edits the objects a related-to field allows', async () => {
+    const task: ObjectDescription = {...project, apiName: 'custom:task', label: 'Task', fields: [regarding]};
+    const markup = renderToStaticMarkup(<AllowlistForm client={createFixtureObjectsClient()} object={task} field={regarding} onDone={noop} />);
+    expect(markup).toContain('Objects Regarding can point to');
+    expect(markup).toContain('Loading objects…');
+    expect(markup).toContain('Save objects');
+    // An allowed object the list does not name stays offered after it is unchecked.
+    const listed = [{...project, fields: undefined, apiName: 'custom:project', label: 'Project'}];
+    expect(allowlistChoices(listed, ['custom:gone', 'custom:project'], ['custom:project']).map(item => item.apiName)).toEqual(['custom:project', 'custom:gone']);
+    expect(allowlistChoices([], ['custom:gone'], []).map(item => item.label)).toEqual(['custom:gone']);
+    const client = createFixtureObjectsClient();
+    await client.createObject({name: 'task', label: 'Task', plural_label: 'Tasks'});
+    const created = await client.createField('custom:task', {name: 'regarding', label: 'Regarding', field_type: 'related_to', reference_objects: ['custom:project']});
+    const changed = await client.updateField('custom:task', created.apiName, created.version, {reference_objects: ['custom:project', 'custom:task']});
+    expect(changed.referenceObjects).toEqual(['custom:project', 'custom:task']);
+    expect(changed.version).toBe(created.version + 1);
   });
 
   it('offers the allowed objects, then their records, in the record form', () => {
