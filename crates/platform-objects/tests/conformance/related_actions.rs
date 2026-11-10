@@ -422,5 +422,60 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .expect_err("a workspace related-to field allows 1 to 10 objects");
     assert_eq!(codes(&refused), ["objects.reference_objects_invalid"]);
 
+    // --- Another plugin's object out of service is offered on its return ---
+    let tracker = service(
+        &store,
+        ObjectCaller::plugin_installer(tenant, member, "example.tracker"),
+    );
+    tracker
+        .install_plugin_objects(&super::plugin_objects::fixture(), context())
+        .await
+        .expect("install the tracker");
+    tracker
+        .resume_plugin_objects("example.tracker", context())
+        .await
+        .expect("resume the tracker");
+    const MILESTONE: &str = "example.tracker:milestone";
+    allow(&admin, RELATED_TO, &[MILESTONE]).await;
+    assert_eq!(
+        action_names(&admin, MILESTONE).await,
+        ["log_a_call", "log_an_email"]
+    );
+    tracker
+        .suspend_plugin_objects("example.tracker", context())
+        .await
+        .expect("disable the tracker");
+    let mut later = upgrade.clone();
+    later.version = "0.3.0".parse().expect("version");
+    later.objects[0].related_actions.push(RelatedActionDecl {
+        field: "related_to".into(),
+        name: "log_a_meeting".into(),
+        label: "Log a meeting".into(),
+        fields: vec!["name".into()],
+        presets: [
+            ("platform.activities:type".to_owned(), json!("meeting")),
+            ("platform.activities:status".to_owned(), json!("completed")),
+        ]
+        .into_iter()
+        .collect(),
+    });
+    installer
+        .install_plugin_objects(&later, context())
+        .await
+        .expect("upgrade while the tracker is disabled");
+    installer
+        .resume_plugin_objects(PLUGIN, context())
+        .await
+        .expect("resume after the upgrade");
+    tracker
+        .resume_plugin_objects("example.tracker", context())
+        .await
+        .expect("enable the tracker again");
+    assert_eq!(
+        action_names(&admin, MILESTONE).await,
+        ["log_a_call", "log_an_email", "log_a_meeting"],
+        "a declaration that could not reach a suspended object reaches it on its return"
+    );
+
     Report { skipped }
 }

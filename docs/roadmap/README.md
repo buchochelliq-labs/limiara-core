@@ -212,7 +212,7 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   Slice 3 is delivered: the first-party, manifest-only `platform.activities` plugin (`plugins/activities`, [Activities](../product/activities.md)) with Task and Event, discovered by default in development, Compose and the objects acceptance journey; administrators choose the targets of a plugin's related-to fields (`PATCH ... reference_objects`, 0 to 10 objects for a plugin's field, upgrades never overwrite them); and related actions (`[[objects.related_actions]]`), which give every object entering a related-to allowlist a create quick action, here Log a call, once per entry, in both stores and over HTTP. Slice 3 follow-ups:
   - validation rules shipped by plugins, so Activities can check that an event ends after it starts (workspaces can add that rule themselves today);
   - Contacts' Person joining *Who*'s allowlist once Contacts moves onto the object engine; until then administrators point *Who* at person-like workspace objects;
-  - a default date for a logged call (formula presets such as "today" are out of scope in ADR 0032), and offering related actions to an object that was out of service when it entered the allowlist once it comes back;
+  - a default date for a logged call (formula presets such as "today" are out of scope in ADR 0032);
   - editing a plugin related-to field's allowlist in the Object Manager, and sending related actions' quick actions to device replicas with the rest of ADR 0032 §5.
 
   Then the record page's Activity timeline (slice 4).
