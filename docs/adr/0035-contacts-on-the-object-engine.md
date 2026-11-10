@@ -254,8 +254,13 @@ migration does not rewrite evidence.
    already matches and continues after the checkpoint.
 3. **Catch up.** Repeated passes copy records whose `touched_at` moved
    since the previous pass and remove engine records whose source was
-   purged, until a pass finds fewer than 100 changes.
-4. **Freeze and cut over.** Contacts writes for the workspace answer `503
+   purged, until a pass finds fewer than 100 changes. Custom-field
+   definition changes do not touch records, so every pass also compares
+   each definition (type, label, required, unique, indexed, options,
+   validation, governance properties, lifecycle state) with its engine
+   field and re-applies any that differ, before copying records.
+4. **Freeze and cut over.** Contacts writes for the workspace, including
+   custom-field definition and settings writes, answer `503
    contacts.migrating` with `Retry-After`; reads continue from the old
    store. A final catch-up pass and the verification run, then the phase
    becomes `engine` and the dormant objects are resumed (G11), in one
@@ -266,7 +271,9 @@ migration does not rewrite evidence.
 5. **Verify.** Counts per object and state must match, and a per-record
    checksum over a canonical form (ids, name, every field value, stamps,
    version, states, owner rule) computed by the same Rust code on both
-   sides must agree, as must an aggregate digest over the sorted ids.
+   sides must agree, as must an aggregate digest over the sorted ids. The
+   same applies to definitions: a per-definition checksum over the
+   canonical metadata listed in step 3 must match its engine field.
    Verification failing leaves the phase unchanged and writes unfrozen.
 
 #### Reversal
