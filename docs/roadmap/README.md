@@ -221,6 +221,15 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
   - emails as activities (sending, logging and threading), once an email plugin exists;
   - timeline entries on devices: the phone app and device replicas do not show the timeline yet (ADR 0024);
   - a "today" default for a logged call's date, so logged calls sort by their date rather than their creation.
+- Contacts on the object engine, as proposed in [ADR 0035](../adr/0035-contacts-on-the-object-engine.md): People and Organisations become the plugin-declared engine objects `platform.contacts:person` and `platform.contacts:organisation` (prefixes `per` and `org`), with existing data copied per workspace by a verified, restartable and reversible migration on both stores, the v1 Contacts API and `platform.contacts.*.v1` events kept as a deprecated layer over the engine, and the generic engine pages as the UI. Slices:
+  1. engine gaps: record archiving, recycle-bin purge, restoring cleared lookups on undelete, a kernel-only migrator that preserves ids, stamps, versions and history, field read and write permissions, fields one plugin adds to another plugin's object (ADR 0012 extensions), a free-form text list type for tags, 320-character emails, field governance metadata (classification, purpose, retention, encryption), a per-object `customise` permission, dormant plugin objects, a name composed from first and last name fields, and optional plugin dependencies for starting allowlist values;
+  2. Contacts declares its objects, dormant and empty, alongside the typed store;
+  3. the migration tool with dry run, catch-up, checksums and a 30-day rollback;
+  4. the v1 REST routes and events over the engine;
+  5. the per-workspace cutover;
+  6. the generic pages, keeping the Contacts pages for workspaces with published page customisations until engine record layouts exist, and Activities naming Person and Organisation through an optional dependency on Contacts;
+  7. retiring the typed tables, the store port and its adapters; the v1 routes and events are removed no earlier than six months after slice 4 and not before the 0.3 contract.
+  Separately, the PostgreSQL activity table's check (Contacts migration 0004) refuses the `deleted` and `undeleted` entries the timeline worker writes, and needs a fix on the current store.
 - Formulas beyond [ADR 0021](../adr/0021-formulas-and-validation-rules.md) (#298): filtering on formulas that follow lookups or use the time, which needs values kept current from related changes and a schedule.
 - Global search beyond [ADR 0020](../adr/0020-global-search.md) (#305): boosting recently viewed records (with the recently viewed service, #285), synonyms and typo tolerance, server-side highlighting, the search bar on narrow screens, plugin objects with typed stores (Contacts) in the index, and a pluggable external search engine fed from the change log.
 - Field history beyond [ADR 0017](../adr/0017-field-history.md) (#311): per-workspace retention limits, export and archival of history to object storage, and hiding entries for fields hidden by field-level security (#316).

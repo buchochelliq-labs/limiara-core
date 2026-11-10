@@ -154,7 +154,8 @@ export default {
             { text: "Content-free push notifications", link: "/adr/0030-push-notifications" },
             { text: "Record ids assigned by devices", link: "/adr/0031-device-assigned-record-ids" },
             { text: "Quick actions and global New", link: "/adr/0032-quick-actions" },
-            { text: "Activities", link: "/adr/0033-activities" }
+            { text: "Activities", link: "/adr/0033-activities" },
+            { text: "Contacts on the object engine", link: "/adr/0035-contacts-on-the-object-engine" }
           ]
         }
       ],
