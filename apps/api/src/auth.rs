@@ -287,7 +287,9 @@ pub(crate) async fn workspace_boundary(
     if headers.contains_key(header::AUTHORIZATION) && bearer_token(&headers).is_none() {
         return unauthenticated();
     }
-    let (session, workspace, device) = if let Some(token) = bearer_token(&headers) {
+    // Where the request's changes come from (#233) follows from what
+    // authenticated it, never from anything the request says.
+    let (session, workspace, device, source) = if let Some(token) = bearer_token(&headers) {
         let Some(workspace_id) = workspace_id_from_path(request.uri().path()) else {
             return concealed_workspace();
         };
@@ -318,6 +320,7 @@ pub(crate) async fn workspace_boundary(
                     },
                     workspace,
                     None,
+                    platform_objects::MutationSource::api_client(client),
                 )
             }
             Ok(None) => {
@@ -337,6 +340,7 @@ pub(crate) async fn workspace_boundary(
                         },
                         found.access,
                         Some(found.device),
+                        platform_objects::MutationSource::device(Some(found.device)),
                     ),
                     Ok(None) => return unauthenticated(),
                     Err(error) => {
@@ -377,7 +381,12 @@ pub(crate) async fn workspace_boundary(
                 return unavailable();
             }
         };
-        (session, workspace, None)
+        (
+            session,
+            workspace,
+            None,
+            platform_objects::MutationSource::web(),
+        )
     };
     let Some(pool) = state.pool.as_ref() else {
         return unavailable();
@@ -442,6 +451,7 @@ pub(crate) async fn workspace_boundary(
             tenant_id: workspace.tenant_id,
             user_id: session.user.id,
             permissions: workspace.permissions.clone(),
+            source,
         });
     request.extensions_mut().insert(WorkspacePrincipal {
         session,

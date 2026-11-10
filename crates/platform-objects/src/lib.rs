@@ -40,6 +40,7 @@ pub mod rules;
 pub mod search;
 pub mod service;
 pub mod sharing;
+pub mod source;
 pub mod store;
 pub mod sync;
 pub mod timeline;
@@ -62,6 +63,7 @@ pub use reports::{CreateReport, Report, ReportChart, ReportVisibility, UpdateRep
 pub use search::{SearchGroup, SearchHit, SearchRequest};
 pub use service::{MutationContext, ObjectService};
 pub use sharing::{GranteeKind, RecordRights, RecordShare, ShareAccess, Visibility};
+pub use source::{Assistant, MutationSource, SourceDetail, SourceKind};
 pub use store::{ObjectStore, ObjectTx, RollupQuery};
 pub use timeline::{Timeline, TimelineDetail, TimelineItem};
 

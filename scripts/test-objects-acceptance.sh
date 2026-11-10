@@ -312,6 +312,8 @@ expect 200 "$(call "$viewer_cookie" GET "$workspace/objects/custom:project/recor
 [[ "$(field '.data[0].new_user.name')" == Viewer && "$(field '.data[0].old_user.id')" == "$member" ]] || fail "owner change names members"
 [[ "$(field '.data[0].changed_by.id')" == "$member" && -n "$(field '.data[0].changed_by.name // empty')" ]] || fail "who changed it"
 grep -q AP-9 "$body" && fail "untracked fields are not kept"
+# Where each change came from (#233): a browser session's edits are the web app's.
+[[ "$(field '[.data[].source.kind] | unique | join(",")')" == web && "$(field '.data[0].source.detail // "none"')" == none ]] || fail "browser changes come from the web: $(cat "$body")"
 expect 400 "$(call "$member_cookie" GET "$workspace/objects/custom:project/records/$apollo/history?limit=0")" "history limit"
 expect 400 "$(call "$member_cookie" GET "$workspace/objects/custom:project/records/$apollo/history?cursor=nope")" "history cursor"
 expect 404 "$(call "$rep_cookie" GET "$workspace/objects/custom:project/records/$apollo/history")" "no object access, no history"
@@ -543,6 +545,20 @@ bearer="Authorization: Bearer $(field '.access_token')"
 expect 200 "$(call "$bearer" GET "$workspace/objects")" "the client reads objects"
 expect 201 "$(call "$bearer" POST "$workspace/objects/custom:client/records" '{"name":"Synced Client"}')" "the client creates a record as its member"
 [[ "$(field '.created_by.id')" == "$member" ]] || fail "client changes are the member's: $(cat "$body")"
+# The same member's edit through the client records the client as its source
+# (#233), in history and in audit, next to the browser session's.
+expect 200 "$(call "$bearer" GET "$workspace/objects/custom:project/records/$apollo")" "the client reads a tracked record"
+expect 200 "$(call "$bearer" PATCH "$workspace/objects/custom:project/records/$apollo" \
+  "{\"expected_version\":$(field '.version'),\"custom:status\":\"won\"}")" "the client edits a tracked record"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:project/records/$apollo/history")" "history after the client's edit"
+[[ "$(field '.data[0].source.kind')" == api_client && "$(field '.data[0].source.detail')" == "$api_client" ]] || fail "client source in history: $(cat "$body")"
+[[ "$(field '[.data[].source.kind] | index("web") != null')" == true ]] || fail "browser source kept in history: $(cat "$body")"
+audited_sources=$(sql --command="SELECT string_agg(DISTINCT metadata->'source'->>'kind', ',' ORDER BY metadata->'source'->>'kind') FROM audit_log WHERE target = 'record:$apollo' AND action = 'records.record.updated';")
+[[ "$audited_sources" == "api_client,web" ]] || fail "audit sources: $audited_sources"
+client_audit_detail=$(sql --command="SELECT metadata->'source'->>'detail' FROM audit_log WHERE target = 'record:$apollo' AND action = 'records.record.updated' AND metadata->'source'->>'kind' = 'api_client';")
+[[ "$client_audit_detail" == "$api_client" ]] || fail "audit names the client: $client_audit_detail"
+event_details=$(sql --command="SELECT count(*) FROM outbox WHERE event_type = 'platform.objects.record-updated.v1' AND envelope::text LIKE '%$api_client%';")
+[[ "$event_details" == 0 ]] || fail "events carry no client id"
 expect 200 "$(call "$bearer" POST "$workspace/sync/revocations" '{"records":{"custom:client":["nope"]}}')" "clients reach device sync"
 expect 403 "$(call "$bearer" GET "$workspace/api-clients")" "clients cannot manage clients"
 [[ "$(field '.code')" == auth.client_route_denied ]] || fail "route limit: $(cat "$body")"

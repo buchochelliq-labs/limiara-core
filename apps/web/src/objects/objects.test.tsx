@@ -2,14 +2,14 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
-import {createFixtureObjectsClient, createObjectsApiClient, formatValue, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
+import {createFixtureObjectsClient, createObjectsApiClient, formatValue, sourceFromApi, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
 import {LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
 import {MembersPage} from './MembersPage';
-import {HistoryPanel} from './HistoryPanel';
+import {describeSource, HistoryPanel} from './HistoryPanel';
 import {formatCell, QueryConsole, queryProblem, QueryResults} from './QueryConsole';
 import {AutomationForm, automationDoes, AutomationJobs, AutomationRuns, Automations, automationWhen} from './Automations';
 import {GlobalSearch, searchable, searchOptions, searchResultsRoute, SearchResultsPage} from './GlobalSearch';
@@ -168,6 +168,41 @@ describe('field history (ADR 0017)', () => {
     const updated = await createObjectsApiClient(workspace, toggle).updateField('custom:project', 'custom:code', 1, {track_history: true});
     expect(updated.trackHistory).toBe(true);
     expect(JSON.parse(String(vi.mocked(toggle).mock.calls[0]?.[1]?.body))).toEqual({track_history: true, expected_version: 1});
+  });
+
+  it('reads where each change came from (#233)', async () => {
+    const entry = {id: 'h1', kind: 'created', field: null, old_value: null, new_value: null, changed_at: '2026-11-10T00:00:00Z', changed_by: null};
+    const fetcher = respond(200, {data: [
+      {...entry, id: 'h3', source: {kind: 'api_client', detail: '018f0000-0000-7000-8000-0000000000c1'}},
+      {...entry, id: 'h2', source: {kind: 'robot'}},
+      {...entry, id: 'h1', source: null},
+    ], next_cursor: null});
+    const page = await createObjectsApiClient(workspace, fetcher).history('custom:deal', '000a');
+    expect(page.entries.map(item => item.source)).toEqual([{kind: 'api_client', detail: '018f0000-0000-7000-8000-0000000000c1'}, null, null]);
+    expect(sourceFromApi(undefined)).toBeNull();
+    expect(sourceFromApi({kind: 'web'})).toEqual({kind: 'web', detail: null});
+  });
+
+  it('describes sources as via text', () => {
+    expect(describeSource(null)).toBeNull();
+    expect(describeSource({kind: 'web', detail: null})).toBe('via web app');
+    expect(describeSource({kind: 'api_client', detail: 'c1'})).toBe('via API client');
+    expect(describeSource({kind: 'device', detail: 'd1'})).toBe('via device');
+    expect(describeSource({kind: 'automation', detail: 'follow_up'})).toBe('via automation follow_up');
+    expect(describeSource({kind: 'quick_action', detail: null})).toBe('via quick action');
+    expect(describeSource({kind: 'assistant', detail: 'siri'})).toBe('via Siri');
+    expect(describeSource({kind: 'assistant', detail: 'other'})).toBe('via assistant');
+    expect(describeSource({kind: 'import', detail: 'j1'})).toBe('via import');
+    expect(describeSource({kind: 'system', detail: null})).toBe('via system');
+  });
+
+  it('carries sources in the fixture history', async () => {
+    const client = createFixtureObjectsClient();
+    const records = await client.listRecords('custom:project', {});
+    const first = records.records[0];
+    if (!first) throw new Error('fixture record');
+    const page = await client.history('custom:project', first.id);
+    expect(page.entries.map(entry => describeSource(entry.source))).toEqual(['via device', 'via web app']);
   });
 
   it('shows history only for objects that track it', () => {

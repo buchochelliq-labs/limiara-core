@@ -857,6 +857,9 @@ pub struct HistoryEntry {
     pub changed_at: DateTime<Utc>,
     pub changed_by: Option<Uuid>,
     pub correlation_id: Option<Uuid>,
+    /// Where the change came from (#233); `None` for entries written
+    /// before sources were recorded, or by an entry point that did not say.
+    pub source: Option<crate::MutationSource>,
 }
 
 /// One page of a record's history, newest first.

@@ -93,6 +93,9 @@ pub struct EvidenceContext {
     pub causation_id: Option<Uuid>,
     /// The automation that made the change; named in the event and audit.
     pub automation_id: Option<Uuid>,
+    /// Where the change came from (#233). The audit entry keeps it whole;
+    /// the event names only its kind, never the detail.
+    pub source: Option<crate::MutationSource>,
 }
 
 pub enum Change<'a> {
@@ -431,6 +434,7 @@ impl Change<'_> {
         if let (Some(automation_id), Some(map)) = (context.automation_id, payload.as_object_mut()) {
             map.insert("automation_id".into(), json!(automation_id));
         }
+        insert_source_kind(&mut payload, context.source);
         let event = EventEnvelope::with_context(
             event_type,
             ENGINE_CONTEXT,
@@ -444,6 +448,7 @@ impl Change<'_> {
         if let Some(object) = metadata.as_object_mut() {
             object.insert("event_id".into(), json!(event.id));
         }
+        insert_source(&mut metadata, context.source);
         let mut audit = AuditEvent::with_context(
             Some(context.tenant_id),
             Some(context.actor_id),
@@ -455,6 +460,22 @@ impl Change<'_> {
         );
         audit.occurred_at = event.occurred_at;
         (audit, event)
+    }
+}
+
+/// Names the source's kind in an event (#233). Its detail, a device or
+/// client id or an automation name, stays in the audit entry, so events
+/// carry nothing that points at a person's device.
+fn insert_source_kind(payload: &mut Value, source: Option<crate::MutationSource>) {
+    if let (Some(source), Some(map)) = (source, payload.as_object_mut()) {
+        map.insert("source".into(), json!(source.kind));
+    }
+}
+
+/// Puts the whole source in audit metadata, as `{"kind", "detail"}`.
+fn insert_source(metadata: &mut Value, source: Option<crate::MutationSource>) {
+    if let (Some(source), Some(map)) = (source, metadata.as_object_mut()) {
+        map.insert("source".into(), json!(source));
     }
 }
 
@@ -611,6 +632,14 @@ pub fn workspace_event(
             "fields": fields,
         }),
     );
+    let mut metadata = json!({
+        "event": name,
+        "object": object.api_name,
+        "record": record.public_id,
+        "automation": automation.name,
+        "event_id": event.id,
+    });
+    insert_source(&mut metadata, context.source);
     let mut audit = AuditEvent::with_context(
         Some(context.tenant_id),
         Some(context.actor_id),
@@ -618,13 +647,7 @@ pub fn workspace_event(
         context.causation_id,
         "objects.workspace_event.published",
         automation_target(object, automation),
-        json!({
-            "event": name,
-            "object": object.api_name,
-            "record": record.public_id,
-            "automation": automation.name,
-            "event_id": event.id,
-        }),
+        metadata,
     );
     audit.occurred_at = event.occurred_at;
     (audit, event)

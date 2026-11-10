@@ -13,7 +13,7 @@ use crate::{
     RecordStatus, RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel,
     SortDirection, ValidationRule, ENGINE_CONTEXT,
 };
-use crate::{RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
+use crate::{MutationSource, RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use platform_audit::AuditEvent;
@@ -1443,8 +1443,9 @@ impl ObjectTx for PostgresObjectTx {
         for entry in entries {
             sqlx::query(
                 "INSERT INTO record_history (tenant_id, id, record_id, object_id, kind, field, \
-                   old_value, new_value, changed_at, changed_by, correlation_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                   old_value, new_value, changed_at, changed_by, correlation_id, source_kind, \
+                   source_detail) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
             )
             .bind(self.tenant_id)
             .bind(entry.id)
@@ -1457,6 +1458,8 @@ impl ObjectTx for PostgresObjectTx {
             .bind(entry.changed_at)
             .bind(entry.changed_by)
             .bind(entry.correlation_id)
+            .bind(entry.source.map(|source| source.kind.as_str()))
+            .bind(entry.source.as_ref().and_then(MutationSource::detail_str))
             .execute(&mut *self.tx)
             .await?;
         }
@@ -1471,7 +1474,8 @@ impl ObjectTx for PostgresObjectTx {
     ) -> Result<Vec<HistoryEntry>, ObjectError> {
         let mut sql: QueryBuilder<Postgres> = QueryBuilder::new(
             "SELECT id, record_id, object_id, kind, field, old_value, new_value, changed_at, \
-             changed_by, correlation_id FROM record_history WHERE tenant_id = ",
+             changed_by, correlation_id, source_kind, source_detail FROM record_history \
+             WHERE tenant_id = ",
         );
         sql.push_bind(self.tenant_id)
             .push(" AND record_id = ")
@@ -1499,6 +1503,10 @@ impl ObjectTx for PostgresObjectTx {
                     changed_at: row.try_get("changed_at")?,
                     changed_by: row.try_get("changed_by")?,
                     correlation_id: row.try_get("correlation_id")?,
+                    source: MutationSource::from_parts(
+                        row.try_get::<Option<&str>, _>("source_kind")?,
+                        row.try_get::<Option<&str>, _>("source_detail")?,
+                    ),
                 })
             })
             .collect()
