@@ -78,6 +78,9 @@ adds provenance to existing evidence without moving a platform boundary.
    device's push records `device` with the verified device id; a source
    the device kept locally (such as a quick action) is not sent, so nothing
    the device says widens what the server records.
+   [ADR 0034](0034-assistant-bridge.md) §6 amends this for one case: a
+   pushed operation may say it came from the assistant bridge, a claim that
+   only adds the server's policy re-check.
 4. **Details are ids and names, never free text.** A detail is at most 64
    plain ASCII characters. Audit metadata keeps the whole source; outbox
    events carry only its kind, so a device or client id is not routed with
