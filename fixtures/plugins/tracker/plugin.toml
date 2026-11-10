@@ -1,0 +1,62 @@
+manifest_version = 1
+id = "example.tracker"
+name = "Tracker"
+version = "0.1.0"
+description = "Non-production fixture proving a plugin can declare engine objects that workspaces install and extend (ADR 0033 §2)"
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "local-development"
+artifact_path = "artifact/native.link"
+artifact_digest = "sha256:9c1544ea2b585dd8bf90ee78e7e322bab1dc69c3c5fbbb9792b0d300cb03005f"
+
+# Its records live in the object engine, which both stores host.
+[storage]
+backends = ["postgres", "sqlite"]
+
+[[objects]]
+name = "milestone"
+label = "Milestone"
+plural_label = "Milestones"
+name_label = "Milestone name"
+key_prefix = "tkm"
+in_navigation = true
+
+[[objects.fields]]
+name = "due_on"
+label = "Due on"
+field_type = "date"
+
+[[objects]]
+name = "ticket"
+label = "Ticket"
+plural_label = "Tickets"
+description = "Work to do, planned against a milestone"
+key_prefix = "tkt"
+track_history = true
+
+[[objects.fields]]
+name = "status"
+label = "Status"
+field_type = "picklist"
+required = true
+options = [
+  { value = "open", label = "Open", default = true },
+  { value = "done", label = "Done" },
+]
+
+[[objects.fields]]
+name = "summary"
+label = "Summary"
+field_type = "text"
+max_length = 200
+searchable = true
+
+[[objects.fields]]
+name = "milestone"
+label = "Milestone"
+field_type = "lookup"
+reference_object = "example.tracker:milestone"

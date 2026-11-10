@@ -23,6 +23,10 @@ Workspace objects always get a digit-first prefix (`000`, `001`, ...); plugin
 prefixes start with a letter, so the two never collide. Each definition also
 carries an explicit `origin` (`system`, `plugin` or `workspace`).
 
+In the query language and in formulas a dotted plugin namespace directly
+followed by `:` is one name, so `example.tracker:milestone.name` traverses
+the plugin lookup `example.tracker:milestone`.
+
 ## Authorisation
 
 | Operations | Required access |
@@ -90,6 +94,36 @@ The result type is in `formula_type`. The summarised field is indexed if it
 was not, and turning its index off fails with `objects.rollup_needs_index`.
 Deleting the summarised field, the master-detail field or the detail object
 fails with `409 objects.field_in_use` or `objects.object_in_use`.
+
+### Plugin objects
+
+Plugins declare objects and fields in their manifest (`[[objects]]`, see
+[Declaring objects](../plugins/objects.md)); enabling the plugin in a
+workspace creates or migrates them, and only installation creates names in
+a plugin's namespace: `POST /objects` and `POST .../fields` always create
+`custom` names. Describing a plugin object returns `"origin": "plugin"` and
+`"owner_plugin": "<plugin id>"`, and each of its fields its own `origin`:
+`plugin` for the plugin's, `workspace` for the `custom` fields
+administrators add.
+
+- `PATCH .../fields/{field}` and `DELETE .../fields/{field}` on a plugin's
+  field, and `DELETE /objects/{api_name}` on a plugin object, answer
+  `409 objects.plugin_owned`.
+- `PATCH /objects/{api_name}` on a plugin object may change only
+  `sharing_model` and `grant_hierarchy`; any other setting answers
+  `409 objects.plugin_owned`.
+- Custom fields, validation rules, automations, quick actions and object
+  permissions on plugin objects work as on any object. Role permissions
+  start empty, as for a new workspace object.
+
+While the plugin is disabled or removed in the workspace, its objects are
+suspended: every route answers `404` for them as for a missing object,
+`GET /objects`, search, queries, related lists, navigation and device sync
+leave them out, and nothing about them changes. Lookup and related-to
+values on other objects that point at their records are kept and saved
+again unchanged, but are not named in `related`, and new values to them
+are refused like values to a missing record. Enabling the plugin again
+brings them back as they were.
 
 ### Related-to fields
 
@@ -838,6 +872,9 @@ follows the objects.
 Errors use the problem format with a stable `code`. Validation failures
 return `400 validation.failed` with an `errors` list of `{field, code,
 detail}`. Version mismatches return `409 records.version_conflict`.
+Changing or deleting what a plugin owns returns `409 objects.plugin_owned`;
+the codes for refused plugin installations are listed in
+[Declaring objects](../plugins/objects.md#enabling-upgrading-and-disabling).
 
 ## Events and audit
 
@@ -850,4 +887,8 @@ updated and deleted (`platform.objects.quick-action-created.v1`,
 `-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
 target, its fields and the fields it presets, never the preset values). Payloads name the object, record and
 changed fields, never field values; lookup and related-to values, which
-are record ids, are no exception.
+are record ids, are no exception. Changes a plugin's installation makes
+also carry `"plugin": "<plugin id>"`, with the member who changed the
+plugin's state as actor; suspending and resuming a plugin's objects are
+`object-updated` events with `"suspended"`, audited as
+`objects.object.suspended` and `objects.object.resumed`.

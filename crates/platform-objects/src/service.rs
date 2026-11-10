@@ -28,6 +28,9 @@ use uuid::Uuid;
 
 /// Upper bound on objects per workspace.
 pub const OBJECTS_PER_WORKSPACE_MAX: usize = 2000;
+/// A workspace administrator tried to change or delete a definition a
+/// plugin owns: only the plugin's installation may (ADR 0033 §2).
+pub const PLUGIN_OWNED: &str = "objects.plugin_owned";
 pub const LIST_LIMIT_DEFAULT: u16 = 50;
 pub const LIST_LIMIT_MAX: u16 = 200;
 
@@ -233,7 +236,16 @@ impl ObjectService {
         context: MutationContext,
         change: Change<'_>,
     ) -> Result<(), ObjectError> {
-        let (audit, event) = change.evidence(self.evidence(context));
+        let (mut audit, mut event) = change.evidence(self.evidence(context));
+        // A plugin's installation names the plugin in its evidence, next to
+        // the member who changed the plugin's state (ADR 0033 §2).
+        if let Some(plugin) = self.caller.installer() {
+            for value in [&mut audit.metadata, &mut event.payload] {
+                if let Some(map) = value.as_object_mut() {
+                    map.insert("plugin".into(), Value::String(plugin.to_owned()));
+                }
+            }
+        }
         tx.append_evidence(&audit, &event).await?;
         if change.is_metadata() {
             tx.bump_metadata_version().await?;
@@ -367,6 +379,7 @@ impl ObjectService {
             searchable: input.searchable.unwrap_or(true),
             in_navigation: input.in_navigation.unwrap_or(true),
             status: DefinitionStatus::Active,
+            suspended: false,
             version: 1,
             created_at: now,
             created_by: Some(self.caller.user_id()),
@@ -390,6 +403,19 @@ impl ObjectService {
         self.caller.require_manage()?;
         let mut tx = self.begin().await?;
         let mut object = self.active_object(tx.as_mut(), api_name).await?;
+        // A plugin object's labels and flags are the plugin's; only its
+        // sharing settings are the workspace's to choose (ADR 0033 §2).
+        if object.is_plugin_owned()
+            && (input.label.is_some()
+                || input.plural_label.is_some()
+                || input.description.is_some()
+                || input.name_label.is_some()
+                || input.track_history.is_some()
+                || input.searchable.is_some()
+                || input.in_navigation.is_some())
+        {
+            return Err(ObjectError::Conflict(PLUGIN_OWNED));
+        }
         let mut issues = Vec::new();
         if let Some(label) = input.label.as_deref() {
             match values::label("label", label, LABEL_MAX) {
@@ -475,6 +501,9 @@ impl ObjectService {
         // Serialised with metadata that could start to depend on it.
         tx.lock_metadata().await?;
         let mut object = self.active_object(tx.as_mut(), api_name).await?;
+        if object.is_plugin_owned() {
+            return Err(ObjectError::Conflict(PLUGIN_OWNED));
+        }
         let referencing = tx.fields_referencing_object(object.id).await?;
         // A lookup from another object keeps it, and so does a related-to
         // field that allows nothing else; other related-to fields let go
@@ -543,6 +572,38 @@ impl ObjectService {
             }
             Err(other) => return Err(other),
         };
+        let mut tx = self.begin().await?;
+        tx.lock_metadata().await?;
+        let object = self.active_object(tx.as_mut(), api_name).await?;
+        // Boxed: the field checks hold a large future.
+        let field = Box::pin(self.insert_field_in(
+            tx.as_mut(),
+            &object,
+            field_api,
+            Origin::Workspace,
+            input,
+            issues,
+            context,
+        ))
+        .await?;
+        tx.commit().await?;
+        Ok(field)
+    }
+
+    /// Validates and adds a field to `object` in the caller's transaction,
+    /// with its evidence. `issues` holds what the caller already found wrong
+    /// with the name; `field_api` is `None` when the name was refused.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn insert_field_in(
+        &self,
+        tx: &mut dyn ObjectTx,
+        object: &ObjectDefinition,
+        field_api: Option<String>,
+        origin: Origin,
+        input: CreateField,
+        mut issues: Vec<ValidationIssue>,
+        context: MutationContext,
+    ) -> Result<FieldDefinition, ObjectError> {
         let label = values::label("label", &input.label, LABEL_MAX)
             .map_err(|issue| issues.push(issue))
             .ok();
@@ -559,15 +620,12 @@ impl ObjectService {
                 .ok()
                 .flatten();
 
-        let mut tx = self.begin().await?;
-        tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
         if object.fields.len() >= FIELDS_PER_OBJECT_MAX {
             return Err(ObjectError::Conflict("objects.field_limit_reached"));
         }
         let reference = match input.reference_object.as_deref() {
             Some(target) => match tx.object_by_api_name(target).await? {
-                Some(target) if target.is_active() => Some(target),
+                Some(target) if usable_target(&target, self.caller.installer()) => Some(target),
                 _ => {
                     issues.push(ValidationIssue::new(
                         "reference_object",
@@ -580,13 +638,16 @@ impl ObjectService {
             None => None,
         };
         let allowed = match &shape {
-            Some(shape) => match allowed_objects(tx.as_mut(), &shape.reference_objects).await? {
-                Ok(allowed) => allowed,
-                Err(issue) => {
-                    issues.push(issue);
-                    Vec::new()
+            Some(shape) => {
+                match allowed_objects(tx, &shape.reference_objects, self.caller.installer()).await?
+                {
+                    Ok(allowed) => allowed,
+                    Err(issue) => {
+                        issues.push(issue);
+                        Vec::new()
+                    }
                 }
-            },
+            }
             None => Vec::new(),
         };
         let (Some(field_api), Some(label), Some(shape)) = (field_api, label, shape) else {
@@ -596,18 +657,17 @@ impl ObjectService {
             return Err(ObjectError::Validation(issues));
         }
         if input.field_type == FieldType::MasterDetail {
-            check_master_detail(tx.as_mut(), &object, reference.as_ref()).await?;
+            check_master_detail(tx, object, reference.as_ref()).await?;
         }
         if let (Some(filter), Some(target)) = (&lookup_filter, &reference) {
-            self.check_lookup_filter(tx.as_mut(), target, filter)
-                .await?;
+            self.check_lookup_filter(tx, target, filter).await?;
         }
         let rollup = match (input.field_type, input.rollup.as_ref()) {
             (FieldType::Rollup, Some(rollup)) => {
                 // Holds back new masters until the field commits, so each
                 // one is either backfilled here or starts with the field.
                 tx.lock_object(object.id, true).await?;
-                Some(resolve_rollup(tx.as_mut(), &object, rollup).await?)
+                Some(resolve_rollup(tx, object, rollup).await?)
             }
             _ => None,
         };
@@ -619,7 +679,7 @@ impl ObjectService {
             label,
             description,
             field_type: input.field_type,
-            origin: Origin::Workspace,
+            origin,
             // A detail always has a master.
             required: input.required || input.field_type == FieldType::MasterDetail,
             unique: shape.unique,
@@ -656,8 +716,7 @@ impl ObjectService {
         };
         field.default_value = default_value(&field, input.default_value.as_ref())?;
         if let (Some(formula), Some(formula_type)) = (&field.formula, field.formula_type) {
-            crate::formula_fields::check_formula(tx.as_mut(), &object, formula, formula_type, None)
-                .await?;
+            crate::formula_fields::check_formula(tx, object, formula, formula_type, None).await?;
         }
         tx.insert_field(&field).await?;
         if field.field_type == FieldType::Formula {
@@ -666,7 +725,7 @@ impl ObjectService {
                 .object_by_id(object.id)
                 .await?
                 .ok_or(ObjectError::Invariant)?;
-            reindex(tx.as_mut(), &updated).await?;
+            reindex(tx, &updated).await?;
         }
         if let Some(found) = rollup {
             if let Some(mut summarised) = found.index {
@@ -683,7 +742,7 @@ impl ObjectService {
                     .object_by_id(summarised.object_id)
                     .await?
                     .ok_or(ObjectError::Invariant)?;
-                reindex(tx.as_mut(), &detail).await?;
+                reindex(tx, &detail).await?;
             }
             let master = tx
                 .object_by_id(object.id)
@@ -694,13 +753,12 @@ impl ObjectService {
                 .ok_or(ObjectError::Invariant)?;
             // Existing masters get their value now.
             for id in tx.record_ids(master.id).await? {
-                self.recompute_rollups(tx.as_mut(), &master, id, &[created], context)
+                self.recompute_rollups(tx, &master, id, &[created], context)
                     .await?;
             }
         }
-        self.record_change(tx.as_mut(), context, Change::FieldCreated(&object, &field))
+        self.record_change(tx, context, Change::FieldCreated(object, &field))
             .await?;
-        tx.commit().await?;
         Ok(field)
     }
 
@@ -716,10 +774,31 @@ impl ObjectService {
         // Serialised with field deletion when the formula changes (ADR 0021).
         tx.lock_metadata().await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
-        let mut field = object
+        let field = object
             .field(field_api_name)
             .cloned()
             .ok_or(ObjectError::NotFound)?;
+        // A plugin's own fields change only with the plugin (ADR 0033 §2).
+        if field.origin == Origin::Plugin {
+            return Err(ObjectError::Conflict(PLUGIN_OWNED));
+        }
+        // Boxed: the field checks hold a large future.
+        let field =
+            Box::pin(self.change_field_in(tx.as_mut(), &object, field, input, context)).await?;
+        tx.commit().await?;
+        Ok(field)
+    }
+
+    /// Validates and applies a change to one of `object`'s fields in the
+    /// caller's transaction, with its evidence.
+    pub(crate) async fn change_field_in(
+        &self,
+        tx: &mut dyn ObjectTx,
+        object: &ObjectDefinition,
+        mut field: FieldDefinition,
+        input: UpdateField,
+        context: MutationContext,
+    ) -> Result<FieldDefinition, ObjectError> {
         if field.version != input.expected_version {
             return Err(ObjectError::VersionConflict);
         }
@@ -755,10 +834,7 @@ impl ObjectService {
                         .object_by_id(field.reference_object_id.ok_or(ObjectError::Invariant)?)
                         .await?
                         .ok_or(ObjectError::Invariant)?;
-                    match self
-                        .check_lookup_filter(tx.as_mut(), &target, &filter)
-                        .await
-                    {
+                    match self.check_lookup_filter(tx, &target, &filter).await {
                         Ok(()) => field.lookup_filter = Some(filter),
                         Err(ObjectError::Validation(found)) => issues.extend(found),
                         Err(other) => return Err(other),
@@ -770,7 +846,7 @@ impl ObjectService {
         }
         if let Some(names) = input.reference_objects.as_deref() {
             match values::reference_objects(field.field_type, Some(names)) {
-                Ok(names) => match allowed_objects(tx.as_mut(), &names).await? {
+                Ok(names) => match allowed_objects(tx, &names, self.caller.installer()).await? {
                     Ok(allowed) => {
                         field.reference_object_ids =
                             allowed.iter().map(|target| target.id).collect();
@@ -785,7 +861,7 @@ impl ObjectService {
         if let Some(indexed) = input.indexed {
             // Roll-up summaries read the fields they summarise from the
             // index (ADR 0026).
-            if !indexed && rollup_uses(tx.as_mut(), &object, Some(field.id)).await? {
+            if !indexed && rollup_uses(tx, object, Some(field.id)).await? {
                 issues.push(ValidationIssue::new(
                     "indexed",
                     "objects.rollup_needs_index",
@@ -856,7 +932,7 @@ impl ObjectService {
         }
         // Formulas that use this one must keep working (ADR 0021).
         let dependents_before = if input.formula.is_some() {
-            let mut before = crate::rules::compiling_dependents(tx.as_mut()).await?;
+            let mut before = crate::rules::compiling_dependents(tx).await?;
             before.remove(&field.id);
             Some(before)
         } else {
@@ -867,8 +943,8 @@ impl ObjectService {
                 let formula = formula.trim().to_owned();
                 let formula_type = field.formula_type.ok_or(ObjectError::Invariant)?;
                 crate::formula_fields::check_formula(
-                    tx.as_mut(),
-                    &object,
+                    tx,
+                    object,
                     &formula,
                     formula_type,
                     Some(field.id),
@@ -897,7 +973,7 @@ impl ObjectService {
         }
         let formula_changed = dependents_before.is_some();
         if let Some(before) = dependents_before {
-            if !still_working(&before, tx.as_mut()).await? {
+            if !still_working(&before, tx).await? {
                 return Err(ObjectError::Conflict("objects.field_in_use"));
             }
         }
@@ -908,17 +984,16 @@ impl ObjectService {
                 .object_by_id(object.id)
                 .await?
                 .ok_or(ObjectError::Invariant)?;
-            reindex(tx.as_mut(), &updated).await?;
+            reindex(tx, &updated).await?;
         }
-        self.record_change(tx.as_mut(), context, Change::FieldUpdated(&object, &field))
+        self.record_change(tx, context, Change::FieldUpdated(object, &field))
             .await?;
         if allowlist_before != field.reference_object_ids {
             // Create actions of an object taken out can no longer fill the
             // field (ADR 0032 §4).
-            self.quick_actions_after_allowlist_changed(tx.as_mut(), &object, &field, context)
+            self.quick_actions_after_allowlist_changed(tx, object, &field, context)
                 .await?;
         }
-        tx.commit().await?;
         Ok(field)
     }
 
@@ -939,6 +1014,9 @@ impl ObjectService {
             .field(field_api_name)
             .cloned()
             .ok_or(ObjectError::NotFound)?;
+        if field.origin == Origin::Plugin {
+            return Err(ObjectError::Conflict(PLUGIN_OWNED));
+        }
         if field.version != expected_version {
             return Err(ObjectError::VersionConflict);
         }
@@ -1204,7 +1282,15 @@ impl ObjectService {
                 (Some(target), Some(access)) if !trusted.contains(&field.api_name) => {
                     self.can_see(tx, access, &mut objects, target).await?
                 }
-                (Some(target), _) => target.deleted_at.is_none(),
+                // Automations skip member visibility, but never point at a
+                // record of a suspended plugin object (ADR 0033 §2).
+                (Some(target), _) => {
+                    target.deleted_at.is_none()
+                        && tx
+                            .object_by_id(target.object_id)
+                            .await?
+                            .is_some_and(|object| object.is_active())
+                }
                 (None, _) => false,
             };
             // New values meet the field's lookup filter (ADR 0028). Like
@@ -3399,11 +3485,12 @@ async fn masters_live(
 async fn allowed_objects(
     tx: &mut dyn ObjectTx,
     names: &[String],
+    installer: Option<&str>,
 ) -> Result<Result<Vec<ObjectDefinition>, ValidationIssue>, ObjectError> {
     let mut allowed = Vec::with_capacity(names.len());
     for name in names {
         match tx.object_by_api_name(name).await? {
-            Some(target) if target.is_active() => allowed.push(target),
+            Some(target) if usable_target(&target, installer) => allowed.push(target),
             _ => {
                 return Ok(Err(ValidationIssue::new(
                     "reference_objects",
@@ -3414,6 +3501,17 @@ async fn allowed_objects(
         }
     }
     Ok(Ok(allowed))
+}
+
+/// Whether a field may point to `target`: an object in service, or, while
+/// a plugin installs its objects, one of that plugin's own objects that is
+/// still suspended until the installation finishes (ADR 0033 §2).
+pub(crate) fn usable_target(target: &ObjectDefinition, installer: Option<&str>) -> bool {
+    target.is_active()
+        || (target.status == DefinitionStatus::Active
+            && target.suspended
+            && installer.is_some()
+            && target.owner_plugin.as_deref() == installer)
 }
 
 /// Whether `object` may gain a master-detail field to `master` (ADR 0025):
