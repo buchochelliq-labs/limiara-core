@@ -415,15 +415,21 @@ async fn put_field(
         None => None,
     };
     // A related-to field allows, on the device, the objects of its
-    // allowlist the replica holds. One that allows none of them is left
-    // out like a lookup to an object the member cannot read; the server
-    // decides any other target on push (ADR 0033 §1).
+    // allowlist the replica holds; the server decides any other target on
+    // push (ADR 0033 §1). A new one that allows none of them is left out
+    // like a lookup to an object the member cannot read. One already here
+    // keeps an empty allowlist instead of retiring, so nothing new can be
+    // chosen locally and a later allowlist or access change brings its
+    // targets back.
     let allowed: Vec<(Uuid, String)> = remote
         .reference_objects
         .iter()
         .filter_map(|name| ids.get(name).map(|id| (*id, name.clone())))
         .collect();
-    if remote.field_type == FieldType::RelatedTo && allowed.is_empty() {
+    if remote.field_type == FieldType::RelatedTo
+        && allowed.is_empty()
+        && object.field(&remote.api_name).is_none()
+    {
         return Ok(false);
     }
     let reference_object_ids: Vec<Uuid> = allowed.iter().map(|(id, _)| *id).collect();

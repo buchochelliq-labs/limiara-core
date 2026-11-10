@@ -426,6 +426,32 @@ try {
   step('the new object joins navigation on revalidation');
   await page.reload();
   await nav.getByRole('link', {name: 'Milestones'}).waitFor();
+
+  step('related-to fields: a milestone points at a client or a project, chosen in the form (ADR 0033)');
+  await page.goto(`${origin}/settings/objects/${encodeURIComponent('custom:milestone')}`);
+  await page.getByRole('button', {name: 'New field'}).click();
+  const newField = page.getByRole('form', {name: 'New field'});
+  await newField.getByLabel('Field type').selectOption('related_to');
+  await newField.getByLabel('Label', {exact: true}).fill('Regarding');
+  await newField.getByRole('checkbox', {name: 'Client', exact: true}).check();
+  await newField.getByRole('checkbox', {name: 'Project', exact: true}).check();
+  await shot(page, '19-related-to-field');
+  await newField.getByRole('button', {name: 'Add field'}).click();
+  await page.getByRole('cell', {name: 'custom:regarding'}).waitFor();
+  await page.getByText('Related to (custom:client, custom:project)').waitFor();
+  await page.goto(`${origin}/o/custom:milestone`);
+  await page.getByRole('button', {name: 'New milestone'}).click();
+  dialog = page.getByRole('dialog', {name: 'New milestone'});
+  await dialog.getByLabel('Name', {exact: true}).fill('Engine review');
+  await dialog.getByLabel('Regarding: object').selectOption({label: 'Client'});
+  await dialog.getByLabel('Regarding: Client', {exact: true}).selectOption({label: 'Analytical Engines'});
+  await shot(page, '20-related-to-picker');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await page.getByRole('heading', {level: 1, name: 'Engine review'}).waitFor();
+  await page.getByRole('region', {name: 'Details'}).getByRole('link', {name: 'Analytical Engines'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Analytical Engines'}).waitFor();
+  await page.getByRole('region', {name: 'Milestones'}).getByRole('link', {name: 'Engine review'}).waitFor();
 } catch (error) {
   failed = true;
   console.error(`browser journey failed: ${error instanceof Error ? error.message : String(error)}`);

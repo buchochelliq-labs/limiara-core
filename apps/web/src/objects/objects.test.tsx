@@ -627,6 +627,56 @@ describe('related lists and lookup filters (ADR 0028)', () => {
   });
 });
 
+describe('related-to fields (ADR 0033)', () => {
+  const regarding = {apiName: 'custom:regarding', label: 'Regarding', description: null, type: 'related_to' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, referenceObjects: ['custom:account', 'custom:deal'], deleteBehaviour: 'clear' as const, trackHistory: false, version: 1};
+
+  it('maps the allowlist and the objects of named targets', async () => {
+    const fetcher = respond(200, {api_name: 'custom:regarding', label: 'Regarding', description: null, field_type: 'related_to', origin: 'workspace', required: false, unique: false, indexed: false, reference_object: null, reference_objects: ['custom:account', 'custom:deal'], delete_behaviour: 'clear', version: 2});
+    const field = await createObjectsApiClient(workspace, fetcher).updateField('custom:task', 'custom:regarding', 1, {reference_objects: ['custom:account', 'custom:deal']});
+    expect(JSON.parse(String(vi.mocked(fetcher).mock.calls[0]?.[1]?.body))).toEqual({reference_objects: ['custom:account', 'custom:deal'], expected_version: 1});
+    expect(field.referenceObjects).toEqual(['custom:account', 'custom:deal']);
+    const record = recordFromApi({id: 't1', name: 'Call', owner: null, created_at: '', created_by: null, updated_at: '', updated_by: null, version: 1, is_deleted: false, 'custom:regarding': 'a1', related: {a1: 'Acme'}, related_objects: {a1: 'custom:account', bad: 3}});
+    expect(record.values).toEqual({'custom:regarding': 'a1'});
+    expect(record.relatedObjects).toEqual({a1: 'custom:account'});
+    expect(formatValue(regarding, 'a1', record.related)).toBe('Acme');
+  });
+
+  it('asks for the candidates of the chosen object', async () => {
+    const candidates = respond(200, {data: [{id: 'a1', name: 'Acme'}], next_cursor: null});
+    await createObjectsApiClient(workspace, candidates).lookupCandidates('custom:task', 'custom:regarding', ' ac ', undefined, 'custom:account');
+    expect(String(vi.mocked(candidates).mock.calls[0]?.[0])).toContain('/fields/custom%3Aregarding/candidates?object=custom%3Aaccount&search=ac');
+  });
+
+  it('points at records of any allowed object in the fixture', async () => {
+    const client = createFixtureObjectsClient();
+    await client.createObject({name: 'account', label: 'Account', plural_label: 'Accounts'});
+    await client.createObject({name: 'task', label: 'Task', plural_label: 'Tasks'});
+    await client.createField('custom:task', {name: 'regarding', label: 'Regarding', field_type: 'related_to', reference_objects: ['custom:account', 'custom:project']});
+    const account = await client.createRecord('custom:account', {name: 'Acme'});
+    await client.createRecord('custom:task', {name: 'Call Acme', 'custom:regarding': account.id});
+    expect((await client.lookupCandidates('custom:task', 'custom:regarding', 'ac', undefined, 'custom:account')).records.map(item => item.name)).toEqual(['Acme']);
+    await expect(client.lookupCandidates('custom:task', 'custom:regarding', '', undefined, 'custom:task')).rejects.toMatchObject({code: 'records.reference_object_not_allowed'});
+    expect((await client.relatedLists('custom:account', account.id)).map(list => [list.fieldLabel, list.records.map(item => item.name)])).toEqual([['Regarding', ['Call Acme']]]);
+    const task = await client.describe('custom:task');
+    expect(task.fields[0]?.referenceObjects).toEqual(['custom:account', 'custom:project']);
+    expect(actionTargets([task], 'custom:account').map(targetLabel)).toEqual(['Task (Regarding)']);
+    expect(actionTargets([task], 'custom:deal')).toEqual([]);
+  });
+
+  it('offers the allowed objects, then their records, in the record form', () => {
+    const task: ObjectDescription = {...project, apiName: 'custom:task', label: 'Task', fields: [regarding]};
+    const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={task} onCancel={noop} onSaved={noop} />);
+    expect(markup).toContain('<legend>Regarding</legend>');
+    expect(markup).toContain('Regarding: object');
+    expect(markup).toMatch(/<option value="custom:account"[^>]*>custom:account<\/option><option value="custom:deal"/);
+    expect(markup).toContain('Search regarding: custom:account');
+    // A preset (related-list New or a create action) shows read-only.
+    const preset = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={task} presets={{'custom:regarding': {value: 'a1', label: 'Acme'}}} onCancel={noop} onSaved={noop} />);
+    expect(preset).toContain('Set to Acme.');
+    expect(preset).not.toContain('Regarding: object');
+  });
+});
+
 describe('quick actions (ADR 0032)', () => {
   const account: ObjectDescription = {...project, apiName: 'custom:account', label: 'Account', pluralLabel: 'Accounts', nameLabel: 'Account name', fields: []};
   const contact: ObjectDescription = {...project, apiName: 'custom:contact', label: 'Contact', pluralLabel: 'Contacts', nameLabel: 'Full name', fields: [

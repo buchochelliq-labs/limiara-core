@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import './objects.css';
@@ -132,11 +132,13 @@ function UserLink({user, onNavigate}: {user: ObjectRecord['owner']; onNavigate: 
   return <a href={route} onClick={event => { event.preventDefault(); onNavigate(route); }}>{user.name ?? 'Workspace member'}</a>;
 }
 
-function FieldValue({field, value, related, onNavigate}: {field: ObjectField; value: unknown; related: Record<string, string>; onNavigate: Navigate}) {
+function FieldValue({field, value, related, relatedObjects = {}, onNavigate}: {field: ObjectField; value: unknown; related: Record<string, string>; relatedObjects?: Record<string, string>; onNavigate: Navigate}) {
   const text = formatValue(field, value, related);
   if (!text) return <span className="object-value--empty">Not set</span>;
-  if (isReference(field.type) && field.referenceObject && typeof value === 'string') {
-    const route = recordRoute(field.referenceObject, value);
+  // A related-to value names its object only when the caller can read the target.
+  const target = typeof value === 'string' ? (field.type === 'related_to' ? relatedObjects[value] : isReference(field.type) ? field.referenceObject : null) : null;
+  if (target && typeof value === 'string') {
+    const route = recordRoute(target, value);
     return <a href={route} onClick={event => { event.preventDefault(); onNavigate(route); }}>{text}</a>;
   }
   if (field.type === 'email') return <a href={`mailto:${text}`}>{text}</a>;
@@ -221,7 +223,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       <h2>Details</h2>
       <dl className="object-fields">
         <div><dt>{object.nameLabel}</dt><dd>{record.name}</dd></div>
-        {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} onNavigate={onNavigate} /></dd></div>)}
+        {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} relatedObjects={record.relatedObjects} onNavigate={onNavigate} /></dd></div>)}
       </dl>
     </section>
     <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} refresh={relatedRefresh} onNavigate={onNavigate} />
@@ -468,7 +470,7 @@ export function toApiValue(field: ObjectField, value: DraftValue): unknown {
 export const inputTypes: Partial<Record<ObjectField['type'], string>> = {email: 'email', phone: 'tel', url: 'url', number: 'number', currency: 'number', percent: 'number', date: 'date', date_time: 'datetime-local'};
 
 /** A lookup picker over the records the field may point at: those the member sees that meet its filter (ADR 0028). */
-function LookupInput({client, objectApiName, field, value, currentName, error, onChange}: {client: ObjectsClient; objectApiName: string; field: ObjectField; value: string; currentName?: string; error?: string; onChange: (value: string) => void}) {
+function LookupInput({client, objectApiName, field, target, value, currentName, error, onChange}: {client: ObjectsClient; objectApiName: string; field: ObjectField; target?: string; value: string; currentName?: string; error?: string; onChange: (value: string) => void}) {
   const [options, setOptions] = useState<Load<RecordLink[]>>({status: 'loading'});
   const [search, setSearch] = useState('');
   const [more, setMore] = useState(false);
@@ -476,12 +478,12 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
     const controller = new AbortController();
     // Waits for typing to pause before asking again.
     const timer = setTimeout(() => {
-      client.lookupCandidates(objectApiName, field.apiName, search, controller.signal)
+      client.lookupCandidates(objectApiName, field.apiName, search, controller.signal, target)
         .then(page => { if (!controller.signal.aborted) { setOptions({status: 'ready', value: page.records}); setMore(page.nextCursor !== null); } })
         .catch(reason => { if (!controller.signal.aborted) setOptions(failed(reason)); });
     }, search ? 250 : 0);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [client, objectApiName, field.apiName, search]);
+  }, [client, objectApiName, field.apiName, search, target]);
   if (options.status !== 'ready' && options.status !== 'loading') {
     return <TextField label={field.label} required={field.required} value={value} error={error} description="Enter the record ID; the related records could not be listed." onChange={event => onChange(event.target.value)} />;
   }
@@ -496,6 +498,35 @@ function LookupInput({client, objectApiName, field, value, currentName, error, o
       {records.map(record => <option key={record.id} value={record.id}>{record.name}</option>)}
     </Select>
   </div>;
+}
+
+/**
+ * A related-to picker (ADR 0033): choose one of the objects the field allows,
+ * then one of its records the member sees. Changing the object clears the
+ * value, since a record belongs to one object.
+ */
+function RelatedToInput({client, objectApiName, field, value, currentName, currentObject, error, onChange}: {client: ObjectsClient; objectApiName: string; field: ObjectField; value: string; currentName?: string; currentObject?: string; error?: string; onChange: (value: string) => void}) {
+  const allowed = field.referenceObjects ?? [];
+  // A value to an object taken out of the allowlist is kept and shown as is.
+  const [target, setTarget] = useState(() => currentObject ?? allowed[0] ?? '');
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    // Labels are a nicety: API names stand in when they cannot be loaded.
+    client.listObjects(controller.signal)
+      .then(value => { if (!controller.signal.aborted) setLabels(Object.fromEntries(value.objects.map(object => [object.apiName, object.label]))); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [client]);
+  const choices = target && !allowed.includes(target) ? [target, ...allowed] : allowed;
+  const objectLabel = (apiName: string) => labels[apiName] ?? apiName;
+  return <fieldset className="object-related-to">
+    <legend>{field.label}</legend>
+    <Select label={`${field.label}: object`} value={target} onChange={event => { setTarget(event.target.value); if (value) onChange(''); }}>
+      {choices.map(apiName => <option key={apiName} value={apiName}>{objectLabel(apiName)}</option>)}
+    </Select>
+    {target && <LookupInput key={target} client={client} objectApiName={objectApiName} field={{...field, label: `${field.label}: ${objectLabel(target)}`}} target={target} value={value} currentName={target === currentObject ? currentName : undefined} error={error} onChange={onChange} />}
+  </fieldset>;
 }
 
 /**
@@ -535,7 +566,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
   const set = (key: string, value: Draft[string]) => setDraft(current => ({...current, [key]: value}));
   // A quick action (ADR 0032) asks only for its fields; a parent preset stays visible, read-only.
   const showsName = !only || only.includes('name');
-  const shown = editableFields(object).filter(field => !only || only.includes(field.apiName) || (!record && presets[field.apiName] !== undefined && isReference(field.type)));
+  const shown = editableFields(object).filter(field => !only || only.includes(field.apiName) || (!record && presets[field.apiName] !== undefined && holdsReference(field.type)));
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -578,8 +609,9 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
         {fieldError && <span className="ui-field__error">{fieldError}</span>}
       </fieldset>;
       const preset = record ? undefined : presets[field.apiName];
-      if (preset && isReference(field.type)) return <TextField key={field.apiName} label={field.label} value={preset.label} readOnly description={`Set to ${preset.label}.`} />;
+      if (preset && holdsReference(field.type)) return <TextField key={field.apiName} label={field.label} value={preset.label} readOnly description={`Set to ${preset.label}.`} />;
       if (field.type === 'master_detail' && record) return <TextField key={field.apiName} label={field.label} value={record.related[String(value ?? '')] ?? String(value ?? '')} readOnly description="A record stays with its master." />;
+      if (field.type === 'related_to') return <RelatedToInput key={field.apiName} client={client} objectApiName={object.apiName} field={field} value={String(value ?? '')} currentName={record?.related[String(value ?? '')]} currentObject={record?.relatedObjects?.[String(value ?? '')]} error={fieldError} onChange={next => set(field.apiName, next)} />;
       if (isReference(field.type)) return <LookupInput key={field.apiName} client={client} objectApiName={object.apiName} field={field} value={String(value ?? '')} currentName={record?.related[String(value ?? '')]} error={fieldError} onChange={next => set(field.apiName, next)} />;
       if (field.type === 'long_text') return <div key={field.apiName} className="ui-field">
         <label className="ui-field__label" htmlFor={`field-${field.apiName}`}>{field.label}</label>

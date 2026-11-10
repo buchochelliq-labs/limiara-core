@@ -501,9 +501,21 @@ impl ObjectService {
         }
         self.record_change(tx.as_mut(), context, Change::ObjectDeleted(&object))
             .await?;
-        for field in referencing.iter().filter(|field| {
-            field.field_type == FieldType::RelatedTo && field.object_id != object.id
-        }) {
+        // Related-to fields let go of it: those that allow it, and those
+        // still holding values from before it left their allowlist.
+        let mut releasing: Vec<FieldDefinition> = referencing
+            .into_iter()
+            .filter(|field| field.field_type == FieldType::RelatedTo)
+            .collect();
+        for field in tx.related_to_fields_holding(object.id).await? {
+            if !releasing.iter().any(|known| known.id == field.id) {
+                releasing.push(field);
+            }
+        }
+        for field in releasing
+            .iter()
+            .filter(|field| field.object_id != object.id)
+        {
             self.release_allowlist(tx.as_mut(), field, &object, context)
                 .await?;
         }
@@ -2274,10 +2286,38 @@ impl ObjectService {
         deleted: &ObjectDefinition,
         context: MutationContext,
     ) -> Result<(), ObjectError> {
-        let owner = tx
+        let mut owner = tx
             .object_by_id(field.object_id)
             .await?
             .ok_or(ObjectError::Invariant)?;
+        if field.reference_object_ids.contains(&deleted.id) {
+            self.drop_from_allowlist(tx, &owner, field, deleted, context)
+                .await?;
+            owner = tx
+                .object_by_id(owner.id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+        }
+        for id in tx.referencing_object_records(field.id, deleted.id).await? {
+            let Some(child) = tx.record_by_id(id).await? else {
+                continue;
+            };
+            self.clear_reference(tx, &owner, child, field.api_name.clone(), context)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Takes a deleted object out of a related-to field's allowlist, as a
+    /// field update with its own event.
+    async fn drop_from_allowlist(
+        &self,
+        tx: &mut dyn ObjectTx,
+        owner: &ObjectDefinition,
+        field: &FieldDefinition,
+        deleted: &ObjectDefinition,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
         let mut changed = field.clone();
         let expected_version = changed.version;
         let kept: Vec<(Uuid, String)> = field
@@ -2295,19 +2335,8 @@ impl ObjectService {
         if !tx.update_field(&changed, expected_version).await? {
             return Err(ObjectError::VersionConflict);
         }
-        self.record_change(tx, context, Change::FieldUpdated(&owner, &changed))
+        self.record_change(tx, context, Change::FieldUpdated(owner, &changed))
             .await?;
-        let owner = tx
-            .object_by_id(owner.id)
-            .await?
-            .ok_or(ObjectError::Invariant)?;
-        for id in tx.referencing_object_records(field.id, deleted.id).await? {
-            let Some(child) = tx.record_by_id(id).await? else {
-                continue;
-            };
-            self.clear_reference(tx, &owner, child, field.api_name.clone(), context)
-                .await?;
-        }
         Ok(())
     }
 
