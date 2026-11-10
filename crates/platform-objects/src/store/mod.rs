@@ -289,6 +289,18 @@ pub trait ObjectTx: Send {
         action_id: Uuid,
         expected_version: i64,
     ) -> Result<bool, ObjectError>;
+    /// The related actions a plugin object declares, by field then name
+    /// (ADR 0033 §3).
+    async fn related_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::RelatedAction>, ObjectError>;
+    /// Inserts a related action, or replaces the one with its id.
+    async fn put_related_action(
+        &mut self,
+        action: &crate::RelatedAction,
+    ) -> Result<(), ObjectError>;
+    async fn delete_related_action(&mut self, id: Uuid) -> Result<(), ObjectError>;
     /// An object's automations, by name (ADR 0022).
     async fn automations(&mut self, object_id: Uuid)
         -> Result<Vec<crate::Automation>, ObjectError>;
@@ -465,6 +477,9 @@ pub trait ObjectTx: Send {
         audit: &AuditEvent,
         event: &EventEnvelope,
     ) -> Result<(), ObjectError>;
+    /// Appends an audit entry with no event: something the engine decided
+    /// not to do, which changes nothing to publish.
+    async fn append_audit(&mut self, audit: &AuditEvent) -> Result<(), ObjectError>;
     /// The server version a replica record last took (ADR 0024 §3), or
     /// `None` when the server has not sent it. Replicas run on SQLite only.
     async fn remote_version(

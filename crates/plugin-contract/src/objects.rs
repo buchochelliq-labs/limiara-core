@@ -12,8 +12,18 @@
 //! its target by API name: one of the plugin's own objects, or an object of
 //! a plugin it declares a dependency on. A plugin cannot target `custom`
 //! objects, which only exist in some workspaces.
+//!
+//! A related-to field may start with an empty or partial allowlist: the
+//! workspace's administrators choose its targets once it is installed
+//! (ADR 0033 §2). An object may also declare *related actions*
+//! (`[[objects.related_actions]]`): a create quick action (ADR 0032) the
+//! engine adds to every object that enters one of its related-to fields'
+//! allowlists, making a record of this object with that field set to the
+//! current record.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Objects per plugin.
 pub const MAX_PLUGIN_OBJECTS: usize = 20;
@@ -22,8 +32,16 @@ pub const MAX_PLUGIN_OBJECTS: usize = 20;
 pub const MAX_PLUGIN_OBJECT_FIELDS: usize = 100;
 /// Picklist options per field.
 pub const MAX_PLUGIN_FIELD_OPTIONS: usize = 200;
-/// Objects a related-to field may allow, as in the engine.
+/// Objects a related-to field may allow, as in the engine. A plugin's
+/// related-to field may start with fewer, none included.
 pub const MAX_PLUGIN_REFERENCE_OBJECTS: usize = 10;
+/// Related actions per declared object: an object an allowlist names has at
+/// most 10 quick actions anyway (ADR 0032 §2).
+pub const MAX_PLUGIN_RELATED_ACTIONS: usize = 10;
+/// Fields a related action's form asks for, and presets it applies, as for
+/// quick actions.
+pub const MAX_RELATED_ACTION_FIELDS: usize = 20;
+pub const MAX_RELATED_ACTION_PRESETS: usize = 20;
 /// The engine's limits on text lengths and decimal places.
 pub const MAX_PLUGIN_TEXT_LENGTH: i32 = 255;
 pub const MAX_PLUGIN_LONG_TEXT_LENGTH: i32 = 131_072;
@@ -60,6 +78,31 @@ pub struct ObjectDecl {
     pub in_navigation: Option<bool>,
     #[serde(default)]
     pub fields: Vec<ObjectFieldDecl>,
+    /// Create quick actions this object offers to the objects its related-to
+    /// fields allow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_actions: Vec<RelatedActionDecl>,
+}
+
+/// A create quick action (ADR 0032) that every object entering the
+/// allowlist of `field` receives: it makes a record of the declaring object
+/// with `field` set to the current record. Once created it is an ordinary
+/// workspace action that administrators may edit or delete; the engine
+/// creates it only when an object enters the allowlist.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RelatedActionDecl {
+    /// Short name of one of the object's related-to fields.
+    pub field: String,
+    /// The quick action's name on each object it is added to.
+    pub name: String,
+    pub label: String,
+    /// The fields the form asks for, by API name: `name` or
+    /// `<plugin id>:<field>`.
+    pub fields: Vec<String>,
+    /// Constant values applied on save, by field API name.
+    #[serde(default)]
+    pub presets: BTreeMap<String, Value>,
 }
 
 /// The organisation-wide default for an object's records.
@@ -362,8 +405,143 @@ pub fn validate_objects<'a>(
             }
             validate_field(plugin_id, &names, &dependencies, field).map_err(issue)?;
         }
+        if object.related_actions.len() > MAX_PLUGIN_RELATED_ACTIONS {
+            return Err(object_issue(
+                object,
+                "an object declares at most 10 related actions",
+            ));
+        }
+        let mut actions = std::collections::BTreeSet::new();
+        for action in &object.related_actions {
+            let issue = |reason| ObjectDeclIssue {
+                object: object.name.clone(),
+                field: Some(format!("related_actions/{}", action.name)),
+                reason,
+            };
+            if !valid_object_name(&action.name) {
+                return Err(issue(
+                    "a related action's name must be a lowercase letter followed by lowercase letters, digits or single underscores",
+                ));
+            }
+            if !actions.insert(action.name.as_str()) {
+                return Err(issue("duplicate related action name"));
+            }
+            validate_related_action(plugin_id, object, action).map_err(issue)?;
+        }
     }
     Ok(())
+}
+
+/// Checks a related action against the object that declares it: its field
+/// is one of the object's related-to fields, its form asks for fields the
+/// object has, and its presets are constants of the right type.
+fn validate_related_action(
+    plugin_id: &str,
+    object: &ObjectDecl,
+    action: &RelatedActionDecl,
+) -> Result<(), &'static str> {
+    if !printable(&action.label, MAX_LABEL_CHARS) {
+        return Err("label must be 1 to 80 printable characters");
+    }
+    let declared = |name: &str| -> Option<&ObjectFieldDecl> {
+        let short = name.strip_prefix(plugin_id)?.strip_prefix(':')?;
+        object.fields.iter().find(|field| field.name == short)
+    };
+    match object
+        .fields
+        .iter()
+        .find(|field| field.name == action.field)
+    {
+        Some(field) if field.field_type == ObjectFieldType::RelatedTo => {}
+        _ => return Err("field must name one of the object's related-to fields"),
+    }
+    let target = format!("{plugin_id}:{}", action.field);
+    if action.fields.is_empty() || action.fields.len() > MAX_RELATED_ACTION_FIELDS {
+        return Err("a related action asks for 1 to 20 fields");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &action.fields {
+        if !seen.insert(name.as_str()) {
+            return Err("a related action asks for each field once");
+        }
+        if *name == target {
+            return Err("the related-to field is set to the current record, not asked for");
+        }
+        if name != "name" && declared(name).is_none() {
+            return Err("fields must be `name` or API names of the object's declared fields");
+        }
+    }
+    if action.presets.len() > MAX_RELATED_ACTION_PRESETS {
+        return Err("a related action sets at most 20 presets");
+    }
+    for (name, value) in &action.presets {
+        if *name == target {
+            return Err("the related-to field is set to the current record, not preset");
+        }
+        let valid = if name == "name" {
+            value
+                .as_str()
+                .is_some_and(|text| printable(text, MAX_PRESET_TEXT_CHARS))
+        } else {
+            match declared(name) {
+                Some(field) => preset_fits(field, value),
+                None => {
+                    return Err(
+                        "presets must name `name` or API names of the object's declared fields",
+                    )
+                }
+            }
+        };
+        if !valid {
+            return Err("a preset must be a constant of its field's type: an active option of a picklist, a number, true or false, or text");
+        }
+    }
+    Ok(())
+}
+
+const MAX_PRESET_TEXT_CHARS: usize = 255;
+
+/// Whether a preset is a constant the field accepts. The engine checks it
+/// again, with its own value rules, when it adds the action to an object.
+fn preset_fits(field: &ObjectFieldDecl, value: &Value) -> bool {
+    let option = |text: &str| field.options.iter().any(|option| option.value == text);
+    let date = |text: &str| {
+        let bytes = text.as_bytes();
+        bytes.len() == 10
+            && bytes.iter().enumerate().all(|(index, byte)| match index {
+                4 | 7 => *byte == b'-',
+                _ => byte.is_ascii_digit(),
+            })
+            && matches!(text[5..7].parse::<u8>(), Ok(1..=12))
+            && matches!(text[8..10].parse::<u8>(), Ok(1..=31))
+    };
+    match field.field_type {
+        ObjectFieldType::Text
+        | ObjectFieldType::LongText
+        | ObjectFieldType::Email
+        | ObjectFieldType::Phone
+        | ObjectFieldType::Url => value.as_str().is_some_and(|text| {
+            let limit = field
+                .max_length
+                .and_then(|length| usize::try_from(length).ok())
+                .unwrap_or(MAX_PRESET_TEXT_CHARS);
+            !text.trim().is_empty() && text.chars().count() <= limit
+        }),
+        ObjectFieldType::Number | ObjectFieldType::Currency | ObjectFieldType::Percent => {
+            value.as_f64().is_some_and(f64::is_finite)
+        }
+        ObjectFieldType::Boolean => value.is_boolean(),
+        ObjectFieldType::Date => value.as_str().is_some_and(date),
+        ObjectFieldType::DateTime => value.as_str().is_some_and(|text| {
+            text.len() > 19 && text.get(..10).is_some_and(date) && text.as_bytes()[10] == b'T'
+        }),
+        ObjectFieldType::Picklist => value.as_str().is_some_and(option),
+        ObjectFieldType::MultiPicklist => value.as_array().is_some_and(|items| {
+            !items.is_empty() && items.iter().all(|item| item.as_str().is_some_and(option))
+        }),
+        // A record id belongs to one workspace; a manifest cannot know it.
+        ObjectFieldType::Lookup | ObjectFieldType::RelatedTo => false,
+    }
 }
 
 fn validate_field(
@@ -454,10 +632,9 @@ fn validate_field(
         (_, None) => {}
     }
     if kind == ObjectFieldType::RelatedTo {
-        if field.reference_objects.is_empty()
-            || field.reference_objects.len() > MAX_PLUGIN_REFERENCE_OBJECTS
-        {
-            return Err("a related-to field allows 1 to 10 objects");
+        // The workspace's administrators choose the rest (ADR 0033 §2).
+        if field.reference_objects.len() > MAX_PLUGIN_REFERENCE_OBJECTS {
+            return Err("a related-to field allows at most 10 objects");
         }
         let mut seen = std::collections::BTreeSet::new();
         for target in &field.reference_objects {

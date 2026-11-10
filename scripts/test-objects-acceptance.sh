@@ -5,6 +5,7 @@
 #
 # The journey covers object and field definition, naming, key prefixes,
 # picklists, uniqueness, lookups, related-to fields, plugin-declared objects,
+# the Activities plugin and its Log a call action,
 # record create/read/update with optimistic
 # versions, filters and search, the recycle bin, object permissions per role,
 # forced RLS on the engine tables, and evidence that names changes without
@@ -103,6 +104,7 @@ platform:
   plugins:
     manifest_paths:
       - plugins/contacts/plugin.toml
+      - plugins/activities/plugin.toml
       - fixtures/plugins/tracker/plugin.toml
 EOF
 
@@ -937,6 +939,54 @@ kept=$(sql --command="SELECT count(*) FROM records r JOIN object_definitions o O
 [[ "$kept" == 2 ]] || fail "removal keeps the plugin's records for export: $kept"
 expect 404 "$(call "$member_cookie" GET "$ticket_api")" "a removed plugin's objects are hidden"
 
+log "the Activities plugin (ADR 0033 §3): administrators choose Related to's objects, which gain Log a call"
+activities="$workspace/plugins/platform.activities"
+task_api="$workspace/objects/platform.activities:task"
+expect 404 "$(call "$member_cookie" GET "$task_api")" "no tasks before Activities is enabled"
+expect 200 "$(call "$member_cookie" POST "$activities/enable")" "enable Activities"
+expect 200 "$(call "$member_cookie" GET "$task_api")" "describe tasks"
+[[ "$(field '.owner_plugin')" == platform.activities && "$(field '.key_prefix')" == tsk && "$(field '.name_label')" == Subject ]] || fail "task metadata: $(cat "$body")"
+[[ "$(field '[.fields[] | select(.field_type == "related_to") | .reference_objects | length] | join(",")')" == "0,0" ]] || fail "related-to allowlists start empty: $(cat "$body")"
+related_to_version=$(field '.fields[] | select(.api_name == "platform.activities:related_to") | .version')
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/platform.activities:event")" "describe events"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects" \
+  '{"name":"account","label":"Account","plural_label":"Accounts","in_navigation":false}')" "an account object"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:account/records" '{"name":"Initech"}')" "an account"
+initech=$(field '.id')
+expect 400 "$(call "$member_cookie" POST "$task_api/records" "{\"name\":\"Call Initech\",\"platform.activities:related_to\":\"$initech\"}")" "an empty allowlist refuses values"
+[[ "$(field '.errors[0].code')" == records.reference_object_not_allowed ]] || fail "empty allowlist code: $(cat "$body")"
+expect 409 "$(call "$member_cookie" PATCH "$task_api/fields/platform.activities:related_to" "{\"expected_version\":$related_to_version,\"label\":\"About\",\"reference_objects\":[\"custom:account\"]}")" "only the allowlist of a plugin field changes"
+[[ "$(field '.code')" == objects.plugin_owned ]] || fail "plugin field code: $(cat "$body")"
+expect 200 "$(call "$member_cookie" PATCH "$task_api/fields/platform.activities:related_to" "{\"expected_version\":$related_to_version,\"reference_objects\":[\"custom:account\"]}")" "administrators choose Related to's objects"
+[[ "$(field '.reference_objects | join(",")')" == custom:account && "$(field '.origin')" == plugin ]] || fail "allowlist: $(cat "$body")"
+related_to_version=$(field '.version')
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:account/quick-actions")" "the account's quick actions"
+[[ "$(field '[.data[] | select(.name == "log_a_call" and .kind == "create" and .target_object == "platform.activities:task" and .target_field == "platform.activities:related_to")] | length')" == 1 ]] || fail "the account gained Log a call: $(cat "$body")"
+log_a_call=$(jq -c '.data[] | select(.name == "log_a_call")' "$body")
+[[ "$(jq -r '.label' <<<"$log_a_call")" == "Log a call" && "$(jq -r '.fields | join(",")' <<<"$log_a_call")" == "name,platform.activities:description" ]] || fail "Log a call form: $log_a_call"
+# The record page runs it through the normal create API: the form's values,
+# the presets and the related-to field set to the current record.
+call_body=$(jq -c --arg record "$initech" '.presets + {"name":"Called Initech","platform.activities:description":"Renewal next quarter","platform.activities:related_to":$record}' <<<"$log_a_call")
+expect 201 "$(call "$member_cookie" POST "$task_api/records" "$call_body")" "log a call"
+logged_call=$(field '.id')
+[[ "$logged_call" == tsk* && "$(field '."platform.activities:status"')" == completed && "$(field '."platform.activities:type"')" == call && "$(field '."platform.activities:related_to"')" == "$initech" && "$(field ".related_objects[\"$initech\"]")" == custom:account ]] || fail "a completed call about the account: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:account/records/$initech/related")" "the account's related lists"
+[[ "$(field '[.data[] | select(.object == "platform.activities:task") | .data[].name] | join(",")')" == "Called Initech" ]] || fail "the account lists its tasks: $(cat "$body")"
+created_by_member=$(sql --command="SELECT count(*) FROM audit_log WHERE tenant_id = '$tenant' AND action = 'objects.quick_action.created' AND target = 'quick_action:custom:account/log_a_call' AND actor_id = '$member';")
+[[ "$created_by_member" == 1 ]] || fail "Log a call was created as the administrator's change: $created_by_member"
+expect 200 "$(call "$member_cookie" PATCH "$task_api/fields/platform.activities:related_to" "{\"expected_version\":$related_to_version,\"reference_objects\":[]}")" "take the account out again"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:account/quick-actions")" "the account's quick actions after"
+[[ "$(field '.data | length')" == 0 ]] || fail "Log a call left with the account: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$task_api/records/$logged_call")" "the call keeps its value"
+[[ "$(field '."platform.activities:related_to"')" == "$initech" ]] || fail "value kept: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$activities/disable")" "disable Activities"
+expect 404 "$(call "$member_cookie" GET "$task_api")" "a disabled plugin's tasks are hidden"
+expect 404 "$(call "$member_cookie" GET "$task_api/records/$logged_call")" "and so is the call"
+expect 200 "$(call "$member_cookie" POST "$activities/enable")" "enable Activities again"
+expect 200 "$(call "$member_cookie" GET "$task_api/records/$logged_call")" "the call comes back"
+[[ "$(app_sql --command="SELECT count(*) FROM related_actions;")" == 0 ]] || fail "related_actions leaks rows without tenant context"
+[[ "$(sql --command="SELECT count(*) FROM related_actions WHERE tenant_id = '$tenant';")" == 1 ]] || fail "Log a call is kept per workspace"
+
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
 grant_code code-sync "$verifier"
 expect 200 "$(redeem code-sync "$verifier" "Viewer's synced phone")" "a device for the sync loop"
@@ -956,4 +1006,4 @@ API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/sc
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'

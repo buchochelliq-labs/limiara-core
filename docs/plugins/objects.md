@@ -8,7 +8,9 @@ serves like the objects a workspace administrator creates, with records,
 sharing, permissions, validation rules, automations, quick actions, search,
 reports and device sync. When a workspace enables the plugin, the kernel
 creates or migrates the objects there. The fixture `fixtures/plugins/tracker`
-declares a Milestone and a Ticket that looks one up.
+declares a Milestone and a Ticket that looks one up, and the first-party
+plugin `plugins/activities` declares Task and Event with a Log a call
+related action ([Activities](../product/activities.md)).
 
 ## Declaring objects and fields
 
@@ -74,7 +76,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `scale` | Number, currency and percent only; 0 to 8. |
 | `options` | Required for picklists and only allowed there: up to 200, each with `value`, `label` and optional `default`. |
 | `reference_object` | A lookup's target. |
-| `reference_objects` | A related-to field's allowlist: 1 to 10 distinct targets. |
+| `reference_objects` | A related-to field's starting allowlist: 0 to 10 distinct targets. Workspace administrators choose the rest (see below). |
 | `delete_behaviour` | A lookup's: `clear` (the default) or `restrict`. |
 
 A target is an API name: one of the plugin's own objects, or an object of a
@@ -85,12 +87,92 @@ and 100 fields per object. The manifest is refused when it is read if any
 rule is broken (`ManifestError::InvalidObject` or `InvalidObjectField`),
 and unknown keys are refused rather than ignored.
 
+## Related-to fields the workspace points
+
+A plugin rarely knows which objects a workspace has. Its related-to field
+may therefore start with an empty or partial allowlist, and the workspace's
+administrators change it with the field API's `PATCH ... reference_objects`
+(up to 10 objects, any active object, the list may be emptied). This is the
+one property of a plugin's field administrators may change; anything else
+in the same request is refused with `objects.plugin_owned`. The manifest's
+list is only the starting value: an upgrade never changes an installed
+field's allowlist, as with `sharing_model`.
+
+While the allowlist is empty, the field holds no new values: writes answer
+`records.reference_object_not_allowed`, the candidates route refuses every
+object, and device replicas keep the field with nothing allowed. Changing
+the allowlist runs the usual cascades: values pointing at an object taken
+out are kept, and create quick actions that fill the field from that object
+are deleted (ADR 0032 §4).
+
+## Related actions
+
+An object may declare create quick actions ([ADR 0032](../adr/0032-quick-actions.md))
+for the objects its related-to fields allow:
+
+```toml
+[[objects.related_actions]]
+field = "related_to"   # one of this object's related-to fields
+name = "log_a_call"
+label = "Log a call"
+fields = ["name", "platform.activities:description"]
+presets = { "platform.activities:type" = "call", "platform.activities:status" = "completed" }
+```
+
+Whenever an object enters the field's allowlist, it gains a create quick
+action of that name that makes a record of the declaring object, with the
+field set to the current record, the form asking for `fields` and the
+`presets` applied on save.
+An object that is out of service when it enters the allowlist, because its
+own plugin is disabled, gains the action when that plugin is enabled again.
+
+| Setting | Rule |
+| --- | --- |
+| `field` | The short name of one of the object's related-to fields. |
+| `name` | As for field names; unique per declaring object. It becomes the quick action's name. |
+| `label` | 1 to 80 printable characters. |
+| `fields` | 1 to 20 distinct fields the form asks for: `name`, or API names of the object's declared fields. Not the related-to field itself. |
+| `presets` | Up to 20 constants by field API name, checked against the field's type: an option of a picklist, a list of options of a multi-select picklist, a number, `true` or `false`, a date as `YYYY-MM-DD`, a date and time with a zone, or text within the field's length. Lookups and related-to fields cannot be preset. |
+
+An object declares at most 10 related actions. Unknown keys are refused, and
+a broken rule refuses the manifest when it is read
+(`ManifestError::InvalidObjectField`, naming `related_actions/<name>`).
+
+What the engine does with them:
+
+- **On entry only.** The action is created when an object enters the
+  allowlist: when the plugin's objects come into service (at install and
+  on every resume, for objects in the starting list), when an
+  administrator adds the object, and, for a declaration a new plugin
+  version adds, for every object already in the list. The engine remembers
+  per declaration which objects it was offered to (`related_actions` in
+  both stores), and forgets an object when it leaves the allowlist. An
+  action an administrator deleted therefore stays deleted until its object
+  leaves the allowlist and enters it again.
+- **An ordinary workspace action.** Once created, administrators may edit,
+  reorder or delete it like their own. Upgrades do not touch it; a changed
+  declaration applies to objects entering the allowlist afterwards.
+- **Never in the way.** It is created only if the object has no quick
+  action of that name and fewer than 10 actions, and only if it passes the
+  same checks as an administrator's action. Otherwise it is skipped and
+  the skip is audited as `objects.quick_action.skipped`, with the reason
+  (`quick_actions.duplicate_name`, `quick_actions.limit_reached` or the
+  check's code); the allowlist change or resume still succeeds. A skipped
+  object counts as offered.
+- **Hidden with the plugin.** While the plugin is disabled, an object's
+  create actions that make its records are left out of the quick-action
+  list, and come back unchanged when it is enabled.
+- **It grants nothing.** Running it is the record create API with the
+  member's own permissions, sharing, validation rules and automations
+  (ADR 0032 §3); members without `create` on the declaring object cannot
+  use it.
+
 ## Enabling, upgrading and disabling
 
 | Plugin change | What happens to its objects in the workspace |
 | --- | --- |
 | Enable | The kernel creates the declared objects and fields that are missing, and brings the labels, descriptions, options and flags of existing ones in line with the manifest. Then they come into service. |
-| Enable again, or enable a new version | The same, idempotently. A field the manifest no longer declares stays, with its values. A picklist option it no longer declares stays, inactive. |
+| Enable again, or enable a new version | The same, idempotently. A field the manifest no longer declares stays, with its values. A picklist option it no longer declares stays, inactive. A related-to field keeps the workspace's allowlist. New related actions are offered to the objects already allowed. |
 | Disable | The objects are suspended: describe, lists, records, queries, search, related lists, global New, navigation and device replicas treat them as missing. Nothing is deleted. |
 | Enable after disabling | They come back unchanged, records included. |
 | Remove | They stay suspended and keep their records for export. Reinstalling brings them back. No purge happens yet. |
@@ -121,9 +203,10 @@ Plugin objects are described with `"origin": "plugin"` and
 `"owner_plugin": "<plugin id>"`, and their fields with `"origin": "plugin"`.
 
 - **Administrators may** add `custom` fields, validation rules, automations,
-  quick actions and object permissions, and choose the object's
-  `sharing_model` and `grant_hierarchy`.
-- **Administrators may not** change or delete the plugin's own fields, or
+  quick actions and object permissions, choose the object's
+  `sharing_model` and `grant_hierarchy`, and choose the allowlist of the
+  plugin's related-to fields.
+- **Administrators may not** otherwise change or delete the plugin's own fields, or
   change the plugin object's labels, description or flags, or delete it:
   the API answers `409 objects.plugin_owned`. Relabelling is the plugin's,
   through a new version.

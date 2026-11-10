@@ -6,7 +6,7 @@ use crate::events::{Change, EvidenceContext};
 use crate::naming::{custom_api_name, next_workspace_prefix};
 use crate::sharing::{self, GranteeKind, RecordRights, RecordShare, ShareAccess};
 use crate::values::{
-    self, apply_values, field_shape, filter_value, record_index, FIELDS_PER_OBJECT_MAX, LABEL_MAX,
+    self, apply_values, filter_value, record_index, FIELDS_PER_OBJECT_MAX, LABEL_MAX,
     MASTERS_PER_OBJECT_MAX, ROLLUPS_PER_OBJECT_MAX,
 };
 use crate::SaveEvent;
@@ -611,7 +611,7 @@ impl ObjectService {
             .map_err(|issue| issues.push(issue))
             .ok()
             .flatten();
-        let shape = field_shape(&input)
+        let shape = values::field_shape_for(&input, origin == Origin::Plugin)
             .map_err(|found| issues.extend(found))
             .ok();
         let lookup_filter =
@@ -778,8 +778,10 @@ impl ObjectService {
             .field(field_api_name)
             .cloned()
             .ok_or(ObjectError::NotFound)?;
-        // A plugin's own fields change only with the plugin (ADR 0033 §2).
-        if field.origin == Origin::Plugin {
+        // A plugin's own fields change only with the plugin, except the
+        // allowlist of a related-to field, whose targets are the
+        // workspace's to choose (ADR 0033 §2).
+        if field.origin == Origin::Plugin && !only_allowlist(&field, &input) {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
         }
         // Boxed: the field checks hold a large future.
@@ -845,7 +847,11 @@ impl ObjectService {
             }
         }
         if let Some(names) = input.reference_objects.as_deref() {
-            match values::reference_objects(field.field_type, Some(names)) {
+            match values::reference_objects(
+                field.field_type,
+                Some(names),
+                field.origin == Origin::Plugin,
+            ) {
                 Ok(names) => match allowed_objects(tx, &names, self.caller.installer()).await? {
                     Ok(allowed) => {
                         field.reference_object_ids =
@@ -993,6 +999,16 @@ impl ObjectService {
             // field (ADR 0032 §4).
             self.quick_actions_after_allowlist_changed(tx, object, &field, context)
                 .await?;
+            // Objects that entered it are offered the related actions the
+            // plugin declares on the field (ADR 0033 §3).
+            if field.origin == Origin::Plugin {
+                let updated = tx
+                    .object_by_id(object.id)
+                    .await?
+                    .ok_or(ObjectError::Invariant)?;
+                self.offer_related_actions(tx, &updated, Some(field.id), context)
+                    .await?;
+            }
         }
         Ok(field)
     }
@@ -3478,6 +3494,41 @@ async fn masters_live(
         }
     }
     Ok(true)
+}
+
+/// Whether `input` changes nothing but a related-to field's allowlist: the
+/// one property of a plugin's field administrators may change.
+fn only_allowlist(field: &FieldDefinition, input: &UpdateField) -> bool {
+    let UpdateField {
+        expected_version: _,
+        label,
+        description,
+        required,
+        indexed,
+        searchable,
+        track_history,
+        max_length,
+        options,
+        default_value,
+        position,
+        formula,
+        lookup_filter,
+        reference_objects,
+    } = input;
+    field.field_type == FieldType::RelatedTo
+        && reference_objects.is_some()
+        && label.is_none()
+        && description.is_none()
+        && required.is_none()
+        && indexed.is_none()
+        && searchable.is_none()
+        && track_history.is_none()
+        && max_length.is_none()
+        && options.is_none()
+        && default_value.is_none()
+        && position.is_none()
+        && formula.is_none()
+        && lookup_filter.is_none()
 }
 
 /// The active objects a related-to field's allowlist names, in its order,

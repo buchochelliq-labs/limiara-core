@@ -311,6 +311,27 @@ fn quick_action_json(action: &crate::QuickAction) -> Result<(Value, Value), Obje
     ))
 }
 
+const RELATED_ACTION_COLUMNS: &str = "id, object_id, field_id, owner_plugin, name, label, \
+     fields, presets, offered_to, created_at, updated_at";
+
+fn related_action_from_row(row: &PgRow) -> Result<crate::RelatedAction, ObjectError> {
+    let json = |column: &str| -> Result<Value, ObjectError> { Ok(row.try_get(column)?) };
+    Ok(crate::RelatedAction {
+        id: row.try_get("id")?,
+        object_id: row.try_get("object_id")?,
+        field_id: row.try_get("field_id")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        name: row.try_get("name")?,
+        label: row.try_get("label")?,
+        fields: serde_json::from_value(json("fields")?).map_err(|_| ObjectError::Invariant)?,
+        presets: serde_json::from_value(json("presets")?).map_err(|_| ObjectError::Invariant)?,
+        offered_to: serde_json::from_value(json("offered_to")?)
+            .map_err(|_| ObjectError::Invariant)?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
 const AUTOMATION_COLUMNS: &str = "id, object_id, name, description, trigger, timing, condition, \
      actions, schedule, active, version, created_at, created_by, updated_at, updated_by";
 
@@ -1820,6 +1841,61 @@ impl ObjectTx for PostgresObjectTx {
         Ok(result.rows_affected() == 1)
     }
 
+    async fn related_actions(
+        &mut self,
+        object_id: Uuid,
+    ) -> Result<Vec<crate::RelatedAction>, ObjectError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {RELATED_ACTION_COLUMNS} FROM related_actions \
+             WHERE tenant_id = $1 AND object_id = $2 ORDER BY field_id, name"
+        ))
+        .bind(self.tenant_id)
+        .bind(object_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter().map(related_action_from_row).collect()
+    }
+
+    async fn put_related_action(
+        &mut self,
+        action: &crate::RelatedAction,
+    ) -> Result<(), ObjectError> {
+        let json =
+            |value: Result<Value, serde_json::Error>| value.map_err(|_| ObjectError::Invariant);
+        sqlx::query(
+            "INSERT INTO related_actions (tenant_id, id, object_id, field_id, owner_plugin, name, \
+             label, fields, presets, offered_to, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+             ON CONFLICT (tenant_id, id) DO UPDATE SET label = EXCLUDED.label, \
+             fields = EXCLUDED.fields, presets = EXCLUDED.presets, \
+             offered_to = EXCLUDED.offered_to, updated_at = EXCLUDED.updated_at",
+        )
+        .bind(self.tenant_id)
+        .bind(action.id)
+        .bind(action.object_id)
+        .bind(action.field_id)
+        .bind(&action.owner_plugin)
+        .bind(&action.name)
+        .bind(&action.label)
+        .bind(json(serde_json::to_value(&action.fields))?)
+        .bind(json(serde_json::to_value(&action.presets))?)
+        .bind(json(serde_json::to_value(&action.offered_to))?)
+        .bind(action.created_at)
+        .bind(action.updated_at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_related_action(&mut self, id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query("DELETE FROM related_actions WHERE tenant_id = $1 AND id = $2")
+            .bind(self.tenant_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
     async fn automations(
         &mut self,
         object_id: Uuid,
@@ -2528,6 +2604,11 @@ impl ObjectTx for PostgresObjectTx {
     ) -> Result<(), ObjectError> {
         platform_audit::append_in_transaction(&mut self.tx, audit).await?;
         platform_outbox::append_in_transaction(&mut self.tx, event).await?;
+        Ok(())
+    }
+
+    async fn append_audit(&mut self, audit: &AuditEvent) -> Result<(), ObjectError> {
+        platform_audit::append_in_transaction(&mut self.tx, audit).await?;
         Ok(())
     }
 

@@ -81,7 +81,7 @@ fn points_to(field: &FieldDefinition, object_id: Uuid) -> bool {
 /// Checks an action against the object it belongs to and, for a create
 /// action, the child object its form writes to. Presets are normalised in
 /// place, as record values are.
-fn check_action(
+pub(crate) fn check_action(
     action: &mut QuickAction,
     object: &ObjectDefinition,
     target: Option<&ObjectDefinition>,
@@ -205,7 +205,21 @@ impl ObjectService {
                 return Err(ObjectError::NotFound);
             }
         }
-        let actions = tx.quick_actions(object.id).await?;
+        let mut actions = Vec::new();
+        for action in tx.quick_actions(object.id).await? {
+            // A create action whose object is out of service, such as a
+            // disabled plugin's (ADR 0033 §2), is hidden with it.
+            if let Some(target) = action.target_object_id {
+                let in_service = tx
+                    .object_by_id(target)
+                    .await?
+                    .is_some_and(|target| target.is_active());
+                if !in_service {
+                    continue;
+                }
+            }
+            actions.push(action);
+        }
         tx.commit().await?;
         Ok(actions)
     }

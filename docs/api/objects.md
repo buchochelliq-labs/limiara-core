@@ -108,7 +108,9 @@ administrators add.
 
 - `PATCH .../fields/{field}` and `DELETE .../fields/{field}` on a plugin's
   field, and `DELETE /objects/{api_name}` on a plugin object, answer
-  `409 objects.plugin_owned`.
+  `409 objects.plugin_owned`, with one exception: a `PATCH` of a plugin's
+  related-to field that sends only `expected_version` and
+  `reference_objects` changes its allowlist (see Related-to fields).
 - `PATCH /objects/{api_name}` on a plugin object may change only
   `sharing_model` and `grant_hierarchy`; any other setting answers
   `409 objects.plugin_owned`.
@@ -153,8 +155,20 @@ types return `"reference_objects": null`. Creating one fails with:
   `PATCH`;
 - `objects.unique_not_allowed` and `objects.default_not_allowed`.
 
+A plugin's related-to field (`"origin": "plugin"`) may have an empty
+allowlist: plugins may ship one empty or partial, and its list takes 0 to
+10 objects instead of 1 to 10. While it is empty, every value is refused
+with `records.reference_object_not_allowed`, and so is every `object` on
+the candidates route. Upgrading the plugin never changes it.
+
 `PATCH .../fields/{field}` takes a new `reference_objects`, which replaces
-the allowlist and is checked the same way. Taking an object out clears
+the allowlist and is checked the same way; on a plugin's field it may be
+the request's only change. An object entering the allowlist of a plugin's
+field gains the create quick actions the plugin declares for it
+([related actions](../plugins/objects.md#related-actions)); one that cannot
+be added, because the object already has an action of that name or 10
+actions, is skipped and audited as `objects.quick_action.skipped`, and the
+`PATCH` still succeeds. Taking an object out clears
 nothing: values that point to its records stay and are still named in
 `related`, but new values to it are refused, its records lose the field's
 related list, and create quick actions on it that fill the field are
@@ -891,4 +905,7 @@ are record ids, are no exception. Changes a plugin's installation makes
 also carry `"plugin": "<plugin id>"`, with the member who changed the
 plugin's state as actor; suspending and resuming a plugin's objects are
 `object-updated` events with `"suspended"`, audited as
-`objects.object.suspended` and `objects.object.resumed`.
+`objects.object.suspended` and `objects.object.resumed`. A related action the
+engine skips leaves only an audit record, `objects.quick_action.skipped`,
+naming the object, the action, the plugin and the reason; nothing changed,
+so no event is published.
