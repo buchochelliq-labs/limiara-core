@@ -1108,6 +1108,31 @@ pub struct CreateQuickAction {
     pub presets: BTreeMap<String, Value>,
 }
 
+/// A create quick action a plugin declares on one of its objects for every
+/// object entering a related-to field's allowlist (ADR 0033 §3): the
+/// template the engine creates ordinary quick actions from. It is kept per
+/// workspace with the objects the action was already offered to, so the
+/// engine creates an action only when an object enters the allowlist and
+/// never again while it stays there, even if an administrator deleted it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RelatedAction {
+    pub id: Uuid,
+    /// The plugin object whose records the action makes.
+    pub object_id: Uuid,
+    /// Its related-to field, set to the current record.
+    pub field_id: Uuid,
+    pub owner_plugin: String,
+    pub name: String,
+    pub label: String,
+    pub fields: Vec<String>,
+    pub presets: BTreeMap<String, Value>,
+    /// Objects in the allowlist that were offered the action since they
+    /// last entered it, in the order they were.
+    pub offered_to: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A partial change to a quick action. Its kind and target are fixed.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

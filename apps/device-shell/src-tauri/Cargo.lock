@@ -3150,6 +3150,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "thiserror 1.0.69",
+ "tracing",
  "uuid",
 ]
 

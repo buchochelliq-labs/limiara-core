@@ -17,6 +17,7 @@ pub mod push;
 pub mod query;
 pub mod quick_actions;
 pub mod related;
+pub mod related_actions;
 pub mod related_to;
 pub mod relationships;
 pub mod replica;

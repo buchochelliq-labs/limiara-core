@@ -380,3 +380,32 @@ async fn sqlite_store_passes_the_plugin_object_conformance_suite() {
         assert_eq!(kept, 1);
     }
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_related_action_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::related_actions::run(store, tenant).await;
+
+    let pool = databases.pool(tenant).await.expect("pool");
+    // Each skipped related action is audited once, with its reason.
+    let skipped: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.quick_action.skipped' \
+         AND json_extract(metadata, '$.plugin') = 'platform.activities' \
+         AND json_extract(metadata, '$.reason') IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(skipped, report.skipped);
+    let declared: i64 = sqlx::query_scalar("SELECT count(*) FROM related_actions")
+        .fetch_one(&pool)
+        .await
+        .expect("related actions");
+    assert_eq!(declared, 2, "log_a_call and the upgrade's log_an_email");
+}

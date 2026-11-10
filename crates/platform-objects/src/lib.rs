@@ -32,6 +32,7 @@ pub mod push;
 pub mod query;
 pub mod quick_actions;
 pub mod related;
+pub mod related_actions;
 pub mod replica;
 pub mod replica_definitions;
 pub mod reports;

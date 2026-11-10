@@ -88,7 +88,9 @@ the phone app can offer the same actions.
 
 "Log a call" needs an activity object (tasks, calls and events on a
 timeline) that the engine does not have yet. It is deferred to the
-activities decision and recorded in the roadmap.
+activities decision and recorded in the roadmap. ADR 0033 §3 delivers
+it as a related action of the Activities plugin: an ordinary create action
+the engine adds to each object entering Task's *related to* allowlist.
 
 ## Alternatives considered
 

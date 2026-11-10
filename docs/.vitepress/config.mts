@@ -90,7 +90,8 @@ export default {
             { text: "Overview", link: "/product/overview" },
             { text: "Application shell", link: "/product/application-shell" },
             { text: "UI foundations", link: "/product/ui-foundations" },
-            { text: "Contacts UX benchmark", link: "/product/contacts-ux-benchmark" }
+            { text: "Contacts UX benchmark", link: "/product/contacts-ux-benchmark" },
+            { text: "Using Activities", link: "/product/activities" }
           ]
         }
       ],
