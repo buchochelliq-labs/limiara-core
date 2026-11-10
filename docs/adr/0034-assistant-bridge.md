@@ -13,6 +13,17 @@ of #235. Quick actions on device replicas (#236) are a prerequisite of the
 bridge's quick-action operations. Nothing is implemented yet; the slices
 are listed under Consequences.
 
+Decided in review (2026-11-10):
+
+- Assistant reads have no per-field exclusions; field-level security
+  (#174) decides (§4).
+- History records the assistant's name as the device reports it (§6).
+- A lease that locks does not clear the OS index; entries expire after the
+  offline lease length instead, refreshed by each sync (§7).
+- Every assistant write is confirmed, and administrators cannot relax
+  that (§5).
+- The confirmation token lives for two minutes (§5).
+
 ## Context
 
 Both phone platforms now let system assistants act inside apps:
@@ -205,6 +216,11 @@ The rules that hold whatever the settings:
   delete or rewrite their OS index entries on the next sync, through the
   index stream (§7).
 
+There are no per-field exclusions for assistant reads. Which fields a
+member may read is field-level security's job (#174), and the bridge reads
+as the member, so an assistant sees exactly the fields the member does.
+The excluded fields above apply only to the OS index.
+
 The member keeps a narrower choice on each device: the app's settings let
 them turn assistant access and indexing off on that device. Indexing is off
 on a device until the member turns it on there (§7).
@@ -233,8 +249,9 @@ update and quick action needs the member's explicit confirmation of the
 prepared summary, through the platform's own confirmation (an App Intent's
 `requestConfirmation`, the agent's confirmation on Android), every time.
 There is no "don't ask again", no confirmation carried over from an
-earlier step of a skill or a chained call, and no write the bridge treats
-as too small to confirm. The bridge cannot see the member's screen, so
+earlier step of a skill or a chained call, no write the bridge treats
+as too small to confirm, and no setting that lets an administrator relax
+this for a quick action or an object. The bridge cannot see the member's screen, so
 it enforces what it can, that no write commits without a prepared,
 unchanged token, and the review of each native plugin checks the rest:
 that every commit follows a confirmation shown to the member. This is the
@@ -306,12 +323,20 @@ Therefore:
 - **Entries are grouped by workspace.** Each entry's group (a domain
   identifier on iOS, a namespace on Android) is the workspace id, so one
   call removes a workspace's entries without reading them.
+- **Entries expire on their own.** Each entry carries an expiry (an
+  item's expiration date on iOS, a document's time to live on Android) set
+  to the workspace's offline lease length (ADR 0029 §3) from when it was
+  written. Each successful sync rewrites the entries it touches and
+  extends the expiry of the rest, so a device that keeps syncing keeps its
+  entries, and one that stops loses them at about the time its lease
+  would lock. A lease that locks does not clear the index; the expiry
+  bounds how long entries outlive the last sync, without a rebuild after
+  every unlock.
 - **Sign-out and wipe clear the workspace's entries,** before the replica
-  is deleted where possible. A lease that locks clears them too, and the
-  next successful sync rebuilds them. At each launch, the shell tells the
+  is deleted where possible. At each launch, the shell tells the
   index plugins which workspaces it holds, and they delete the entries of
-  any other workspace, so entries do not outlive an interrupted wipe or a
-  crash.
+  any other workspace and any entry past its expiry, so entries do not
+  outlive an interrupted wipe, a crash or an OS that keeps expired items.
 - **The bridge drives it.** Native plugins do not decide what to index.
   The bridge turns the replica change feed (§9) into an **index stream**
   already filtered by the policy and the member's access: add or replace
