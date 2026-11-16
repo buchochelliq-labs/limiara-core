@@ -8,8 +8,10 @@ ADR 0021 (validation rules, whose metadata model this follows) and ADR 0028
 (related lists). Part of issue #179. The quick-action metadata is
 implemented in `platform_objects::quick_actions`, the API's
 `/objects/{object}/quick-actions` routes, PostgreSQL migration 0035 and
-SQLite tenant step 0025; sending actions to device replicas (§5) is a
-follow-up in the roadmap.
+SQLite tenant step 0025. Sending actions to device replicas (§5) is
+delivered by #236: quick-action changes move the workspace metadata
+version, a device takes each object's actions with its definitions, keeps
+those it can run offline and defers the rest (see §5).
 
 ## Context
 
@@ -83,6 +85,23 @@ in the same transaction. Like other engine tables, they carry `tenant_id`
 with forced row-level security. Both storage backends keep them, and they
 are part of the object definitions a device replica receives (ADR 0024), so
 the phone app can offer the same actions.
+
+Delivered as follows (#236). Creating, changing or deleting an action,
+including the create actions a plugin's related actions add (ADR 0033 §3),
+moves the workspace metadata version, so devices take definitions again. A
+device reads each object's actions from `GET /objects/{object}/quick-actions`
+next to its validation rules. Its replica keeps an action only when the
+server's own check of the action passes against the replica's definitions:
+its fields and presets are on the replica's object and, for a create
+action, its child object is held and in service there and its reference
+field still points at the object. Any other action is deferred, as rules
+that cannot compile on the replica are: it stays with the server and is
+listed in the sync report, and it returns when what it needs does. An
+action whose child object is suspended with its plugin (ADR 0033 §2) is
+therefore removed from the device, and an object the device no longer
+holds takes its actions with it. Running an action on the device is the
+local record create or update as the member; the server checks it again on
+push (ADR 0024). Taking the same definitions twice changes nothing.
 
 ### 6. Logging a call waits for activities
 

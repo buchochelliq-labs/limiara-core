@@ -434,7 +434,12 @@ impl<T: SyncTransport> SyncClient<T> {
                 continue;
             };
             let rules = self.net(self.transport.validation_rules(api_name)).await?;
-            objects.push(remote_object(&described, rules.as_deref())?);
+            let actions = self.net(self.transport.quick_actions(api_name)).await?;
+            objects.push(remote_object(
+                &described,
+                rules.as_deref(),
+                actions.as_deref(),
+            )?);
         }
         Ok(self.engine.apply_remote_definitions(&objects).await?)
     }

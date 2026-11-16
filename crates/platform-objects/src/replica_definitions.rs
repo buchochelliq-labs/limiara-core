@@ -1,15 +1,15 @@
 //! A synced device's definitions (ADR 0024 §3). When the server's metadata
-//! version moves, the device takes the objects, fields and validation rules
-//! the server describes, as the server has them, before it applies record
-//! changes made under them. The server's API names and key prefixes are
+//! version moves, the device takes the objects, fields, validation rules
+//! and quick actions (ADR 0032 §5) the server describes, as the server has
+//! them, before it applies record changes made under them. The server's API names and key prefixes are
 //! kept, so records and device-assigned ids (ADR 0031) mean the same on
 //! both sides; the replica keeps its own internal ids.
 
 use crate::service::{reindex, ObjectService};
 use crate::{
     AccessFlags, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, ObjectDefinition,
-    ObjectError, ObjectTx, Origin, PicklistOption, RolePermission, Rollup, RollupFunction,
-    SharingModel, ValidationRule,
+    ObjectError, ObjectTx, Origin, PicklistOption, QuickAction, QuickActionKind, RolePermission,
+    Rollup, RollupFunction, SharingModel, ValidationRule,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -40,6 +40,10 @@ pub struct RemoteObject {
     /// The object's validation rules; `None` when the server does not show
     /// them to the member, which leaves the replica's rules as they are.
     pub rules: Option<Vec<RemoteRule>>,
+    /// The object's quick actions (ADR 0032 §5); `None` when the server
+    /// does not show them to the member, which leaves the replica's actions
+    /// as they are.
+    pub quick_actions: Option<Vec<RemoteQuickAction>>,
 }
 
 impl RemoteObject {
@@ -115,7 +119,30 @@ impl RemoteObject {
                     })
                     .collect()
             }),
+            quick_actions: None,
         }
+    }
+
+    /// The same description with the object's quick actions, as the
+    /// server's `GET /objects/{object}/quick-actions` lists them.
+    pub fn with_quick_actions(mut self, actions: &[QuickAction]) -> Self {
+        self.quick_actions = Some(
+            actions
+                .iter()
+                .map(|action| RemoteQuickAction {
+                    name: action.name.clone(),
+                    label: action.label.clone(),
+                    kind: action.kind,
+                    position: action.position,
+                    target_object: action.target_object.clone(),
+                    target_field: action.target_field.clone(),
+                    fields: action.fields.clone(),
+                    presets: action.presets.clone(),
+                    version: action.version,
+                })
+                .collect(),
+        );
+        self
     }
 }
 
@@ -167,6 +194,22 @@ pub struct RemoteRule {
     pub version: i64,
 }
 
+/// A quick action by API names, as the server lists it (ADR 0032).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteQuickAction {
+    pub name: String,
+    pub label: String,
+    pub kind: QuickActionKind,
+    pub position: i32,
+    /// The child object a create action makes records of.
+    pub target_object: Option<String>,
+    /// The field on the child object set to the current record.
+    pub target_field: Option<String>,
+    pub fields: Vec<String>,
+    pub presets: BTreeMap<String, Value>,
+    pub version: i64,
+}
+
 /// What taking the server's definitions changed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DefinitionsApplied {
@@ -180,13 +223,24 @@ pub struct DefinitionsApplied {
     /// condition names a field the replica leaves out, such as a lookup to
     /// an object the member cannot read. The server checks them on push.
     pub deferred_rules: Vec<String>,
+    /// Quick actions added, changed or removed, as `object.action`.
+    pub quick_actions: Vec<String>,
+    /// Quick actions the replica cannot offer, as `object.action`: a field
+    /// they ask for or preset, or for a create action its object or
+    /// reference field, is not on the replica, such as a lookup to an object
+    /// the member cannot read or an object suspended with its plugin. They
+    /// stay with the server, and come back when what they need does.
+    pub deferred_quick_actions: Vec<String>,
 }
 
 impl DefinitionsApplied {
-    /// Whether anything changed; rules deferred to the server change
-    /// nothing on the replica.
+    /// Whether anything changed; rules and quick actions deferred to the
+    /// server change nothing on the replica.
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty() && self.fields.is_empty() && self.rules.is_empty()
+        self.objects.is_empty()
+            && self.fields.is_empty()
+            && self.rules.is_empty()
+            && self.quick_actions.is_empty()
     }
 }
 
@@ -194,7 +248,8 @@ impl ObjectService {
     /// Makes the replica's definitions the server's: `objects` is every
     /// object the server describes to the member. Objects and fields the
     /// server no longer describes are retired, as deleting them would, and
-    /// rules it no longer has are removed. Only a replica's engine may, and
+    /// rules and quick actions it no longer has are removed, with the quick
+    /// actions of retired objects. Only a replica's engine may, and
     /// it needs no `objects.manage`: the server already decided. Nothing is
     /// logged and the metadata version does not move; the device stores the
     /// server's version with `record_pull` once its records follow.
@@ -222,7 +277,11 @@ impl ObjectService {
             ids.insert(remote.api_name.clone(), id);
         }
         let described: BTreeSet<&str> = objects.iter().map(|o| o.api_name.as_str()).collect();
+        let mut undescribed = Vec::new();
         for local in tx.list_objects().await? {
+            if !described.contains(local.api_name.as_str()) {
+                undescribed.push(local.clone());
+            }
             if local.is_active() && !described.contains(local.api_name.as_str()) {
                 let mut retired = local.clone();
                 retired.status = DefinitionStatus::Deleted;
@@ -300,6 +359,27 @@ impl ObjectService {
                 )
                 .await?;
             }
+        }
+
+        // Quick actions last: a create action names another object's fields,
+        // which are now as the server describes them. An object no longer
+        // described keeps no actions; nothing on the device could run them.
+        for remote in objects {
+            let Some(actions) = &remote.quick_actions else {
+                continue;
+            };
+            let object_id = ids
+                .get(&remote.api_name)
+                .copied()
+                .ok_or(ObjectError::Invariant)?;
+            let local = tx
+                .object_by_id(object_id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            put_quick_actions(tx.as_mut(), &local, actions, actor, &mut applied).await?;
+        }
+        for local in &undescribed {
+            put_quick_actions(tx.as_mut(), local, &[], actor, &mut applied).await?;
         }
 
         // Index rows, search terms and stored formula values follow the
@@ -635,4 +715,136 @@ async fn put_rules(
         }
     }
     Ok(())
+}
+
+/// Makes an object's quick actions on the replica the server's `remote`
+/// ones that the replica can offer. An action is kept only when it would
+/// pass the server's own check (`check_action`) against the object as the
+/// replica defines it and, for a create action, against its child object
+/// in service on the replica: its fields, presets and reference field are
+/// all there. Any other is deferred: offering it would refuse every save,
+/// and for a suspended plugin object would make records the server no
+/// longer accepts. Running a kept action is an ordinary local create or
+/// update, which the server checks again on push (ADR 0024).
+async fn put_quick_actions(
+    tx: &mut dyn ObjectTx,
+    object: &ObjectDefinition,
+    remote: &[RemoteQuickAction],
+    actor: Uuid,
+    applied: &mut DefinitionsApplied,
+) -> Result<(), ObjectError> {
+    let now = Utc::now();
+    let local: BTreeMap<String, QuickAction> = tx
+        .quick_actions(object.id)
+        .await?
+        .into_iter()
+        .map(|action| (action.name.clone(), action))
+        .collect();
+    let mut kept: BTreeMap<String, QuickAction> = BTreeMap::new();
+    for action in remote {
+        let target = match action.target_object.as_deref() {
+            Some(name) => match tx
+                .object_by_api_name(name)
+                .await?
+                .filter(ObjectDefinition::is_active)
+            {
+                Some(target) => Some(target),
+                None => {
+                    applied
+                        .deferred_quick_actions
+                        .push(format!("{}.{}", object.api_name, action.name));
+                    continue;
+                }
+            },
+            None => None,
+        };
+        let existing = local.get(&action.name);
+        let mut candidate = QuickAction {
+            id: existing.map_or_else(Uuid::now_v7, |existing| existing.id),
+            object_id: object.id,
+            name: action.name.clone(),
+            label: action.label.clone(),
+            kind: action.kind,
+            position: action.position,
+            target_object_id: target.as_ref().map(|target| target.id),
+            target_object: target.as_ref().map(|target| target.api_name.clone()),
+            target_field: action.target_field.clone(),
+            fields: action.fields.clone(),
+            presets: action.presets.clone(),
+            version: action.version.max(1),
+            created_at: existing.map_or(now, |existing| existing.created_at),
+            created_by: existing.map_or(Some(actor), |existing| existing.created_by),
+            updated_at: now,
+            updated_by: Some(actor),
+        };
+        let usable = (candidate.kind == QuickActionKind::Create) == target.is_some()
+            && crate::quick_actions::check_action(&mut candidate, object, target.as_ref())
+                .is_empty();
+        if usable {
+            kept.insert(candidate.name.clone(), candidate);
+        } else {
+            applied
+                .deferred_quick_actions
+                .push(format!("{}.{}", object.api_name, action.name));
+        }
+    }
+    // Removals first, so a name the server reused for a different kind or
+    // child object is free again.
+    for (name, existing) in &local {
+        let replaced = kept
+            .get(name)
+            .is_some_and(|action| !same_shape(existing, action));
+        if kept.contains_key(name) && !replaced {
+            continue;
+        }
+        if !tx
+            .delete_quick_action(existing.id, existing.version)
+            .await?
+        {
+            return Err(ObjectError::VersionConflict);
+        }
+        if !replaced {
+            applied
+                .quick_actions
+                .push(format!("{}.{name}", object.api_name));
+        }
+    }
+    for (name, action) in &kept {
+        match local.get(name) {
+            Some(existing) if same_shape(existing, action) => {
+                let unchanged = existing.label == action.label
+                    && existing.position == action.position
+                    && existing.fields == action.fields
+                    && existing.presets == action.presets
+                    && existing.version == action.version;
+                if unchanged {
+                    continue;
+                }
+                if !tx.update_quick_action(action, existing.version).await? {
+                    return Err(ObjectError::VersionConflict);
+                }
+            }
+            Some(_) => {
+                let mut fresh = action.clone();
+                fresh.id = Uuid::now_v7();
+                fresh.created_at = now;
+                fresh.created_by = Some(actor);
+                tx.insert_quick_action(&fresh).await?;
+            }
+            None => tx.insert_quick_action(action).await?,
+        }
+        applied
+            .quick_actions
+            .push(format!("{}.{name}", object.api_name));
+    }
+    Ok(())
+}
+
+/// Whether two actions of one name are the same action: what the server
+/// never changes after creating one (its kind, child object and reference
+/// field) is the same.
+fn same_shape(local: &QuickAction, remote: &QuickAction) -> bool {
+    local.kind == remote.kind
+        && local.target_object_id == remote.target_object_id
+        && local.target_field == remote.target_field
 }

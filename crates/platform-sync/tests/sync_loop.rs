@@ -225,6 +225,36 @@ impl SyncTransport for LocalTransport {
         }
     }
 
+    async fn quick_actions(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError> {
+        self.check()?;
+        match self.server.quick_actions(api_name).await {
+            Ok(actions) => Ok(Some(
+                actions
+                    .iter()
+                    .map(|action| {
+                        json!({
+                            "name": action.name,
+                            "label": action.label,
+                            "kind": action.kind,
+                            "position": action.position,
+                            "target_object": action.target_object,
+                            "target_field": action.target_field,
+                            "fields": action.fields,
+                            "presets": action.presets,
+                            "version": action.version,
+                            "created_at": action.created_at,
+                            "created_by": user_reference(action.created_by),
+                            "updated_at": action.updated_at,
+                            "updated_by": user_reference(action.updated_by),
+                        })
+                    })
+                    .collect(),
+            )),
+            Err(ObjectError::PermissionDenied | ObjectError::NotFound) => Ok(None),
+            Err(error) => Err(server_error(error)),
+        }
+    }
+
     async fn composite(
         &self,
         request: &CompositeRequest,

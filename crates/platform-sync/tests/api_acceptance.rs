@@ -5,7 +5,9 @@
 //! - `PLATFORM_SYNC_API`: the API origin;
 //! - `PLATFORM_SYNC_WORKSPACE`: the workspace id;
 //! - `PLATFORM_SYNC_TOKEN`: the device's access token;
-//! - `PLATFORM_SYNC_OBJECT`: an object the member may read and edit.
+//! - `PLATFORM_SYNC_OBJECT`: an object the member may read and edit;
+//! - `PLATFORM_SYNC_QUICK_ACTIONS`: quick actions the device must take with
+//!   its definitions, as space-separated `object.action` (ADR 0032 §5).
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -79,6 +81,25 @@ async fn a_device_syncs_with_the_real_api() {
     );
     let definitions = report.definitions.clone().expect("definitions");
     assert!(definitions.objects.contains(&object), "{report:?}");
+    for expected in env("PLATFORM_SYNC_QUICK_ACTIONS").split_whitespace() {
+        assert!(
+            definitions
+                .quick_actions
+                .iter()
+                .any(|taken| taken == expected),
+            "{expected} reaches the device: {definitions:?}"
+        );
+        let (on, name) = expected.rsplit_once('.').expect("object.action");
+        let held = client
+            .engine()
+            .quick_actions(on)
+            .await
+            .expect("the device lists its actions");
+        assert!(
+            held.iter().any(|action| action.name == name),
+            "{expected} on the replica: {held:?}"
+        );
+    }
     assert!(report.resynced && report.pulled > 0, "{report:?}");
 
     // The member renames a record offline; the next sync pushes it.

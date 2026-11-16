@@ -79,6 +79,11 @@ pub trait SyncTransport: Send + Sync {
     /// object is gone or no longer readable.
     async fn validation_rules(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError>;
 
+    /// `GET /objects/{api_name}/quick-actions`: the object's quick actions
+    /// (ADR 0032), which every member who can read it may read, or `None`
+    /// when the object is gone or no longer readable.
+    async fn quick_actions(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError>;
+
     /// `POST /composite`, with each operation's result in order.
     async fn composite(
         &self,

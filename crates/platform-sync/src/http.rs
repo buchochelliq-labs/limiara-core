@@ -243,6 +243,24 @@ impl SyncTransport for HttpTransport {
         }
     }
 
+    async fn quick_actions(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError> {
+        let (status, body) = self
+            .call(
+                Method::GET,
+                &format!("/objects/{}/quick-actions", segment(api_name)),
+                &[],
+                None,
+            )
+            .await?;
+        match status {
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => Ok(None),
+            status if status.is_success() => {
+                Ok(Some(parse::<Data>(body, "a quick action list")?.data))
+            }
+            status => Err(server(status, &body)),
+        }
+    }
+
     async fn composite(
         &self,
         request: &CompositeRequest,

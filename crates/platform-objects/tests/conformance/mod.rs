@@ -15,6 +15,7 @@ pub mod lease;
 pub mod plugin_objects;
 pub mod push;
 pub mod query;
+pub mod quick_action_replicas;
 pub mod quick_actions;
 pub mod related;
 pub mod related_actions;
