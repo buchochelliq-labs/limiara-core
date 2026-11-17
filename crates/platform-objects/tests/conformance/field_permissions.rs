@@ -584,6 +584,131 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect("viewer reads");
     assert_eq!(seen.values["custom:secret"], json!("zebra"));
+
+    quick_actions(&store, tenant).await;
+}
+
+/// Quick actions are offered only to members who can complete them: an
+/// action that presets a field, or sets a reference field, the member may
+/// not change is left out of the list, on the record and in the timeline.
+/// Administrators who manage objects still list every action, and the save
+/// stays refused for anyone who runs one regardless.
+async fn quick_actions(store: &Arc<dyn ObjectStore>, tenant: Uuid) {
+    let manager = service(
+        store,
+        caller(tenant, Uuid::now_v7(), &ADMIN_PERMISSIONS, &[]),
+    );
+    let staff = Uuid::now_v7();
+    for (name, label) in [("ticket", "Ticket"), ("line", "Line")] {
+        manager
+            .create_object(object(name, label), context())
+            .await
+            .expect("object");
+    }
+    let mut grade = field("grade", FieldType::Text);
+    grade.write_permission = Some(WRITE.into());
+    let mut pay = field("pay", FieldType::Number);
+    pay.read_permission = Some(READ.into());
+    pay.write_permission = Some(WRITE.into());
+    for definition in [field("note", FieldType::Text), grade, pay] {
+        manager
+            .create_field("custom:ticket", definition, context())
+            .await
+            .expect("ticket field");
+    }
+    let mut parent = field("ticket", FieldType::Lookup);
+    parent.reference_object = Some("custom:ticket".into());
+    parent.write_permission = Some(WRITE.into());
+    let mut open_parent = field("about", FieldType::Lookup);
+    open_parent.reference_object = Some("custom:ticket".into());
+    for definition in [parent, open_parent] {
+        manager
+            .create_field("custom:line", definition, context())
+            .await
+            .expect("line field");
+    }
+    for api_name in ["custom:ticket", "custom:line"] {
+        manager
+            .set_object_permission(
+                api_name,
+                staff,
+                AccessFlags {
+                    create: true,
+                    edit: true,
+                    ..AccessFlags::default()
+                },
+                context(),
+            )
+            .await
+            .expect("staff access");
+    }
+    for action in [
+        json!({"name": "note", "label": "Note", "kind": "update", "fields": ["custom:note"]}),
+        json!({"name": "grade", "label": "Grade", "kind": "update", "fields": ["custom:note"], "presets": {"custom:grade": "A"}}),
+        json!({"name": "pay", "label": "Pay", "kind": "update", "fields": ["custom:note"], "presets": {"custom:pay": 1}}),
+        // Asking for a read-only field is fine: the form shows it read-only.
+        json!({"name": "review", "label": "Review", "kind": "update", "fields": ["custom:grade", "custom:note"]}),
+        json!({"name": "add_line", "label": "Add line", "kind": "create", "target_object": "custom:line", "target_field": "custom:ticket", "fields": ["name"]}),
+        json!({"name": "add_about", "label": "Add about", "kind": "create", "target_object": "custom:line", "target_field": "custom:about", "fields": ["name"]}),
+    ] {
+        manager
+            .create_quick_action("custom:ticket", change(action), context())
+            .await
+            .expect("quick action");
+    }
+    let names = |actions: Vec<QuickAction>| -> Vec<String> {
+        let mut names: Vec<String> = actions.into_iter().map(|action| action.name).collect();
+        names.sort();
+        names
+    };
+    let viewer = service(store, caller(tenant, Uuid::now_v7(), &[], &[staff]));
+    let reader = service(store, caller(tenant, Uuid::now_v7(), &[READ], &[staff]));
+    let writer = service(
+        store,
+        caller(tenant, Uuid::now_v7(), &[READ, WRITE], &[staff]),
+    );
+    let everything = ["add_about", "add_line", "grade", "note", "pay", "review"];
+    assert_eq!(
+        names(
+            manager
+                .quick_actions("custom:ticket")
+                .await
+                .expect("manager")
+        ),
+        everything,
+        "administrators maintain every action"
+    );
+    assert_eq!(
+        names(writer.quick_actions("custom:ticket").await.expect("writer")),
+        everything
+    );
+    assert_eq!(
+        names(viewer.quick_actions("custom:ticket").await.expect("viewer")),
+        ["add_about", "note", "review"],
+        "presets and references the viewer may not change hide their actions"
+    );
+    assert_eq!(
+        names(reader.quick_actions("custom:ticket").await.expect("reader")),
+        ["add_about", "note", "review"],
+        "reading a preset field is not enough"
+    );
+
+    // The save an offered-but-stale action would make is still refused.
+    let ticket = viewer
+        .create_record("custom:ticket", &body(json!({"name": "T-1"})), context())
+        .await
+        .expect("ticket");
+    let error = viewer
+        .update_record(
+            "custom:ticket",
+            &ticket.public_id,
+            ticket.version,
+            &body(json!({"custom:grade": "A"})),
+            context(),
+        )
+        .await
+        .expect_err("grade is read-only");
+    assert_eq!(refused(&error), ["custom:grade"]);
 }
 
 /// The change log names no field the reader cannot read; the entry for a

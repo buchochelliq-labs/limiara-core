@@ -1,8 +1,8 @@
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it, vi} from 'vitest';
-import {canEditField, canReadField, createFixtureObjectsClient, createObjectsApiClient, fieldFromApi, readableFields, type ObjectDescription, type ObjectField} from './api';
+import {canCompleteAction, canEditField, canReadField, canSetField, createFixtureObjectsClient, createObjectsApiClient, fieldFromApi, readableFields, type ObjectDescription, type ObjectField} from './api';
 import {FieldPermissionsForm} from './ObjectManager';
-import {editableFields, RecordForm} from './ObjectPages';
+import {editableFields, RecordForm, valuesToSend} from './ObjectPages';
 
 const workspace = '018f0000-0000-7000-8000-000000000001';
 const noop = () => undefined;
@@ -94,5 +94,33 @@ describe('field-level permissions (G5)', () => {
     expect(owned).toContain('Set by its feature');
     expect(owned).toMatch(/<select[^>]*disabled=""/);
     expect(owned).not.toContain('Save access');
+  });
+
+  it('offers a quick action only when the member may set every value it presets (Codex P2 on #246)', () => {
+    expect(canSetField(project, 'name')).toBe(true);
+    expect(canSetField(project, 'custom:code')).toBe(true);
+    expect(canSetField(project, 'custom:budget')).toBe(false);
+    expect(canSetField(project, 'custom:salary')).toBe(false);
+    // A member's description leaves out fields they cannot read.
+    expect(canSetField({fields: [code]}, 'custom:salary')).toBe(false);
+    expect(canCompleteAction({presets: {}, targetField: null}, project)).toBe(true);
+    expect(canCompleteAction({presets: {'custom:code': 'X', name: 'Call'}, targetField: null}, project)).toBe(true);
+    expect(canCompleteAction({presets: {'custom:budget': 1}, targetField: null}, project)).toBe(false);
+    expect(canCompleteAction({presets: {'custom:salary': 1}, targetField: null}, project)).toBe(false);
+    // A create action's reference to the record must be settable too.
+    const line: ObjectDescription = {...project, apiName: 'custom:line', fields: [field('custom:project', 'Project', {type: 'lookup', referenceObject: 'custom:project', access: {read: true, edit: false}}), code]};
+    expect(canCompleteAction({presets: {}, targetField: 'custom:project'}, line)).toBe(false);
+    expect(canCompleteAction({presets: {}, targetField: 'custom:project'}, {...line, fields: [code, field('custom:project', 'Project', {type: 'lookup'})]})).toBe(true);
+  });
+
+  it('never sends a value the member may not change, presets included', () => {
+    const shown = [code, budget];
+    const draft = {name: 'Apollo', 'custom:code': 'AP-2', 'custom:budget': '9'};
+    const initial = {name: 'Apollo', 'custom:code': 'AP-1', 'custom:budget': '1'};
+    const writable = (apiName: string) => canSetField(project, apiName);
+    expect(valuesToSend({record: true, draft, initial, shown, showsName: true, always: {'custom:budget': 5, 'custom:salary': 1, 'custom:code': 'P'}, writable})).toEqual({'custom:code': 'AP-2'});
+    expect(valuesToSend({record: false, draft, initial, shown, showsName: true, always: {'custom:salary': 1}, writable})).toEqual({name: 'Apollo', 'custom:code': 'AP-2'});
+    // Without a check, every preset still goes, as before.
+    expect(valuesToSend({record: true, draft: initial, initial, shown: [code], showsName: false, always: {'custom:budget': 5}})).toEqual({'custom:budget': 5});
   });
 });

@@ -571,3 +571,114 @@ async fn hidden_values_never_reach_the_device() {
     assert_eq!(server["custom:notes"], json!("from the device"));
     assert_eq!(server["custom:salary"].as_f64(), Some(250.0));
 }
+
+/// Quick actions (ADR 0032) are offered only to members who can complete
+/// them: one that presets a field the member may not change is left out of
+/// the server's list, which is also what a device's replica syncs and
+/// answers its bridge with, so web and device agree. Administrators still list every action.
+#[tokio::test]
+async fn quick_actions_are_offered_only_to_members_who_can_complete_them() {
+    let world = World::new().await;
+    let id = world.accounts().await;
+    let (status, created) = world
+        .call(
+            world.admin,
+            "POST",
+            "/objects/custom:account/fields",
+            Some(
+                json!({"name": "grade", "label": "Grade", "field_type": "text",
+                        "write_permission": WRITE}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 201, "{created}");
+    for action in [
+        json!({"name": "note", "label": "Note", "kind": "update", "fields": ["custom:notes"]}),
+        json!({"name": "pay", "label": "Pay", "kind": "update", "fields": ["custom:notes"],
+               "presets": {"custom:salary": 1}}),
+        json!({"name": "grade", "label": "Grade", "kind": "update", "fields": ["custom:notes"],
+               "presets": {"custom:grade": "A"}}),
+    ] {
+        let (status, created) = world
+            .call(
+                world.admin,
+                "POST",
+                "/objects/custom:account/quick-actions",
+                Some(action),
+            )
+            .await;
+        assert_eq!(status, 201, "{created}");
+    }
+    let names = |listed: &Value| -> Vec<String> {
+        let mut names: Vec<String> = listed["data"]
+            .as_array()
+            .expect("actions")
+            .iter()
+            .filter_map(|action| action["name"].as_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        names
+    };
+    let plain = Uuid::now_v7();
+    for (user, expected) in [
+        (world.admin, vec!["grade", "note", "pay"]),
+        (world.writer, vec!["grade", "note", "pay"]),
+        (plain, vec!["note"]),
+    ] {
+        let (status, listed) = world
+            .call(user, "GET", "/objects/custom:account/quick-actions", None)
+            .await;
+        assert_eq!(status, 200, "{listed}");
+        assert_eq!(names(&listed), expected, "{listed}");
+    }
+    // Running a hidden action anyway is still refused by the server.
+    let (status, refused) = world
+        .call(
+            plain,
+            "PATCH",
+            &format!("/objects/custom:account/records/{id}"),
+            Some(json!({"expected_version": 1, "custom:grade": "A"})),
+        )
+        .await;
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(refused["code"], "records.field_not_writable");
+
+    // A plain member's device lists the same actions from its replica.
+    let device_directory = tempfile::tempdir().expect("device dir");
+    let device_files = platform_device::device_databases(
+        device_directory.path(),
+        Arc::new(platform_device::MemoryKeys::new()),
+    );
+    let device_store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(device_files));
+    let engine = ObjectService::new(
+        device_store,
+        ObjectCaller::new(world.workspace, plain, BTreeSet::new(), vec![world.role]),
+    )
+    .with_replica()
+    .with_client_ids();
+    let transport = HttpTransport::new(
+        format!("http://{}", world.address),
+        world.workspace,
+        Arc::new(Token(plain)),
+    )
+    .expect("transport");
+    let client = SyncClient::new(engine.clone(), transport);
+    let report = client.sync_once(context()).await.expect("sync");
+    // The device pulls actions from the same list, so the hidden ones never
+    // reach its replica, and the replica's own list agrees.
+    let definitions = report.definitions.expect("definitions");
+    assert_eq!(
+        definitions.quick_actions,
+        ["custom:account.note"],
+        "{definitions:?}"
+    );
+    let mut local: Vec<String> = engine
+        .quick_actions(ACCOUNT)
+        .await
+        .expect("local actions")
+        .into_iter()
+        .map(|action| action.name)
+        .collect();
+    local.sort();
+    assert_eq!(local, ["note"]);
+}

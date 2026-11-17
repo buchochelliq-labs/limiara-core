@@ -114,6 +114,29 @@ export function readableFields(fields: readonly ObjectField[]): ObjectField[] {
   return fields.filter(canReadField);
 }
 
+/**
+ * Whether the member may give `apiName` a value on `form` (G5): the name, or
+ * a field the member may change. A field the description leaves out is one
+ * the member cannot read, so it cannot be set either.
+ */
+export function canSetField(form: Pick<ObjectDescription, 'fields'>, apiName: string): boolean {
+  if (apiName === 'name') return true;
+  const field = form.fields.find(item => item.apiName === apiName);
+  return field !== undefined && canEditField(field);
+}
+
+/**
+ * Whether the member can complete a quick action (ADR 0032) on its form
+ * object (the record's object for an update action, the child for a create
+ * action): every value it sets without asking, its presets and a create
+ * action's reference to the record, is one the member may change. The
+ * server leaves other actions out of members' lists; administrators list
+ * every action, so pages check too.
+ */
+export function canCompleteAction(action: Pick<QuickAction, 'presets' | 'targetField'>, form: Pick<ObjectDescription, 'fields'>): boolean {
+  return [...Object.keys(action.presets), ...(action.targetField ? [action.targetField] : [])].every(apiName => canSetField(form, apiName));
+}
+
 /** A record in a related list or a lookup picker (ADR 0028). */
 export type RecordLink = {id: string; name: string};
 /** The records of another object that point at a record through one field. */

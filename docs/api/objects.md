@@ -127,6 +127,12 @@ A member without a field's read permission never sees the field:
   it (an entry whose changes were all to hidden fields stays, naming none,
   because the record's version moved);
 - related lists through it and timeline sources that need it are left out;
+- quick actions that preset it, or a create action whose reference field
+  it is, are left out of `GET .../quick-actions` (and so of device
+  replicas) and of the timeline's actions, as are those that preset a
+  field the member reads but may not change: a member is offered only
+  actions they can complete. Administrators with `objects.manage` list
+  every action to maintain it; the save stays refused for anyone;
 - a formula field that reads it, on the record, through a lookup or through
   another formula field, and a roll-up summary of it, are hidden too.
   Formulas and roll-ups are computed with full access and hidden whenever

@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {canEditField, canReadField, formatValue, holdsReference, readableFields, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {canCompleteAction, canEditField, canReadField, canSetField, formatValue, holdsReference, readableFields, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -194,7 +194,12 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
   // An action grants nothing (ADR 0032 §3): it shows only where the member could do the same through the full form.
-  const available = actions.list.filter(action => action.kind === 'update' ? canEdit : actionTarget(action, actions.targets)?.access.create === true);
+  // Nor where a value it sets without asking is one the member may not change (G5).
+  const available = actions.list.filter(action => {
+    const form = action.kind === 'update' ? object : actionTarget(action, actions.targets);
+    const allowed = action.kind === 'update' ? canEdit : form?.access.create === true;
+    return allowed && form !== undefined && canCompleteAction(action, form);
+  });
   const runningTarget = running?.kind === 'create' ? actionTarget(running, actions.targets) : undefined;
 
   return <div className="content-canvas object-page">
@@ -339,7 +344,7 @@ export function RelatedLists({client, apiName, recordId, recordName, refresh = 0
       return <section key={key(list)} className="object-related" aria-labelledby={headingId}>
         <div className="object-related__header">
           <h3 id={headingId}>{list.objectPluralLabel}{repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}</h3>
-          {children[list.object]?.access.create && <Button size="small" variant="secondary" aria-haspopup="dialog" aria-label={`New ${children[list.object]?.label.toLowerCase()}${repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}`} onClick={() => setCreating(list)}>New</Button>}
+          {children[list.object]?.access.create && canSetField(children[list.object] as ObjectDescription, list.field) && <Button size="small" variant="secondary" aria-haspopup="dialog" aria-label={`New ${children[list.object]?.label.toLowerCase()}${repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}`} onClick={() => setCreating(list)}>New</Button>}
         </div>
         {list.records.length === 0
           ? <p className="object-form__meta">No {list.objectPluralLabel.toLowerCase()} you can see.</p>
@@ -543,11 +548,14 @@ function RelatedToInput({client, objectApiName, field, value, currentName, curre
  * presets (ADR 0032) go with every save, but a shown preset field always sends
  * what the member submitted, even unchanged or empty, so their input wins.
  */
-export function valuesToSend({record, draft, initial, shown, showsName, always = {}}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>}): Record<string, unknown> {
+export function valuesToSend({record, draft, initial, shown, showsName, always: given = {}, writable = () => true}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>; writable?: (apiName: string) => boolean}): Record<string, unknown> {
+  // Nothing the member may not change is ever sent (G5), whatever an action presets.
+  const always = Object.fromEntries(Object.entries(given).filter(([apiName]) => writable(apiName)));
   const overrides = (apiName: string) => Object.prototype.hasOwnProperty.call(always, apiName);
   const values: Record<string, unknown> = {};
   if (showsName && (!record || draft.name !== initial.name || overrides('name'))) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
   for (const field of shown) {
+    if (!writable(field.apiName)) continue;
     const value = draft[field.apiName];
     if (record && !overrides(field.apiName) && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
     const apiValue = toApiValue(field, value ?? '');
@@ -582,7 +590,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     setIssues([]);
     setError('');
     try {
-      const sent = valuesToSend({record: !!record, draft, initial, shown: shown.filter(canEditField), showsName, always});
+      const sent = valuesToSend({record: !!record, draft, initial, shown: shown.filter(canEditField), showsName, always, writable: apiName => canSetField(object, apiName)});
       const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, sent) : await client.createRecord(object.apiName, sent);
       onSaved(saved, next.current);
     } catch (reason) {

@@ -526,13 +526,22 @@ impl ObjectService {
         let in_timeline: BTreeSet<Uuid> = sources.iter().map(|source| source.object.id).collect();
         let mut actions = tx.quick_actions(object.id).await?;
         actions.sort_by(|a, b| (a.position, &a.name).cmp(&(b.position, &b.name)));
+        // Only actions the viewer can complete (G5 of ADR 0035).
         timeline.actions = actions
             .into_iter()
             .filter(|action| {
                 action.kind == QuickActionKind::Create
-                    && action
-                        .target_object_id
-                        .is_some_and(|target| in_timeline.contains(&target))
+                    && action.target_object_id.is_some_and(|target| {
+                        in_timeline.contains(&target)
+                            && sources.iter().any(|source| {
+                                source.object.id == target
+                                    && crate::quick_actions::completable(
+                                        &access,
+                                        &source.object,
+                                        action,
+                                    )
+                            })
+                    })
             })
             .map(|action| action.name)
             .collect();
