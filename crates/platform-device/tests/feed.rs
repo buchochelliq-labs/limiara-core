@@ -431,6 +431,7 @@ fn remote(record: &Record) -> RemoteRecord {
         updated_by: record.updated_by,
         touched_at: record.touched_at,
         deleted_at: record.deleted_at,
+        archived_at: record.archived_at,
     }
 }
 
