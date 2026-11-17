@@ -264,6 +264,8 @@ pub async fn run(store: Arc<dyn ObjectStore>) {
                 position: None,
                 formula: None,
                 lookup_filter: None,
+                read_permission: None,
+                write_permission: None,
                 reference_objects: None,
             },
             context(),

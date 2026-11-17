@@ -4,6 +4,7 @@
 //! they last took are what the device sends, as composite requests.
 
 use crate::composite::{CompositeOperation, CompositeRequest, COMPOSITE_MAX};
+use crate::field_security::FieldSecurity;
 use crate::replica::{Applied, RemoteRecord};
 use crate::service::{MutationContext, ObjectService};
 use crate::{
@@ -123,6 +124,7 @@ impl ObjectService {
         positions.pushed = sent_through(tx.as_mut(), positions.pushed).await?;
         tx.set_sync_positions(positions).await?;
         let candidates = queued(tx.as_mut(), positions.pushed).await?;
+        let security = FieldSecurity::for_caller(self.caller());
         let mut operations = Vec::new();
         // Records this batch creates on the server, before the one at hand.
         let mut arriving = BTreeSet::new();
@@ -131,7 +133,7 @@ impl ObjectService {
                 break;
             }
             let Some((object, record, pending)) =
-                pending_for(tx.as_mut(), record_id, &fields).await?
+                pending_for(tx.as_mut(), &security, record_id, &fields).await?
             else {
                 continue;
             };
@@ -187,7 +189,7 @@ impl ObjectService {
                         expected_version,
                     },
                     // The restore goes first; edits made with it push next.
-                    record_values(&object, &record, Some(&fields)),
+                    record_values(&security, &object, &record, Some(&fields)),
                 ),
                 Pending::Owner(expected_version, owner_id) => (
                     CompositeOperation::ChangeOwner {
@@ -389,7 +391,9 @@ async fn sent_through(tx: &mut dyn ObjectTx, after: i64) -> Result<i64, ObjectEr
             Some(waiting) => *waiting,
             None => {
                 let named = fields.get(&change.record_id).cloned().unwrap_or_default();
-                let waiting = pending_for(tx, change.record_id, &named).await?.is_some();
+                let waiting = pending_for(tx, &FieldSecurity::system(), change.record_id, &named)
+                    .await?
+                    .is_some();
                 decided.insert(change.record_id, waiting);
                 waiting
             }
@@ -486,6 +490,7 @@ async fn queued(
 /// fields its queued changes touched.
 async fn pending_for(
     tx: &mut dyn ObjectTx,
+    security: &FieldSecurity,
     record_id: Uuid,
     fields: &BTreeSet<String>,
 ) -> Result<Option<(ObjectDefinition, Record, Pending)>, ObjectError> {
@@ -503,7 +508,9 @@ async fn pending_for(
     let pending = match tx.remote_version(record.id).await? {
         // Made on the device and discarded before it went: nothing to send.
         None if deleted => None,
-        None => Some(Pending::Create(record_values(&object, &record, None))),
+        None => Some(Pending::Create(record_values(
+            security, &object, &record, None,
+        ))),
         Some(RemoteVersion { version, .. }) if version == record.version => None,
         Some(RemoteVersion {
             version,
@@ -518,7 +525,7 @@ async fn pending_for(
             ..
         }) => Some(Pending::Undelete(version)),
         Some(RemoteVersion { version, .. }) => {
-            let values = record_values(&object, &record, Some(fields));
+            let values = record_values(security, &object, &record, Some(fields));
             match record.owner_id {
                 _ if !values.is_empty() => Some(Pending::Update(version, values)),
                 Some(owner) if owner_changed(fields) => Some(Pending::Owner(version, owner)),
@@ -536,8 +543,11 @@ fn owner_changed(fields: &BTreeSet<String>) -> bool {
 
 /// The values of `fields` (or every field when `None`) a member may write:
 /// the name and stored fields, never formula or roll-up values, which the
-/// server computes. A cleared field sends `null`.
+/// server computes, and never a field the member may not change (G5), so
+/// the server's values of fields they cannot read or write stay as they
+/// are. A cleared field sends `null`.
 fn record_values(
+    security: &FieldSecurity,
     object: &ObjectDefinition,
     record: &Record,
     fields: Option<&BTreeSet<String>>,
@@ -552,6 +562,7 @@ fn record_values(
     for field in object.fields.iter().filter(|field| {
         field.is_active()
             && !matches!(field.field_type, FieldType::Formula | FieldType::Rollup)
+            && security.field(field).edit
             && wanted(&field.api_name)
     }) {
         match record.values.get(&field.api_name) {

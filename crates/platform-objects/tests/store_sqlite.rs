@@ -508,3 +508,25 @@ async fn sqlite_store_passes_the_change_source_conformance_suite() {
     let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
     conformance::sources::replica(store, uuid::Uuid::now_v7()).await;
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_field_permission_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::field_permissions::run(store, uuid::Uuid::now_v7()).await;
+}
+
+#[tokio::test]
+async fn sqlite_store_keeps_field_permissions_in_a_replica() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::field_permissions::replica(store).await;
+}

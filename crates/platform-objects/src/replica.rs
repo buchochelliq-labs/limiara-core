@@ -78,12 +78,23 @@ impl ObjectService {
         let mut tx = self.begin().await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
         let existing = tx.record(object.id, &remote.public_id).await?;
+        // What it answers never holds a field the member cannot read (G5).
+        // Syncing works even while the lease is locked, so only the
+        // member's field access is resolved, not their object access.
+        let fields_only = crate::ObjectAccess::resolve(self.caller(), BTreeMap::new());
+        let hidden = self
+            .hidden_fields(tx.as_mut(), &fields_only, &object)
+            .await?;
+        let present = |record: Record| {
+            let mut record = Self::project(&object, record);
+            crate::field_security::strip(&mut record, &hidden);
+            record
+        };
         if let Some(current) = &existing {
             let remembered = tx.remote_version(current.id).await?;
             let taken = remembered.map(|taken| taken.version);
             let stale = taken.is_some_and(|taken| remote.version <= taken);
-            let unchanged =
-                |current: &Record| Applied::Unchanged(Self::project(&object, current.clone()));
+            let unchanged = |current: &Record| Applied::Unchanged(present(current.clone()));
             let decision = match pushed {
                 // The member edited again after the push: keep the edit, and
                 // remember the server version it now builds on.
@@ -94,7 +105,7 @@ impl ObjectService {
                         tx.set_remote_version(current.id, remote.taken(through))
                             .await?;
                     }
-                    Some(Applied::Conflict(Self::project(&object, current.clone())))
+                    Some(Applied::Conflict(present(current.clone())))
                 }
                 // An answer with the version the replica already took means
                 // the server found nothing to change, such as an owner it
@@ -106,7 +117,7 @@ impl ObjectService {
                 None if stale => Some(unchanged(current)),
                 // Unpushed edits move the local version past the server's.
                 None if taken != Some(current.version) => {
-                    Some(Applied::Conflict(Self::project(&object, current.clone())))
+                    Some(Applied::Conflict(present(current.clone())))
                 }
                 None => None,
             };
@@ -119,7 +130,7 @@ impl ObjectService {
             .take_remote(tx.as_mut(), &object, existing.as_ref(), remote)
             .await?;
         tx.commit().await?;
-        let record = Self::project(&object, record);
+        let record = present(record);
         Ok(match existing {
             Some(_) => Applied::Updated(record),
             None => Applied::Inserted(record),

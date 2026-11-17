@@ -7,7 +7,7 @@ use super::{limits, FieldRef, Function, Leaf, Node, Type, Value};
 use crate::query::plan::Standard;
 use crate::{FieldType, ObjectDefinition};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use uuid::Uuid;
 
@@ -77,6 +77,9 @@ pub struct Catalog<'a> {
 struct Expansion {
     stack: Vec<Uuid>,
     budget: usize,
+    /// Every formula field inlined, so field-level security can hide a
+    /// formula that uses one the reader may not read (G5).
+    used: BTreeSet<Uuid>,
 }
 
 /// A formula field may use formula fields this many levels deep.
@@ -183,6 +186,7 @@ impl<'a> Catalog<'a> {
             expansion: Rc::new(RefCell::new(Expansion {
                 stack: Vec::new(),
                 budget: INLINE_NODES,
+                used: BTreeSet::new(),
             })),
         }
     }
@@ -197,6 +201,11 @@ impl<'a> Catalog<'a> {
         let catalog = Self::new(base, objects, Purpose::Field);
         catalog.expansion.borrow_mut().stack.push(field);
         catalog
+    }
+
+    /// The formula fields inlined so far, by id.
+    pub(crate) fn used(&self) -> Vec<Uuid> {
+        self.expansion.borrow().used.iter().copied().collect()
     }
 
     /// Checks the formula of a formula field reached through `through`.
@@ -225,6 +234,7 @@ impl<'a> Catalog<'a> {
                 )));
             }
             expansion.stack.push(field.id);
+            expansion.used.insert(field.id);
         }
         let budget_before = self.expansion.borrow().budget;
         let inner = Catalog {

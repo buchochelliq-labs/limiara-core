@@ -15,7 +15,7 @@ mod devices;
 pub use devices::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0040_change_sources.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0041_field_permissions.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]
@@ -1931,6 +1931,22 @@ pub async fn workspace_roles(
     let rows: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, name FROM roles WHERE tenant_id = $1 ORDER BY name, id")
             .bind(tenant_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The permission catalog roles are given from, by id with descriptions.
+/// It is the platform's, not a workspace's, so it carries no tenant id; it
+/// is read inside the workspace's transaction like every request.
+pub async fn permission_catalog(
+    pool: &PgPool,
+    tenant_id: Uuid,
+) -> Result<BTreeMap<String, String>, DbError> {
+    let mut tx = begin_tenant_tx(pool, tenant_id).await?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, description FROM permissions ORDER BY id")
             .fetch_all(&mut *tx)
             .await?;
     tx.commit().await?;

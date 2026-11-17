@@ -149,6 +149,10 @@ struct FieldBody {
     #[serde(default)]
     lookup_filter: Option<String>,
     #[serde(default)]
+    read_permission: Option<String>,
+    #[serde(default)]
+    write_permission: Option<String>,
+    #[serde(default)]
     formula: Option<String>,
     #[serde(default)]
     formula_type: Option<FieldType>,
@@ -287,6 +291,8 @@ pub fn remote_object(
                 reference_objects: field.reference_objects.unwrap_or_default(),
                 delete_behaviour: field.delete_behaviour,
                 lookup_filter: field.lookup_filter,
+                read_permission: field.read_permission,
+                write_permission: field.write_permission,
                 formula: field.formula,
                 formula_type: field.formula_type,
                 rollup: field.rollup.map(|rollup| RemoteRollup {

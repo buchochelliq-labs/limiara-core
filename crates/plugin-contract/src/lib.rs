@@ -435,6 +435,9 @@ impl Manifest {
             &self.id,
             &self.objects,
             self.dependencies.keys().map(String::as_str),
+            self.permissions
+                .iter()
+                .map(|permission| permission.id.as_str()),
         )
         .map_err(|issue| match issue.field {
             Some(field) => ManifestError::InvalidObjectField {
@@ -1253,6 +1256,36 @@ key_prefix = "tsk"
             objects_manifest("example.work", &format!("{TASK}formula = \"x\"\n")),
             Err(ManifestError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn declared_fields_name_only_the_plugins_own_permissions() {
+        let with_field = |permissions: &str| {
+            format!(
+                "[[permissions]]\nid = \"work.salary.read\"\ndescription = \"Read salaries\"\n\
+                 {TASK}\n[[objects.fields]]\nname = \"salary\"\nlabel = \"Salary\"\n\
+                 field_type = \"number\"\n{permissions}\n"
+            )
+        };
+        let manifest = objects_manifest(
+            "example.work",
+            &with_field("read_permission = \"work.salary.read\""),
+        )
+        .expect("a declared read permission");
+        assert_eq!(
+            manifest.objects[0].fields[0].read_permission.as_deref(),
+            Some("work.salary.read")
+        );
+        for undeclared in [
+            "read_permission = \"objects.manage\"",
+            "write_permission = \"work.salary.write\"",
+        ] {
+            assert!(
+                object_reason(objects_manifest("example.work", &with_field(undeclared)))
+                    .contains("declared by this plugin"),
+                "{undeclared}"
+            );
+        }
     }
 
     #[test]

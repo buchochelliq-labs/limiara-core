@@ -85,8 +85,34 @@ export type ObjectField = {
   /** A query condition new lookup values must meet (ADR 0028). */
   lookupFilter?: string | null;
   trackHistory: boolean;
+  /** Field-level permissions (G5): the permission ids a member needs to read and to change the field's values. */
+  readPermission?: string | null;
+  writePermission?: string | null;
+  /** What the signed-in member may do with the field; both true when the server does not say. */
+  access?: FieldAccess;
   version: number;
 };
+
+/** What the signed-in member may do with one field (G5). */
+export type FieldAccess = {read: boolean; edit: boolean};
+
+/** A permission a field may name, from the workspace's catalog. */
+export type FieldPermissionChoice = {id: string; description: string};
+
+/** Whether the member may see a field's values; hidden fields are left out of records, lists and forms. */
+export function canReadField(field: ObjectField): boolean {
+  return field.access?.read !== false;
+}
+
+/** Whether the member may change a field; others are shown read-only. */
+export function canEditField(field: ObjectField): boolean {
+  return canReadField(field) && field.access?.edit !== false;
+}
+
+/** The fields the member may read, in order. */
+export function readableFields(fields: readonly ObjectField[]): ObjectField[] {
+  return fields.filter(canReadField);
+}
 
 /** A record in a related list or a lookup picker (ADR 0028). */
 export type RecordLink = {id: string; name: string};
@@ -222,8 +248,8 @@ const messages: Record<ObjectsErrorReason, string> = {
 
 export type NewObject = {name: string; label: string; plural_label: string; description?: string; name_label?: string; in_navigation?: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean};
 export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean};
-export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]};
-export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}};
+export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]; read_permission?: string | null; write_permission?: string | null};
+export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}; read_permission?: string; write_permission?: string};
 export type RolePermission = {roleId: string; roleName: string; access: ObjectAccess};
 
 /** A validation rule (ADR 0021): the save is blocked when `condition` is true. */
@@ -318,6 +344,8 @@ export type ObjectsClient = {
   createField(apiName: string, input: NewField): Promise<ObjectField>;
   updateField(apiName: string, field: string, version: number, changes: FieldChanges): Promise<ObjectField>;
   deleteField(apiName: string, field: string, version: number): Promise<void>;
+  /** The permissions a field may name (G5), for administrators who manage objects. */
+  fieldPermissions(signal?: AbortSignal): Promise<FieldPermissionChoice[]>;
   permissions(apiName: string, signal?: AbortSignal): Promise<RolePermission[]>;
   setPermission(apiName: string, roleId: string, access: ObjectAccess): Promise<ObjectAccess>;
   listRecords(apiName: string, query: RecordListQuery, signal?: AbortSignal): Promise<RecordPage>;
@@ -364,7 +392,7 @@ export type ObjectsClient = {
   setManager(userId: string, managerId: string | null): Promise<void>;
 };
 
-type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; version: number};
+type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; read_permission?: string | null; write_permission?: string | null; access?: {read?: unknown; edit?: unknown}; version: number};
 type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference; source?: unknown};
 type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; version: number; access?: ObjectAccess; fields?: ApiField[]};
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
@@ -395,7 +423,7 @@ export function automationFromApi(automation: ApiAutomation): Automation {
   return {name: automation.name, description: automation.description ?? null, trigger: automation.trigger, timing: automation.timing, condition: automation.condition ?? null, actions: Array.isArray(automation.actions) ? automation.actions : [], schedule: automation.schedule ?? null, active: automation.active === true, version: automation.version};
 }
 export function fieldFromApi(field: ApiField): ObjectField {
-  return {apiName: field.api_name, label: field.label, description: field.description ?? null, type: field.field_type, origin: field.origin, required: field.required, unique: field.unique, indexed: field.indexed, options: Array.isArray(field.options) ? field.options : [], referenceObject: field.reference_object ?? null, referenceObjects: Array.isArray(field.reference_objects) ? field.reference_objects.filter(item => typeof item === 'string') : null, deleteBehaviour: field.delete_behaviour ?? null, lookupFilter: field.lookup_filter ?? null, trackHistory: field.track_history === true, formula: field.formula ?? null, formulaType: field.formula_type ?? null, rollup: field.rollup ?? null, version: field.version};
+  return {apiName: field.api_name, label: field.label, description: field.description ?? null, type: field.field_type, origin: field.origin, required: field.required, unique: field.unique, indexed: field.indexed, options: Array.isArray(field.options) ? field.options : [], referenceObject: field.reference_object ?? null, referenceObjects: Array.isArray(field.reference_objects) ? field.reference_objects.filter(item => typeof item === 'string') : null, deleteBehaviour: field.delete_behaviour ?? null, lookupFilter: field.lookup_filter ?? null, trackHistory: field.track_history === true, formula: field.formula ?? null, formulaType: field.formula_type ?? null, rollup: field.rollup ?? null, readPermission: field.read_permission ?? null, writePermission: field.write_permission ?? null, access: {read: field.access?.read !== false, edit: field.access?.read !== false && field.access?.edit !== false}, version: field.version};
 }
 
 /** A JSON object of strings, dropping anything else. */
@@ -462,7 +490,7 @@ async function failure(response: Response): Promise<ObjectsApiError> {
   const code = typeof body.code === 'string' ? body.code : '';
   const issues = Array.isArray(body.errors) ? body.errors : [];
   if (response.status === 404) return new ObjectsApiError('missing', code);
-  if (response.status === 403) return new ObjectsApiError('denied', code);
+  if (response.status === 403) return new ObjectsApiError('denied', code, issues);
   if (response.status === 400) return new ObjectsApiError('invalid', code, issues);
   if (response.status === 409) return new ObjectsApiError('conflict', code);
   return new ObjectsApiError('unavailable', code);
@@ -506,6 +534,12 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     },
     async deleteField(apiName, field, version) {
       await request<unknown>(`${object(apiName)}/fields/${encodeURIComponent(field)}?expected_version=${version}`, {method: 'DELETE'});
+    },
+    async fieldPermissions(signal) {
+      const body = await request<{data?: unknown}>(`${workspaceBase}/field-permissions`, {signal});
+      return (Array.isArray(body.data) ? body.data : []).flatMap(entry => entry && typeof entry === 'object' && typeof (entry as {id?: unknown}).id === 'string'
+        ? [{id: (entry as {id: string}).id, description: typeof (entry as {description?: unknown}).description === 'string' ? (entry as {description: string}).description : ''}]
+        : []);
     },
     async permissions(apiName, signal) {
       const body = await request<{data: {role_id: string; role_name: string; access: ObjectAccess}[]}>(`${object(apiName)}/permissions`, {signal});
@@ -746,13 +780,16 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     },
     async createField(apiName, input) {
       const object = find(apiName);
-      const created = field(`custom:${input.name}`, input.label, input.field_type, {required: (input.required ?? false) || input.field_type === 'master_detail', unique: input.unique ?? false, indexed: input.indexed ?? false, options: (input.options ?? []).map(option => ({value: option.value, label: option.label, active: true, default: option.default ?? false})), referenceObject: input.reference_object ?? null, referenceObjects: input.field_type === 'related_to' ? input.reference_objects ?? [] : null, deleteBehaviour: input.field_type === 'lookup' || input.field_type === 'related_to' ? input.delete_behaviour ?? 'clear' : null, lookupFilter: input.lookup_filter ?? null, rollup: input.rollup ? {...input.rollup, field: input.rollup.field ?? null} : null, formulaType: input.field_type === 'rollup' ? 'number' : input.formula_type ?? null});
+      const created = field(`custom:${input.name}`, input.label, input.field_type, {required: (input.required ?? false) || input.field_type === 'master_detail', unique: input.unique ?? false, indexed: input.indexed ?? false, options: (input.options ?? []).map(option => ({value: option.value, label: option.label, active: true, default: option.default ?? false})), referenceObject: input.reference_object ?? null, referenceObjects: input.field_type === 'related_to' ? input.reference_objects ?? [] : null, deleteBehaviour: input.field_type === 'lookup' || input.field_type === 'related_to' ? input.delete_behaviour ?? 'clear' : null, lookupFilter: input.lookup_filter ?? null, readPermission: input.read_permission ?? null, writePermission: input.write_permission ?? null, rollup: input.rollup ? {...input.rollup, field: input.rollup.field ?? null} : null, formulaType: input.field_type === 'rollup' ? 'number' : input.formula_type ?? null});
       object.fields.push(created);
       return structuredClone(created);
     },
     async deleteField(apiName, fieldName) {
       const object = find(apiName);
       object.fields = object.fields.filter(item => item.apiName !== fieldName);
+    },
+    async fieldPermissions() {
+      return [{id: 'objects.manage', description: 'Manage objects and fields'}, {id: 'projects.budget.read', description: 'Read project budgets'}, {id: 'projects.budget.write', description: 'Change project budgets'}];
     },
     async permissions() { return [{roleId: 'role-admin', roleName: 'Administrator', access: fullAccess}, {roleId: 'role-viewer', roleName: 'Viewer', access: noAccess}]; },
     async setPermission(_apiName, _roleId, access) { return access; },
@@ -805,7 +842,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       const target = find(apiName).fields.find(item => item.apiName === fieldName);
       if (!target) throw new ObjectsApiError('missing');
       if (target.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
-      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter}, changes.reference_objects === undefined ? {} : {referenceObjects: changes.reference_objects});
+      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter}, changes.reference_objects === undefined ? {} : {referenceObjects: changes.reference_objects}, changes.read_permission === undefined ? {} : {readPermission: changes.read_permission}, changes.write_permission === undefined ? {} : {writePermission: changes.write_permission});
       return structuredClone(target);
     },
     async relatedLists(apiName, id) {

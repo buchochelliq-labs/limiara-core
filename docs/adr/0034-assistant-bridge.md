@@ -85,7 +85,8 @@ bridge and is built from the same `DeviceHost`:
   more requests to `Bridge::handle`, through the same router, handlers
   and problem codes the web shell uses. The engine therefore applies every
   check it applies to the web shell: the member's permissions and sharing,
-  field-level security once it exists (#316), validation rules, lookup
+  field-level security (G5 of ADR 0035; role-based grants follow in #316),
+  validation rules, lookup
   filters, uniqueness, before-save automations, history and audit. The
   assistant bridge adds checks (the policy in §4, the confirmations in §5);
   it never skips one.
@@ -220,6 +221,16 @@ There are no per-field exclusions for assistant reads. Which fields a
 member may read is field-level security's job (#174), and the bridge reads
 as the member, so an assistant sees exactly the fields the member does.
 The excluded fields above apply only to the OS index.
+
+Field-level security now exists (G5 of ADR 0035, delivered 2026-11-17):
+a field's read permission hides it from every engine read as the member,
+on the server and in the replica's engine, which applies the permissions
+carried in the replica's definitions. The bridge reads through that engine,
+so assistant reads leave out every field the member cannot read, and
+assistant writes to a field the member may not change are refused with
+`records.field_not_writable`, with no setting of their own. A hidden value
+never reaches the device in the first place. Role-based field-level
+security (#316) will apply the same way when it lands.
 
 The member keeps a narrower choice on each device: the app's settings let
 them turn assistant access and indexing off on that device. Indexing is off

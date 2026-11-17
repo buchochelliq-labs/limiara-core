@@ -71,11 +71,14 @@ pub fn search_terms(
     for term in tokens(name) {
         add(term, NAME_WEIGHT, &mut order);
     }
-    for field in object
-        .fields
-        .iter()
-        .filter(|field| field.is_active() && field.searchable && field.field_type.is_textual())
-    {
+    // A field with a read permission is never indexed, so no search
+    // matches a value its reader may not see (G5).
+    for field in object.fields.iter().filter(|field| {
+        field.is_active()
+            && field.searchable
+            && field.field_type.is_textual()
+            && field.read_permission.is_none()
+    }) {
         let Some(text) = values.get(&field.api_name).and_then(Value::as_str) else {
             continue;
         };
@@ -229,6 +232,9 @@ impl ObjectService {
                 continue;
             };
             let visibility = self.visibility_of(tx.as_mut(), &access, &object).await?;
+            // Results show only fields the caller can read (G5).
+            let hidden = self.hidden_fields(tx.as_mut(), &access, &object).await?;
+            let object = crate::field_security::visible(&object, &hidden);
             objects.insert(object.id, (object, visibility));
         }
         if let Some(api_name) = &request.object {
@@ -336,6 +342,8 @@ mod tests {
             formula_type: None,
             rollup: None,
             lookup_filter: None,
+            read_permission: None,
+            write_permission: None,
             position: 0,
             status: DefinitionStatus::Active,
             version: 1,

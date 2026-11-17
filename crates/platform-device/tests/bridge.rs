@@ -173,6 +173,8 @@ impl World {
                     formula_type: None,
                     rollup: None,
                     lookup_filter: None,
+                    read_permission: None,
+                    write_permission: None,
                 },
                 context(),
             )
@@ -595,6 +597,8 @@ async fn quick_actions_reach_the_device_and_run_offline() {
                 formula_type: None,
                 rollup: None,
                 lookup_filter: None,
+                read_permission: None,
+                write_permission: None,
             },
             context(),
         )

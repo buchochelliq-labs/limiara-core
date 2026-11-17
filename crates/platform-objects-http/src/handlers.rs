@@ -105,6 +105,12 @@ fn error_problem(
             "the change conflicts with the current state",
             Vec::new(),
         ),
+        ObjectError::Refused(code, errors) => (
+            StatusCode::FORBIDDEN,
+            code,
+            "you may not change one or more of these fields",
+            errors,
+        ),
         ObjectError::Database(error) => {
             tracing::error!(
                 error_type = %std::any::type_name_of_val(&error),
@@ -257,6 +263,8 @@ fn field_json(field: &FieldDefinition) -> Value {
             .then_some(&field.reference_objects),
         "delete_behaviour": field.delete_behaviour,
         "lookup_filter": field.lookup_filter,
+        "read_permission": field.read_permission,
+        "write_permission": field.write_permission,
         "formula": field.formula,
         "formula_type": field.formula_type,
         "rollup": field.rollup,
@@ -437,8 +445,24 @@ pub async fn describe_object<H: ObjectsHost>(
         Ok(service) => service,
         Err(response) => return response,
     };
-    match service.describe(&object).await {
-        Ok((object, access)) => Json(object_json(&object, Some(access), true)).into_response(),
+    match service.describe_with_field_access(&object).await {
+        Ok((object, access, fields)) => {
+            let mut value = object_json(&object, Some(access), true);
+            // What the caller may do with each field (G5).
+            if let Some(listed) = value.get_mut("fields").and_then(Value::as_array_mut) {
+                for field in listed {
+                    let found = field
+                        .get("api_name")
+                        .and_then(Value::as_str)
+                        .and_then(|name| fields.get(name))
+                        .copied();
+                    if let (Some(found), Some(map)) = (found, field.as_object_mut()) {
+                        map.insert("access".into(), json!(found));
+                    }
+                }
+            }
+            Json(value).into_response()
+        }
         Err(error) => error_response(error),
     }
 }
@@ -498,6 +522,77 @@ pub async fn delete_object<H: ObjectsHost>(
     }
 }
 
+/// Refuses field permissions the host's permission catalog does not hold
+/// (G5), so an administrator cannot hide a field behind a permission no
+/// role could ever be given. Malformed ids are left to the engine, and a
+/// host without a catalog checks nothing. Only administrators who manage
+/// objects reach the catalog: anyone else is refused by the engine.
+async fn known_permissions<H: ObjectsHost>(
+    state: &H,
+    caller: &Caller,
+    named: [(&'static str, Option<&str>); 2],
+) -> Result<(), Response> {
+    let named: Vec<(&'static str, &str)> = named
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, value.map(str::trim).filter(|v| !v.is_empty())?)))
+        .collect();
+    if named.is_empty()
+        || !caller
+            .permissions
+            .contains(platform_objects::OBJECTS_MANAGE_PERMISSION)
+    {
+        return Ok(());
+    }
+    let Some(catalog) = state.permission_catalog(caller.tenant_id).await? else {
+        return Ok(());
+    };
+    let unknown: Vec<ValidationIssue> = named
+        .into_iter()
+        .filter(|(_, value)| {
+            platform_objects::field_security::permission_id("permission", Some(value)).is_ok()
+                && !catalog.contains_key(*value)
+        })
+        .map(|(key, _)| {
+            ValidationIssue::new(
+                key,
+                platform_objects::field_security::FIELD_PERMISSION_UNKNOWN,
+                "choose a permission the workspace's roles can be given",
+            )
+        })
+        .collect();
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(error_response(ObjectError::Validation(unknown)))
+    }
+}
+
+/// `GET /field-permissions`: the permissions a field may name, for the
+/// Object Manager's pickers (G5). Needs `objects.manage`.
+pub async fn field_permissions<H: ObjectsHost>(
+    State(state): State<H>,
+    Path(_workspace): Path<Uuid>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    if !caller
+        .permissions
+        .contains(platform_objects::OBJECTS_MANAGE_PERMISSION)
+    {
+        return error_response(ObjectError::PermissionDenied);
+    }
+    match state.permission_catalog(caller.tenant_id).await {
+        Ok(catalog) => Json(json!({
+            "data": catalog
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, description)| json!({"id": id, "description": description}))
+                .collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(response) => response,
+    }
+}
+
 pub async fn create_field<H: ObjectsHost>(
     State(state): State<H>,
     Path((_workspace, object)): Path<(Uuid, String)>,
@@ -508,6 +603,18 @@ pub async fn create_field<H: ObjectsHost>(
     let Ok(Json(input)) = body else {
         return invalid_body();
     };
+    if let Err(response) = known_permissions(
+        &state,
+        &caller,
+        [
+            ("read_permission", input.read_permission.as_deref()),
+            ("write_permission", input.write_permission.as_deref()),
+        ],
+    )
+    .await
+    {
+        return response;
+    }
     let service = match service(&state, &caller).await {
         Ok(service) => service,
         Err(response) => return response,
@@ -531,6 +638,24 @@ pub async fn update_field<H: ObjectsHost>(
     let Ok(Json(input)) = body else {
         return invalid_body();
     };
+    if let Err(response) = known_permissions(
+        &state,
+        &caller,
+        [
+            (
+                "read_permission",
+                input.read_permission.as_ref().and_then(Option::as_deref),
+            ),
+            (
+                "write_permission",
+                input.write_permission.as_ref().and_then(Option::as_deref),
+            ),
+        ],
+    )
+    .await
+    {
+        return response;
+    }
     let service = match service(&state, &caller).await {
         Ok(service) => service,
         Err(response) => return response,

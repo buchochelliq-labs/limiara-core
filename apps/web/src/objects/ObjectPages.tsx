@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {canEditField, canReadField, formatValue, holdsReference, readableFields, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -75,7 +75,8 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
 
   useEffect(() => { if (object) document.title = `${object.pluralLabel} - Limiara`; }, [object]);
 
-  const columns = useMemo(() => object?.fields.slice(0, 4) ?? [], [object]);
+  // Fields the member cannot read are never listed (G5).
+  const columns = useMemo(() => object ? readableFields(object.fields).slice(0, 4) : [], [object]);
   const restore = async (record: ObjectRecord) => {
     if (!object) return;
     try {
@@ -224,7 +225,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       <h2>Details</h2>
       <dl className="object-fields">
         <div><dt>{object.nameLabel}</dt><dd>{record.name}</dd></div>
-        {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} relatedObjects={record.relatedObjects} onNavigate={onNavigate} /></dd></div>)}
+        {readableFields(object.fields).map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} relatedObjects={record.relatedObjects} onNavigate={onNavigate} /></dd></div>)}
       </dl>
     </section>
     <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} refresh={relatedRefresh} onNavigate={onNavigate} />
@@ -409,9 +410,13 @@ export function NewRecordPage({client, apiName, onNavigate, headingRef}: {client
 export type DraftValue = string | boolean | string[];
 type Draft = Record<string, DraftValue>;
 
-/** Fields a person can type into; formula fields are computed (ADR 0021). */
+/**
+ * Fields a form shows: stored fields the member may read, since formula
+ * fields are computed (ADR 0021). Those the member may not change are shown
+ * read-only and never sent (G5).
+ */
 export function editableFields(object: ObjectDescription) {
-  return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup');
+  return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup' && canReadField(field));
 }
 
 /** Starts the inputs of preset fields at their preset, so the form shows what a save sends. */
@@ -577,13 +582,16 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     setIssues([]);
     setError('');
     try {
-      const sent = valuesToSend({record: !!record, draft, initial, shown, showsName, always});
+      const sent = valuesToSend({record: !!record, draft, initial, shown: shown.filter(canEditField), showsName, always});
       const saved = record ? await client.updateRecord(object.apiName, record.id, record.version, sent) : await client.createRecord(object.apiName, sent);
       onSaved(saved, next.current);
     } catch (reason) {
       if (reason instanceof ObjectsApiError && reason.reason === 'invalid' && reason.issues.length) {
         setIssues(reason.issues);
         setError('Some values need attention.');
+      } else if (reason instanceof ObjectsApiError && reason.code === 'records.field_not_writable') {
+        setIssues(reason.issues);
+        setError('You may not change some of these fields.');
       } else if (reason instanceof ObjectsApiError && reason.code === 'records.duplicate_value') {
         setError('Another record already uses one of these unique values.');
       } else if (reason instanceof ObjectsApiError && reason.code === 'records.version_conflict') {
@@ -602,6 +610,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     {shown.map(field => {
       const value = draft[field.apiName];
       const fieldError = issueFor(field.apiName);
+      if (!canEditField(field)) return <TextField key={field.apiName} label={field.label} value={formatValue(field, toApiValue(field, value ?? ''), record?.related ?? {})} readOnly description="You can see this field but not change it." error={fieldError} />;
       if (field.type === 'boolean') return <label key={field.apiName} className="object-checkbox"><input type="checkbox" checked={value === true} onChange={event => set(field.apiName, event.target.checked)} />{field.label}{fieldError && <span className="ui-field__error">{fieldError}</span>}</label>;
       if (field.type === 'picklist') return <Select key={field.apiName} label={field.label} required={field.required} value={String(value ?? '')} error={fieldError} onChange={event => set(field.apiName, event.target.value)}>
         <option value="">None</option>

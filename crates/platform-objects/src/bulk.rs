@@ -93,6 +93,7 @@ fn row_errors(error: &ObjectError) -> Value {
         }
         ObjectError::VersionConflict => json!({"code": "records.version_conflict"}),
         ObjectError::Conflict(code) => json!({"code": code}),
+        ObjectError::Refused(code, issues) => json!({"code": code, "errors": issues}),
         ObjectError::Database(_) | ObjectError::Invariant => {
             json!({"code": "platform.unavailable"})
         }

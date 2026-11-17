@@ -1,6 +1,6 @@
 import React, {useEffect, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../components/ui';
-import {fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
+import {canReadField, fieldTypes, holdsReference, isReference, ObjectsApiError, type FieldChanges, type FieldPermissionChoice, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
 import {failed, objectRoute, useObject, type Load} from './ObjectPages';
 import {Automations} from './Automations';
 import {QuickActions} from './QuickActions';
@@ -129,6 +129,77 @@ export function LookupFilterForm({client, object, field, onDone}: {client: Objec
   </form>;
 }
 
+const everyone = '';
+
+/**
+ * Who may read and change a field's values (G5): a permission id from the
+ * workspace's catalog, or everyone who may read or edit the record. The
+ * server enforces both; a plugin's fields keep the permissions its manifest
+ * declares, and computed fields are never written.
+ */
+export function FieldPermissionsForm({client, object, field, onDone, initialChoices = null}: {client: Pick<ObjectsClient, 'fieldPermissions' | 'updateField'>; object: ObjectDescription; field: ObjectField; onDone: (message?: string) => void; initialChoices?: FieldPermissionChoice[] | null}) {
+  const [choices, setChoices] = useState<FieldPermissionChoice[] | null>(initialChoices);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [read, setRead] = useState(field.readPermission ?? everyone);
+  const [write, setWrite] = useState(field.writePermission ?? everyone);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<{message: string; issues: ValidationIssue[]} | null>(null);
+  const computed = field.type === 'formula' || field.type === 'rollup';
+  const owned = field.origin !== 'workspace';
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoadFailed(false);
+    client.fieldPermissions(controller.signal)
+      .then(value => { if (!controller.signal.aborted) setChoices(value); })
+      .catch(() => { if (!controller.signal.aborted) setLoadFailed(true); });
+    return () => controller.abort();
+  }, [client, attempt]);
+  // Permissions already set stay choosable even if the catalog no longer lists them.
+  const options = (current: string) => {
+    const listed = choices ?? [];
+    return current && !listed.some(choice => choice.id === current) ? [...listed, {id: current, description: ''}] : listed;
+  };
+  const changed = read !== (field.readPermission ?? everyone) || write !== (field.writePermission ?? everyone);
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const changes: FieldChanges = {read_permission: read || null};
+      if (!computed) changes.write_permission = write || null;
+      await client.updateField(object.apiName, field.apiName, field.version, changes);
+      onDone(`Access to ${field.label} was saved.`);
+    } catch (reason) {
+      setError(issuesText(reason, 'The field permissions could not be saved.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const describeChoice = (choice: FieldPermissionChoice) => choice.description ? `${choice.id} (${choice.description})` : choice.id;
+  return <form className="object-form" aria-label={`Access to ${field.label}`} aria-busy={choices === null && !loadFailed} onSubmit={event => { event.preventDefault(); void save(); }}>
+    <h3>Access to {field.label}</h3>
+    {owned && <Alert variant="info" title="Set by its feature">This field belongs to a feature, which decides who may read and change it.</Alert>}
+    {error && <Alert variant="danger" title={error.message}><Issues issues={error.issues} /></Alert>}
+    {loadFailed && <div className="object-page__state"><Alert variant="danger" title="The permissions could not be loaded">Try again in a moment.</Alert><Button type="button" variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
+    {choices === null && !loadFailed && <Skeleton label="Loading permissions" lines={2} />}
+    {choices !== null && <>
+      <Select label="Read permission" description="Members without it never see this field: not on records, lists, search, history, reports or devices." value={read} disabled={owned || saving} onChange={event => setRead(event.target.value)}>
+        <option value={everyone}>Everyone who can read the record</option>
+        {options(read).map(choice => <option key={choice.id} value={choice.id}>{describeChoice(choice)}</option>)}
+      </Select>
+      {!computed && <Select label="Write permission" description="Members without it see this field read-only. Writing always needs reading too." value={write} disabled={owned || saving} onChange={event => setWrite(event.target.value)}>
+        <option value={everyone}>Everyone who can edit the record</option>
+        {options(write).map(choice => <option key={choice.id} value={choice.id}>{describeChoice(choice)}</option>)}
+      </Select>}
+      {computed && <p className="ui-field__description">Computed values are never written. They are also hidden from members who cannot read a field they are computed from.</p>}
+    </>}
+    <div className="object-page__actions">
+      {!owned && <Button type="submit" loading={saving} disabled={!changed || choices === null}>Save access</Button>}
+      <Button type="button" variant="secondary" onClick={() => onDone()} disabled={saving}>{owned ? 'Close' : 'Cancel'}</Button>
+    </div>
+  </form>;
+}
+
 /**
  * The objects an allowlist form lists: the workspace's objects, then any
  * allowed before or chosen since that the list does not name, so one
@@ -199,6 +270,7 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
   const [canManage, setCanManage] = useState(false);
   const [filtering, setFiltering] = useState<string | null>(null);
   const [allowing, setAllowing] = useState<string | null>(null);
+  const [securing, setSecuring] = useState<string | null>(null);
   const object = load.status === 'ready' ? load.value : undefined;
   useEffect(() => {
     const controller = new AbortController();
@@ -252,15 +324,16 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
               <th scope="row">{field.label}</th>
               <td><code>{field.apiName}</code></td>
               <td>{fieldTypes.find(type => type.value === field.type)?.label ?? field.type}{field.referenceObject ? ` (${field.referenceObject})` : ''}{field.type === 'related_to' && field.referenceObjects?.length ? ` (${field.referenceObjects.join(', ')})` : ''}{field.type === 'formula' && field.formulaType ? ` (${fieldTypes.find(type => type.value === field.formulaType)?.label ?? field.formulaType})` : ''}{field.type === 'formula' && field.formula && <><br /><code>{field.formula}</code></>}{field.lookupFilter && <><br />Only records where <code>{field.lookupFilter}</code></>}</td>
-              <td className="object-badges">{field.required && <Badge>Required</Badge>}{field.unique && <Badge>Unique</Badge>}{field.indexed && <Badge>Indexed</Badge>}{field.type === 'related_to' && <Badge>Clear on delete</Badge>}{field.type === 'lookup' && <Badge>{field.deleteBehaviour === 'restrict' ? 'Restrict delete' : 'Clear on delete'}</Badge>}{field.type === 'master_detail' && <Badge>Deleted with its master</Badge>}{field.lookupFilter && <Badge>Filtered</Badge>}{field.type === 'rollup' && field.rollup && <Badge>{`${rollupFunctions.find(option => option.value === field.rollup?.function)?.label ?? field.rollup.function} of ${field.rollup.object}${field.rollup.field ? ` ${field.rollup.field}` : ''}`}</Badge>}</td>
+              <td className="object-badges">{field.required && <Badge>Required</Badge>}{field.unique && <Badge>Unique</Badge>}{field.indexed && <Badge>Indexed</Badge>}{field.type === 'related_to' && <Badge>Clear on delete</Badge>}{field.type === 'lookup' && <Badge>{field.deleteBehaviour === 'restrict' ? 'Restrict delete' : 'Clear on delete'}</Badge>}{field.type === 'master_detail' && <Badge>Deleted with its master</Badge>}{field.lookupFilter && <Badge>Filtered</Badge>}{field.readPermission && <Badge variant="warning" title={`Needs ${field.readPermission} to read`}>Restricted read</Badge>}{field.writePermission && <Badge title={`Needs ${field.writePermission} to change`}>Restricted write</Badge>}{!canReadField(field) && <Badge variant="danger">Hidden from you</Badge>}{field.type === 'rollup' && field.rollup && <Badge>{`${rollupFunctions.find(option => option.value === field.rollup?.function)?.label ?? field.rollup.function} of ${field.rollup.object}${field.rollup.field ? ` ${field.rollup.field}` : ''}`}</Badge>}</td>
               {object.trackHistory && <td>{canManage
                 ? <input type="checkbox" aria-label={`Track history of ${field.label}`} checked={field.trackHistory} onChange={event => void toggleHistory(field, event.target.checked)} />
                 : field.trackHistory ? 'Tracked' : 'Not tracked'}</td>}
-              {canManage && <td>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.type === 'related_to' && <Button size="small" variant="quiet" onClick={() => setAllowing(field.apiName)} aria-label={`Objects ${field.label} can point to`}>Objects</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
+              {canManage && <td><Button size="small" variant="quiet" onClick={() => setSecuring(field.apiName)} aria-label={`Access to ${field.label}`}>Access</Button>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.type === 'related_to' && <Button size="small" variant="quiet" onClick={() => setAllowing(field.apiName)} aria-label={`Objects ${field.label} can point to`}>Objects</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
             </tr>)}
           </tbody>
         </table></div>
         {filtering && object.fields.some(field => field.apiName === filtering) && <LookupFilterForm key={filtering} client={client} object={object} field={object.fields.find(field => field.apiName === filtering) ?? object.fields[0]!} onDone={message => { setFiltering(null); if (message) { setNotice(message); retry(); } }} />}
+        {securing && object.fields.some(field => field.apiName === securing) && <FieldPermissionsForm key={`${securing}@${object.fields.find(field => field.apiName === securing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === securing) ?? object.fields[0]!} onDone={message => { setSecuring(null); if (message) { setNotice(message); retry(); } }} />}
         {allowing && object.fields.some(field => field.apiName === allowing) && <AllowlistForm key={`${allowing}@${object.fields.find(field => field.apiName === allowing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === allowing) ?? object.fields[0]!} onDone={message => { setAllowing(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}

@@ -376,6 +376,26 @@ impl ObjectService {
             else {
                 continue;
             };
+            // Fields the viewer cannot read are left out: a source whose
+            // date or open rule needs one is skipped, and details and
+            // through fields are dropped (G5).
+            let hidden = self.hidden_fields(tx, access, &object).await?;
+            let readable = |id: Uuid| {
+                object
+                    .fields
+                    .iter()
+                    .find(|field| field.id == id)
+                    .is_none_or(|field| !hidden.contains(&field.api_name))
+            };
+            if !readable(source.date_field_id) {
+                continue;
+            }
+            if let Some(TimelineOpen::FieldEquals { field_id, .. }) = &source.open {
+                if !readable(*field_id) {
+                    continue;
+                }
+            }
+            let object = crate::field_security::visible(&object, &hidden);
             let by_id = |id: Uuid| {
                 object
                     .fields

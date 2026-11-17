@@ -888,3 +888,20 @@ async fn postgres_store_passes_the_change_source_conformance_suite() {
             .await;
     assert!(refused.is_err(), "the source kind is a closed set");
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_field_permission_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tenants (id, display_name) VALUES ($1, 'Field permission conformance')",
+    )
+    .bind(tenant)
+    .execute(&migrator)
+    .await
+    .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::field_permissions::run(store, tenant).await;
+}
