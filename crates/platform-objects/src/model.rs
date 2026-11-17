@@ -747,12 +747,32 @@ pub struct RecordIndex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordStatus {
+    /// Live records that are not archived: what lists show by default.
     #[default]
     Active,
-    /// The recycle bin.
+    /// Live records that are archived (ADR 0035 G1).
+    Archived,
+    /// Every live record, archived or not.
+    All,
+    /// The recycle bin, archived records in it included.
     Deleted,
-    /// Both, for sync clients: deleted records are tombstones (#287).
+    /// Everything, for sync clients: deleted records are tombstones and
+    /// archived ones carry `archived_at` (#287).
     Any,
+}
+
+impl RecordStatus {
+    /// The condition on the records aliased `r` that keeps this status's
+    /// rows, as SQL both stores share.
+    pub(crate) fn condition(self) -> &'static str {
+        match self {
+            Self::Active => " AND r.deleted_at IS NULL AND r.archived_at IS NULL",
+            Self::Archived => " AND r.deleted_at IS NULL AND r.archived_at IS NOT NULL",
+            Self::All => " AND r.deleted_at IS NULL",
+            Self::Deleted => " AND r.deleted_at IS NOT NULL",
+            Self::Any => "",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -820,6 +840,10 @@ pub enum HistoryKind {
     Changed,
     Deleted,
     Undeleted,
+    /// The record was archived (ADR 0035 G1): a lifecycle entry.
+    Archived,
+    /// The record came back from the archive.
+    Unarchived,
 }
 
 impl HistoryKind {
@@ -829,6 +853,8 @@ impl HistoryKind {
             Self::Changed => "changed",
             Self::Deleted => "deleted",
             Self::Undeleted => "undeleted",
+            Self::Archived => "archived",
+            Self::Unarchived => "unarchived",
         }
     }
 
@@ -838,6 +864,8 @@ impl HistoryKind {
             "changed" => Some(Self::Changed),
             "deleted" => Some(Self::Deleted),
             "undeleted" => Some(Self::Undeleted),
+            "archived" => Some(Self::Archived),
+            "unarchived" => Some(Self::Unarchived),
             _ => None,
         }
     }

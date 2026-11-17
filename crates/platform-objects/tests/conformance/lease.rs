@@ -114,6 +114,7 @@ pub async fn run(store: Arc<dyn ObjectStore>) {
                 cursor: None,
                 page_size: None,
                 include_deleted: false,
+                include_archived: false,
             })
             .await
     ));

@@ -359,6 +359,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
                 cursor: cursor.clone(),
                 page_size: Some(2),
                 include_deleted: false,
+                include_archived: false,
             })
             .await
             .expect("page");
@@ -393,6 +394,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
             cursor: first.next_cursor.clone(),
             page_size: Some(2),
             include_deleted: false,
+            include_archived: false,
         })
         .await
         .expect("limited second page");
@@ -418,6 +420,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
                 cursor: cursor.clone(),
                 page_size: Some(1),
                 include_deleted: false,
+                include_archived: false,
             })
             .await
             .expect("page");

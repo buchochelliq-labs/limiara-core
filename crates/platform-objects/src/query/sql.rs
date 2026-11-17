@@ -12,7 +12,7 @@ use super::plan::{
     AggregatePlan, Column, Hop, Keyset, Op, OutputRef, Param, PivotKind, Predicate, RecordPlan,
     Scope, Source, Test,
 };
-use crate::{RecordStatus, Visibility};
+use crate::Visibility;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +107,7 @@ fn column(alias: &str, column: Column) -> String {
         Column::TouchedAt => "touched_at",
         Column::Version => "version",
         Column::DeletedAt => "deleted_at",
+        Column::ArchivedAt => "archived_at",
         Column::IsDeleted => {
             return format!(
                 "CAST(CASE WHEN {alias}.deleted_at IS NULL THEN 0 ELSE 1 END AS BIGINT)"
@@ -303,11 +304,7 @@ fn scope(writer: &mut Writer, tenant_id: Uuid, scope: &Scope) {
     writer.bind(Param::Uuid(tenant_id));
     writer.push(" AND r.object_id = ");
     writer.bind(Param::Uuid(scope.object_id));
-    writer.push(match scope.status {
-        RecordStatus::Active => " AND r.deleted_at IS NULL",
-        RecordStatus::Deleted => " AND r.deleted_at IS NOT NULL",
-        RecordStatus::Any => "",
-    });
+    writer.push(scope.status.condition());
     if let Some(rule) = &scope.visibility {
         writer.push(" AND ");
         visibility(writer, "r", rule);
@@ -507,7 +504,10 @@ pub fn search(dialect: Dialect, tenant_id: Uuid, plan: &crate::search::SearchPla
     }
     writer.push(" JOIN records r ON r.tenant_id = ");
     writer.bind(Param::Uuid(tenant_id));
-    writer.push(" AND r.id = m0.record_id WHERE r.deleted_at IS NULL AND (");
+    writer.push(
+        " AND r.id = m0.record_id WHERE r.deleted_at IS NULL \
+         AND r.archived_at IS NULL AND (",
+    );
     for (index, scope) in plan.scopes.iter().enumerate() {
         if index > 0 {
             writer.push(" OR ");
@@ -610,6 +610,7 @@ pub fn aggregate(dialect: Dialect, tenant_id: Uuid, plan: &AggregatePlan) -> Ren
 mod tests {
     use super::*;
     use crate::query::plan::{AggregateExpr, SortKey};
+    use crate::RecordStatus;
 
     fn scope(predicate: Option<Predicate>) -> Scope {
         Scope {

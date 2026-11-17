@@ -58,6 +58,9 @@ impl ObjectService {
                         cursor: None,
                         page_size: Some(IN_VALUES as u16),
                         include_deleted: false,
+                        // Archiving hides a record from lists, not from
+                        // the member, so an archived record stays held.
+                        include_archived: true,
                     };
                     let result = self.query_in(tx.as_mut(), &access, &request).await?;
                     readable.extend(result.rows.into_iter().filter_map(|mut row| {

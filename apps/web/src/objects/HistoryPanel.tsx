@@ -15,6 +15,8 @@ const lifecycle: Record<Exclude<HistoryEntry['kind'], 'changed'>, string> = {
   created: 'Created.',
   deleted: 'Moved to the recycle bin.',
   undeleted: 'Restored from the recycle bin.',
+  archived: 'Archived.',
+  unarchived: 'Restored from the archive.',
 };
 
 const assistants: Record<string, string> = {siri: 'Siri', gemini: 'Gemini'};

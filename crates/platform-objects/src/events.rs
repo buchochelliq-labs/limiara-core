@@ -19,6 +19,9 @@ pub const RECORD_CREATED_V1: &str = "platform.objects.record-created.v1";
 pub const RECORD_UPDATED_V1: &str = "platform.objects.record-updated.v1";
 pub const RECORD_DELETED_V1: &str = "platform.objects.record-deleted.v1";
 pub const RECORD_UNDELETED_V1: &str = "platform.objects.record-undeleted.v1";
+/// A record was archived or came back from the archive (ADR 0035 G1).
+pub const RECORD_ARCHIVED_V1: &str = "platform.objects.record-archived.v1";
+pub const RECORD_UNARCHIVED_V1: &str = "platform.objects.record-unarchived.v1";
 pub const RECORD_OWNER_CHANGED_V1: &str = "platform.objects.record-owner-changed.v1";
 pub const RECORD_SHARING_CHANGED_V1: &str = "platform.objects.record-sharing-changed.v1";
 pub const VALIDATION_RULE_CREATED_V1: &str = "platform.objects.validation-rule-created.v1";
@@ -50,7 +53,7 @@ pub const QUICK_ACTION_CREATED_V1: &str = "platform.objects.quick-action-created
 pub const QUICK_ACTION_UPDATED_V1: &str = "platform.objects.quick-action-updated.v1";
 pub const QUICK_ACTION_DELETED_V1: &str = "platform.objects.quick-action-deleted.v1";
 
-pub const ENGINE_EVENT_TYPES: [&str; 31] = [
+pub const ENGINE_EVENT_TYPES: [&str; 33] = [
     OBJECT_CREATED_V1,
     OBJECT_UPDATED_V1,
     OBJECT_DELETED_V1,
@@ -62,6 +65,8 @@ pub const ENGINE_EVENT_TYPES: [&str; 31] = [
     RECORD_UPDATED_V1,
     RECORD_DELETED_V1,
     RECORD_UNDELETED_V1,
+    RECORD_ARCHIVED_V1,
+    RECORD_UNARCHIVED_V1,
     RECORD_OWNER_CHANGED_V1,
     RECORD_SHARING_CHANGED_V1,
     VALIDATION_RULE_CREATED_V1,
@@ -83,6 +88,9 @@ pub const ENGINE_EVENT_TYPES: [&str; 31] = [
     QUICK_ACTION_UPDATED_V1,
     QUICK_ACTION_DELETED_V1,
 ];
+
+/// The standard field an archive change names in the change log.
+pub const ARCHIVED_AT: &str = "archived_at";
 
 /// Who and why, for every piece of evidence in one request.
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +122,10 @@ pub enum Change<'a> {
     RecordUpdated(&'a ObjectDefinition, &'a Record, &'a [String]),
     RecordDeleted(&'a ObjectDefinition, &'a Record),
     RecordUndeleted(&'a ObjectDefinition, &'a Record),
+    /// The record was archived (ADR 0035 G1); `archived_at` is in it.
+    RecordArchived(&'a ObjectDefinition, &'a Record),
+    /// The record came back from the archive.
+    RecordUnarchived(&'a ObjectDefinition, &'a Record),
     /// The new owner is in the record; the previous owner and how many
     /// manual shares the transfer removed are evidence too (ADR 0016).
     OwnerChanged(&'a ObjectDefinition, &'a Record, Option<Uuid>, u64),
@@ -237,6 +249,18 @@ impl Change<'_> {
             Self::RecordUndeleted(object, record) => (
                 RECORD_UNDELETED_V1,
                 "records.record.undeleted",
+                record_target(record),
+                record_payload(object, record, &[]),
+            ),
+            Self::RecordArchived(object, record) => (
+                RECORD_ARCHIVED_V1,
+                "records.record.archived",
+                record_target(record),
+                record_payload(object, record, &[]),
+            ),
+            Self::RecordUnarchived(object, record) => (
+                RECORD_UNARCHIVED_V1,
+                "records.record.unarchived",
                 record_target(record),
                 record_payload(object, record, &[]),
             ),
@@ -404,7 +428,10 @@ impl Change<'_> {
 
     /// The change-log entry this change leaves (ADR 0018): record data
     /// changes only, with the changed field names. Sharing changes alter
-    /// visibility, not data, and leave none.
+    /// visibility, not data, and leave none. Archiving changes the
+    /// standard `archived_at` field, so it is an update naming that field,
+    /// as an owner change names `owner`; clients that know only the four
+    /// kinds read it as they read any update.
     pub fn record_change(
         &self,
     ) -> Option<(&ObjectDefinition, &Record, crate::ChangeKind, Vec<String>)> {
@@ -420,6 +447,14 @@ impl Change<'_> {
             }
             Self::RecordUndeleted(object, record) => {
                 Some((object, record, crate::ChangeKind::Undeleted, Vec::new()))
+            }
+            Self::RecordArchived(object, record) | Self::RecordUnarchived(object, record) => {
+                Some((
+                    object,
+                    record,
+                    crate::ChangeKind::Updated,
+                    vec![ARCHIVED_AT.to_owned()],
+                ))
             }
             Self::OwnerChanged(object, record, _, _) => Some((
                 object,
