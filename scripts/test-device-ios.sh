@@ -146,14 +146,16 @@ log "delivering a simulated route"
 # that declares `device.route_context`. A debug build reports a record
 # page of the demonstration workspace through the limiara:// scheme, as
 # the web shell does when it navigates, when this file appears; the
-# probe's Swift half records the route it received, as ids.
+# probe's Swift half records the route it received, as ids, and the shell's
+# outcome line, in whichever order they arrive: wait for both.
 route_trail="$container/tmp/device-route-probe.log"
 touch "$container/tmp/simulate-route"
 route_log=""
 for _ in $(seq 1 30); do
   sleep 1
   route_log=$(cat "$route_trail" 2>/dev/null || true)
-  grep -q '^route: record ' <<<"$route_log" && break
+  grep -q "the simulated route failed" <<<"$route_log" && break
+  grep -q '^route: record ' <<<"$route_log" && grep -q "simulated a route to" <<<"$route_log" && break
 done
 echo "--- the route probe's trail"
 printf '%s\n' "${route_log:-(none: the probe never started)}"

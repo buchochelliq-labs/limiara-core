@@ -8,10 +8,11 @@
 //! - [`follow`] hands each route change to the plugin, as ids.
 //! - [`simulate`] drives a route through the shell exactly as the web view
 //!   would, through the `limiara://` scheme: it opens the demonstration
-//!   workspace if nothing is open, then reports one of its records. Debug
-//!   phone builds run it when the CI check asks (`app.rs`), since a CI
-//!   runner cannot tap through the web shell; the desktop tests run it
-//!   directly.
+//!   workspace if nothing is open, then reports one of its records.
+//!   [`simulate_if_asked`] runs it when the CI check asks, since a CI runner
+//!   cannot tap through the web shell: debug phone builds call it every
+//!   second (`app.rs`) and hand the line it returns to the probe's native
+//!   half, the trail's only writer. The desktop tests call both directly.
 
 use crate::Shell;
 use device_route_probe::Route;
@@ -19,6 +20,7 @@ use http::Request;
 use platform_device::capabilities::{CapabilityError, PluginDeclaration};
 use platform_device::route::{CurrentRoute, RouteSubscription};
 use serde_json::{json, Value};
+use std::path::Path;
 
 /// The file that asks a debug phone build for a simulated route, in the
 /// probe's directory.
@@ -131,4 +133,15 @@ pub async fn simulate(shell: &Shell) -> Result<String, String> {
     )
     .await?;
     Ok(record)
+}
+
+/// Runs [`simulate`] once if `directory` holds [`SIMULATE_FILE`], removing
+/// it, and returns the line for the probe's trail: `simulated a route to …`
+/// or `the simulated route failed: …`. `None` when nothing was asked.
+pub async fn simulate_if_asked(shell: &Shell, directory: &Path) -> Option<String> {
+    std::fs::remove_file(directory.join(SIMULATE_FILE)).ok()?;
+    Some(match simulate(shell).await {
+        Ok(record) => format!("simulated a route to {record}"),
+        Err(error) => format!("the simulated route failed: {error}"),
+    })
 }

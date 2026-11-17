@@ -158,14 +158,16 @@ device() {
   # page of the demonstration workspace through the limiara:// scheme, as
   # the web shell does when it navigates, when `simulate-route` appears in
   # the app's cache directory; the probe's Kotlin half records the route it
-  # received, as ids.
+  # received, as ids, and the shell's outcome line, in whichever order they
+  # arrive: wait for both.
   adb shell run-as "$package" rm -f cache/device-route-probe.log </dev/null || true
   adb shell run-as "$package" touch cache/simulate-route </dev/null
   route_log=""
   for _ in $(seq 1 30); do
     sleep 1
     route_log=$(adb shell run-as "$package" cat cache/device-route-probe.log </dev/null 2>/dev/null | tr -d '\r' || true)
-    grep -q '^route: record ' <<<"$route_log" && break
+    grep -q "the simulated route failed" <<<"$route_log" && break
+    grep -q '^route: record ' <<<"$route_log" && grep -q "simulated a route to" <<<"$route_log" && break
   done
   echo "--- the route probe's trail"
   printf '%s\n' "${route_log:-(none: the probe never started)}"

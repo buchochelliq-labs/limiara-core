@@ -11,6 +11,11 @@ import app.tauri.plugin.Plugin
 import java.io.File
 
 @InvokeArg
+class NoteArgs {
+    var message: String? = null
+}
+
+@InvokeArg
 class RouteArgs {
     var pattern: String? = null
     var objectName: String? = null
@@ -40,12 +45,22 @@ class RouteProbePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(JSObject())
     }
 
+    /** Adds one of the shell's lines to the trail, such as the outcome of a simulated route. */
+    @Command
+    fun note(invoke: Invoke) {
+        val args = invoke.parseArgs(NoteArgs::class.java)
+        say(args.message ?: "")
+        invoke.resolve(JSObject())
+    }
+
     /** Where the plugin keeps its trail. */
     @Command
     fun directory(invoke: Invoke) {
         invoke.resolve(JSObject().put("path", activity.cacheDir.absolutePath))
     }
 
+    /** Routes and the shell's notes arrive on different threads; this is the trail's only writer. */
+    @Synchronized
     private fun say(message: String) {
         Log.i("device.route-probe", message)
         try {

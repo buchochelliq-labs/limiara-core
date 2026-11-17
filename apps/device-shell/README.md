@@ -140,4 +140,6 @@ write each route, as ids, to `device-route-probe.log` in the app's
 temporary directory (the cache directory on Android). A CI runner cannot
 tap through the web shell, so a debug build reports a record page of the
 demonstration workspace through the scheme when `simulate-route` appears
-there; the `ios` and `android` workflows do that and check the trail.
+there (`probe::simulate_if_asked`) and hands the outcome line to the native
+half, which is the trail's only writer; the `ios` and `android` workflows
+do that, wait for both the route and the outcome line, and check them.

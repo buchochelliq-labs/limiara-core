@@ -140,3 +140,54 @@ async fn the_probe_receives_each_route_the_web_shell_reports() {
     assert_eq!(signed_out.status(), 200);
     assert_eq!(received(&plugin, &none).await.last(), Some(&none));
 }
+
+#[tokio::test]
+async fn a_simulated_route_runs_when_the_ci_check_asks() {
+    // The path a debug phone build takes each second: the check creates the
+    // request file in the probe's directory, the shell consumes it, drives
+    // a record page through the scheme, and hands the outcome line to the
+    // probe's native half for its trail.
+    let directory = tempfile::tempdir().expect("dir");
+    let shell = shell(directory.path());
+    let plugin = start(&shell);
+    let probe_directory = directory.path().join("probe");
+    std::fs::create_dir_all(&probe_directory).expect("probe dir");
+
+    // Nothing asked: nothing runs.
+    assert_eq!(
+        probe::simulate_if_asked(&shell, &probe_directory).await,
+        None
+    );
+    assert!(shell.controller().bridge().is_none());
+
+    let request = probe_directory.join(probe::SIMULATE_FILE);
+    std::fs::write(&request, b"").expect("asked");
+    let line = probe::simulate_if_asked(&shell, &probe_directory)
+        .await
+        .expect("asked once");
+    let record = line
+        .strip_prefix("simulated a route to ")
+        .unwrap_or_else(|| panic!("the simulated route failed: {line}"))
+        .to_owned();
+    assert!(!request.exists(), "the request is taken once");
+    let page = Route {
+        pattern: Some("record".into()),
+        object_name: Some("custom:account".into()),
+        record_id: Some(record),
+    };
+    assert_eq!(received(&plugin, &page).await.last(), Some(&page));
+    // The line the phone scripts look for, and the route line's ids.
+    assert!(line.starts_with("simulated a route to "));
+    assert_eq!(page.record_id.as_deref().map(str::len), Some(18));
+
+    // Asked again with the demonstration already open: it reuses it.
+    std::fs::write(&request, b"").expect("asked again");
+    let again = probe::simulate_if_asked(&shell, &probe_directory)
+        .await
+        .expect("asked twice");
+    assert!(again.starts_with("simulated a route to "), "{again}");
+    assert_eq!(
+        probe::simulate_if_asked(&shell, &probe_directory).await,
+        None
+    );
+}

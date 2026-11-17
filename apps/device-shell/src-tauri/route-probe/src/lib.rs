@@ -6,7 +6,9 @@
 //! - iOS and Android: the Swift (`ios/`) and Kotlin (`android/`) halves take
 //!   each route with [`Probe::deliver`] and write it, as ids, to a trail in
 //!   the app's temporary directory ([`Probe::directory`]), which the CI
-//!   checks read from the simulator's container and the emulator.
+//!   checks read from the simulator's container and the emulator. The shell
+//!   adds its own lines with [`Probe::note`]: the native half is the
+//!   trail's only writer, so no line overwrites another.
 //! - Desktop: there is no native half; [`Probe`] keeps what it received.
 //!
 //! The probe holds no business logic and reads nothing itself: it gets the
@@ -59,6 +61,11 @@ mod mobile {
         path: String,
     }
 
+    #[derive(serde::Serialize)]
+    struct Note<'a> {
+        message: &'a str,
+    }
+
     /// The plugin's handle. Calls block until the platform answers.
     pub struct Probe<R: Runtime>(pub(crate) tauri::plugin::PluginHandle<R>);
 
@@ -79,6 +86,15 @@ mod mobile {
         pub fn deliver(&self, route: &Route) -> Result<(), ProbeError> {
             self.0
                 .run_mobile_plugin::<Done>("route", route.clone())
+                .map(|_| ())
+                .map_err(|error| ProbeError(error.to_string()))
+        }
+
+        /// Adds a line of the shell's to the native half's trail, which
+        /// writes its lines one at a time.
+        pub fn note(&self, message: &str) -> Result<(), ProbeError> {
+            self.0
+                .run_mobile_plugin::<Done>("note", Note { message })
                 .map(|_| ())
                 .map_err(|error| ProbeError(error.to_string()))
         }

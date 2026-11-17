@@ -7,22 +7,32 @@ class RouteArgs: Decodable {
     let recordId: String?
 }
 
+class NoteArgs: Decodable {
+    let message: String
+}
+
 /// The plugin's trail, in the app's temporary directory, which the CI check
 /// reads from the simulator's container.
 private let trail = FileManager.default.temporaryDirectory
     .appendingPathComponent("device-route-probe.log")
 
+/// Routes and the shell's notes arrive on different threads; one queue
+/// writes the trail, so a line never lands on another's offset.
+private let trailQueue = DispatchQueue(label: "device.route-probe.trail")
+
 /// Writes each step to the system log, with a prefix to search for, and to
-/// the trail.
+/// the trail, which only this plugin writes.
 private func say(_ message: String) {
     NSLog("[device.route-probe] %@", message)
     let line = Data("\(message)\n".utf8)
-    if let handle = try? FileHandle(forWritingTo: trail) {
-        handle.seekToEndOfFile()
-        handle.write(line)
-        handle.closeFile()
-    } else {
-        try? line.write(to: trail)
+    trailQueue.sync {
+        if let handle = try? FileHandle(forWritingTo: trail) {
+            handle.seekToEndOfFile()
+            handle.write(line)
+            handle.closeFile()
+        } else {
+            try? line.write(to: trail)
+        }
     }
 }
 
@@ -40,6 +50,14 @@ class RouteProbePlugin: Plugin {
     @objc public func route(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(RouteArgs.self)
         say("route: \(args.pattern ?? "none") \(args.objectName ?? "-") \(args.recordId ?? "-")")
+        invoke.resolve()
+    }
+
+    /// Adds one of the shell's lines to the trail, such as the outcome of a
+    /// simulated route.
+    @objc public func note(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(NoteArgs.self)
+        say(args.message)
         invoke.resolve()
     }
 

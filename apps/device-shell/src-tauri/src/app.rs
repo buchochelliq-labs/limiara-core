@@ -170,7 +170,9 @@ fn start_route_probe(app: &tauri::App<tauri::Wry>, shell: Shell) {
 /// reports a simulated route when `simulate-route` appears in the probe's
 /// directory: the app's temporary directory on iOS, its cache directory on
 /// Android. The route goes through the `limiara://` scheme, as the web
-/// shell's would, and the outcome joins the probe's trail.
+/// shell's would, and the outcome joins the probe's trail through the
+/// native half, which writes every line of it: a line written here as well
+/// could land on the same offset as the route's and vanish.
 #[cfg(mobile)]
 fn watch_simulated_routes(probe: device_route_probe::Probe<tauri::Wry>, shell: Shell) {
     let _ = std::thread::Builder::new()
@@ -179,24 +181,14 @@ fn watch_simulated_routes(probe: device_route_probe::Probe<tauri::Wry>, shell: S
             let Ok(directory) = probe.directory() else {
                 return;
             };
-            let request = directory.join(crate::probe::SIMULATE_FILE);
-            let trail = directory.join("device-route-probe.log");
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
-                if std::fs::remove_file(&request).is_err() {
+                let asked = crate::probe::simulate_if_asked(&shell, &directory);
+                let Some(line) = tauri::async_runtime::block_on(asked) else {
                     continue;
-                }
-                let line = match tauri::async_runtime::block_on(crate::probe::simulate(&shell)) {
-                    Ok(record) => format!("simulated a route to {record}\n"),
-                    Err(error) => format!("the simulated route failed: {error}\n"),
                 };
-                use std::io::Write;
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&trail)
-                {
-                    let _ = file.write_all(line.as_bytes());
+                if let Err(error) = probe.note(&line) {
+                    eprintln!("the route probe's trail could not take {line:?}: {error}");
                 }
             }
         });
