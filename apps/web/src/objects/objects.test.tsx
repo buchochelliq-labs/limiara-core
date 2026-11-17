@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, sourceFromApi, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
-import {AllowlistForm, allowlistChoices, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
+import {AllowlistForm, allowlistChoices, AssistantAccess, AssistantPolicyForm, AssistantSwitch, indexFields, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
 import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
@@ -926,5 +926,86 @@ describe('activity timeline (ADR 0033 §4)', () => {
     expect(second.open).toEqual([]);
     expect(second.past.map(entry => entry.name)).toContain('Done before');
     expect(second.nextCursor).toBeNull();
+  });
+});
+
+describe('assistant access (ADR 0034 §4)', () => {
+  it('reads and changes the workspace switch and an object\'s policy with versions', async () => {
+    const base = `/api/v1/workspaces/${workspace}/objects`;
+    const switchRead = respond(200, {enabled: false, version: 0, updated_at: null, updated_by: null, objects: []});
+    expect(await createObjectsApiClient(workspace, switchRead).assistantSettings()).toEqual({enabled: false, version: 0});
+    expect(vi.mocked(switchRead).mock.calls[0]?.[0]).toBe(`${base}/assistant-policy`);
+
+    const switchOn = respond(200, {enabled: true, version: 1});
+    await createObjectsApiClient(workspace, switchOn).updateAssistantSettings(0, true);
+    const [switchUrl, switchInit] = vi.mocked(switchOn).mock.calls[0] ?? [];
+    expect(switchUrl).toBe(`${base}/assistant-policy`);
+    expect(switchInit?.method).toBe('PATCH');
+    expect(JSON.parse(String(switchInit?.body))).toEqual({enabled: true, expected_version: 0});
+
+    const wire = {object: 'custom:project', exposed: true, writable: false, indexable: true, excluded_fields: ['name', 'custom:notes'], offered_actions: ['close'], version: 2, updated_at: '2026-11-17T00:00:00Z', updated_by: {id: 'u1', name: null}};
+    const read = respond(200, wire);
+    expect(await createObjectsApiClient(workspace, read).assistantPolicy('custom:project')).toEqual({object: 'custom:project', exposed: true, writable: false, indexable: true, excludedFields: ['name', 'custom:notes'], offeredActions: ['close'], version: 2});
+    expect(vi.mocked(read).mock.calls[0]?.[0]).toBe(`${base}/custom%3Aproject/assistant-policy`);
+
+    const change = respond(200, {...wire, version: 3});
+    await createObjectsApiClient(workspace, change).updateAssistantPolicy('custom:project', 2, {writable: true});
+    const [changeUrl, changeInit] = vi.mocked(change).mock.calls[0] ?? [];
+    expect(changeUrl).toBe(`${base}/custom%3Aproject/assistant-policy`);
+    expect(changeInit?.method).toBe('PATCH');
+    expect(JSON.parse(String(changeInit?.body))).toEqual({writable: true, expected_version: 2});
+
+    await expect(createObjectsApiClient(workspace, respond(403, {code: 'auth.permission_denied'})).updateAssistantSettings(0, true)).rejects.toMatchObject({reason: 'denied'});
+    await expect(createObjectsApiClient(workspace, respond(400, {code: 'validation.failed', errors: [{field: 'writable', code: 'assistant_policy.requires_exposed', detail: 'expose Project to assistants first'}]})).updateAssistantPolicy('custom:project', 0, {writable: true})).rejects.toMatchObject({reason: 'invalid', issues: [{code: 'assistant_policy.requires_exposed'}]});
+    await expect(createObjectsApiClient(workspace, respond(409, {code: 'records.version_conflict'})).updateAssistantPolicy('custom:project', 0, {exposed: true})).rejects.toMatchObject({reason: 'conflict'});
+  });
+
+  it('starts off in the fixture and keeps the server\'s rules', async () => {
+    const client = createFixtureObjectsClient();
+    expect(await client.assistantSettings()).toEqual({enabled: false, version: 0});
+    expect(await client.assistantPolicy('custom:project')).toMatchObject({exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {writable: true})).rejects.toMatchObject({reason: 'invalid', issues: [{code: 'assistant_policy.requires_exposed'}]});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: true, excluded_fields: ['custom:nope']})).rejects.toMatchObject({issues: [{code: 'assistant_policy.field_unknown'}]});
+    await client.createQuickAction('custom:project', {name: 'win', label: 'Win', kind: 'update', fields: ['custom:status']});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: true, offered_actions: ['win']})).rejects.toMatchObject({issues: [{code: 'assistant_policy.action_not_writable'}]});
+    const saved = await client.updateAssistantPolicy('custom:project', 0, {exposed: true, writable: true, offered_actions: ['win'], excluded_fields: ['name']});
+    expect(saved).toMatchObject({exposed: true, writable: true, offeredActions: ['win'], excludedFields: ['name'], version: 1});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: false})).rejects.toMatchObject({reason: 'conflict'});
+    expect(await client.updateAssistantSettings(0, true)).toEqual({enabled: true, version: 1});
+  });
+
+  it('lists the record name with every field for the index', () => {
+    expect(indexFields(project).map(field => field.label)).toEqual(['Project name', 'Status', 'Code', 'Notes <i>']);
+  });
+
+  it('renders the switch and the object section with labelled loading states', () => {
+    const switchMarkup = renderToStaticMarkup(<AssistantSwitch client={createFixtureObjectsClient()} />);
+    expect(switchMarkup).toContain('<h2 id="assistant-switch-heading">Assistant access</h2>');
+    expect(switchMarkup).toContain('Loading assistant access');
+    const section = renderToStaticMarkup(<AssistantAccess client={createFixtureObjectsClient()} object={project} onNotice={noop} />);
+    expect(section).toContain('<h2 id="assistant-access-heading">Assistant access</h2>');
+    expect(section).toContain('Loading assistant access');
+    expect(section).toContain('aria-busy="true"');
+  });
+
+  it('renders the policy form with every setting off and dependent settings disabled', () => {
+    const off = {policy: {object: 'custom:project', exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0}, actions: [{name: 'win', label: 'Win <b>now</b>', kind: 'update' as const, position: 0, targetObject: null, targetField: null, fields: ['custom:status'], presets: {}, version: 1}], settings: {enabled: false, version: 0}};
+    const form = renderToStaticMarkup(<AssistantPolicyForm client={createFixtureObjectsClient()} object={project} data={off} onSaved={noop} onStale={noop} />);
+    expect(form).toContain('aria-label="Assistant access for Project"');
+    expect(form).toContain('Assistant access is off for this workspace');
+    expect(form).toContain('Assistants can find and read projects');
+    expect(form).toMatch(/<input type="checkbox" disabled=""\/>Assistants can create and update projects/);
+    expect(form).toMatch(/<input type="checkbox" disabled=""\/>Devices may add projects/);
+    expect(form).toContain('<legend>Quick actions offered to assistants</legend>');
+    expect(form).toContain('Win &lt;b&gt;now&lt;/b&gt;');
+    expect(form).not.toContain('<b>now</b>');
+    expect(form).not.toContain('Fields kept out of the index');
+    expect(form).toMatch(/<button[^>]*disabled=""[^>]*><span>Save assistant access/);
+
+    const indexed = {...off, policy: {...off.policy, exposed: true, indexable: true, excludedFields: ['custom:notes'], version: 3}, settings: {enabled: true, version: 1}};
+    const open = renderToStaticMarkup(<AssistantPolicyForm client={createFixtureObjectsClient()} object={project} data={indexed} onSaved={noop} onStale={noop} />);
+    expect(open).not.toContain('Assistant access is off for this workspace');
+    expect(open).toContain('<legend>Fields kept out of the index</legend>');
+    expect(open).toContain('Kept out of the index: Notes &lt;i&gt;.');
   });
 });

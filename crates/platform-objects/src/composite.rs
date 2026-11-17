@@ -4,7 +4,7 @@
 
 use crate::automation::Run;
 use crate::service::{MutationContext, ObjectService};
-use crate::{ObjectDefinition, ObjectError, Record};
+use crate::{AssistantMarker, ObjectDefinition, ObjectError, Record};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -31,6 +31,11 @@ pub enum CompositeOperation {
         reference: String,
         object: String,
         values: Map<String, Value>,
+        /// Set only by a synced device's push, for a change its assistant
+        /// bridge made (ADR 0034 §6): the server then also checks its
+        /// assistant policy and records the assistant as the source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant: Option<AssistantMarker>,
     },
     Update {
         reference: String,
@@ -38,6 +43,9 @@ pub enum CompositeOperation {
         id: String,
         expected_version: i64,
         values: Map<String, Value>,
+        /// As on a create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant: Option<AssistantMarker>,
     },
     Delete {
         reference: String,
@@ -70,6 +78,14 @@ impl CompositeOperation {
             | Self::Delete { reference, .. }
             | Self::Undelete { reference, .. }
             | Self::ChangeOwner { reference, .. } => reference,
+        }
+    }
+
+    /// The assistant marker a device's push put on the operation, if any.
+    pub fn assistant(&self) -> Option<&AssistantMarker> {
+        match self {
+            Self::Create { assistant, .. } | Self::Update { assistant, .. } => assistant.as_ref(),
+            _ => None,
         }
     }
 
@@ -205,27 +221,45 @@ impl ObjectService {
         let mut outcomes = Vec::with_capacity(request.operations.len());
         for operation in &request.operations {
             let result = match operation {
-                CompositeOperation::Create { object, values, .. } => {
-                    match resolve_values(values, &done) {
-                        Ok(values) => self
-                            .create_record(object, &values, context)
-                            .await
-                            .map(|record| (record, true)),
-                        Err(error) => Err(error),
-                    }
-                }
+                CompositeOperation::Create {
+                    object,
+                    values,
+                    assistant,
+                    ..
+                } => match (
+                    resolve_values(values, &done),
+                    self.assistant_context(context, assistant.as_ref()),
+                ) {
+                    (Ok(values), Ok(context)) => self
+                        .create_record_marked(object, &values, context, assistant.as_ref())
+                        .await
+                        .map(|record| (record, true)),
+                    (Err(error), _) | (_, Err(error)) => Err(error),
+                },
                 CompositeOperation::Update {
                     object,
                     id,
                     expected_version,
                     values,
+                    assistant,
                     ..
-                } => match (resolve_id(id, &done), resolve_values(values, &done)) {
-                    (Ok(id), Ok(values)) => self
-                        .update_record(object, &id, *expected_version, &values, context)
+                } => match (
+                    resolve_id(id, &done),
+                    resolve_values(values, &done),
+                    self.assistant_context(context, assistant.as_ref()),
+                ) {
+                    (Ok(id), Ok(values), Ok(context)) => self
+                        .update_record_marked(
+                            object,
+                            &id,
+                            *expected_version,
+                            &values,
+                            context,
+                            assistant.as_ref(),
+                        )
                         .await
                         .map(|record| (record, false)),
-                    (Err(error), _) | (_, Err(error)) => Err(error),
+                    (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
                 },
                 CompositeOperation::Delete {
                     object,
@@ -300,8 +334,11 @@ impl ObjectService {
         for (index, operation) in request.operations.iter().enumerate() {
             let result = match operation {
                 CompositeOperation::Create { object, values, .. } => {
-                    match resolve_values(values, &done) {
-                        Ok(values) => self
+                    match (
+                        resolve_values(values, &done),
+                        self.assistant_context(context, operation.assistant()),
+                    ) {
+                        (Ok(values), Ok(context)) => self
                             .create_record_tx(
                                 tx.as_mut(),
                                 &access,
@@ -312,7 +349,7 @@ impl ObjectService {
                             )
                             .await
                             .map(|found| (found, true)),
-                        Err(error) => Err(error),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
                     }
                 }
                 CompositeOperation::Update {
@@ -321,8 +358,12 @@ impl ObjectService {
                     expected_version,
                     values,
                     ..
-                } => match (resolve_id(id, &done), resolve_values(values, &done)) {
-                    (Ok(id), Ok(values)) => self
+                } => match (
+                    resolve_id(id, &done),
+                    resolve_values(values, &done),
+                    self.assistant_context(context, operation.assistant()),
+                ) {
+                    (Ok(id), Ok(values), Ok(context)) => self
                         .update_record_tx(
                             tx.as_mut(),
                             &access,
@@ -335,7 +376,7 @@ impl ObjectService {
                         )
                         .await
                         .map(|found| (found, false)),
-                    (Err(error), _) | (_, Err(error)) => Err(error),
+                    (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
                 },
                 CompositeOperation::Delete {
                     object,
@@ -398,6 +439,21 @@ impl ObjectService {
                         .map(|found| (found, false)),
                     Err(error) => Err(error),
                 },
+            };
+            // A marked write is checked against the assistant policy after
+            // the engine's own checks, in the shared transaction.
+            let result = match (result, operation.assistant()) {
+                (Ok(((object, record), created)), Some(marker)) => {
+                    let write = if created {
+                        crate::assistant_policy::AssistantWrite::Create
+                    } else {
+                        crate::assistant_policy::AssistantWrite::Update
+                    };
+                    self.check_assistant_write(tx.as_mut(), &object, write, marker)
+                        .await
+                        .map(|()| ((object, record), created))
+                }
+                (result, _) => result,
             };
             match result {
                 Ok(((object, record), created)) => {

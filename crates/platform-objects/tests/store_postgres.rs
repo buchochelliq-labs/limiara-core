@@ -287,6 +287,8 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "record_search_terms",
         "validation_rules",
         "quick_actions",
+        "assistant_settings",
+        "assistant_object_policies",
         "field_reference_objects",
         "related_actions",
         "timeline_sources",
@@ -887,4 +889,111 @@ async fn postgres_store_passes_the_change_source_conformance_suite() {
             .execute(&migrator)
             .await;
     assert!(refused.is_err(), "the source kind is a closed set");
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_assistant_policy_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    let plugin_tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (id, name) in [
+        (tenant, "Assistant policy conformance"),
+        (plugin_tenant, "Assistant policy plugin objects"),
+        (other, "Assistant policy neighbour"),
+    ] {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let report = conformance::assistant_policy::run(store.clone(), tenant).await;
+    conformance::assistant_policy::run_plugin_objects(store, plugin_tenant).await;
+
+    // Every policy change left its event and audit entry.
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outbox WHERE tenant_id = $1 \
+         AND event_type = 'platform.objects.assistant-policy-updated.v1'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("events");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action IN \
+         ('objects.assistant_settings.updated', 'objects.assistant_policy.updated')",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert!(events >= 6, "{events}");
+    assert_eq!(events, audited);
+
+    // The assistant's write names the assistant, and the device only in
+    // the audit entry.
+    let metadata: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE tenant_id = $1 \
+         AND action = 'records.record.created' AND target = $2",
+    )
+    .bind(tenant)
+    .bind(format!("record:{}", report.assistant_record))
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(
+        metadata["source"],
+        serde_json::json!({"kind": "assistant", "detail": "siri"})
+    );
+    assert_eq!(metadata["device_id"], report.device.to_string());
+
+    // Forced row-level security on both tables: nothing without a
+    // workspace context, nothing of another workspace inside one, and no
+    // writes into another workspace.
+    for table in ["assistant_settings", "assistant_object_policies"] {
+        let stored: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM {table} WHERE tenant_id = $1"
+        ))
+        .bind(tenant)
+        .fetch_one(&migrator)
+        .await
+        .expect(table);
+        assert!(stored > 0, "{table} holds the policy");
+        let visible: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&app)
+            .await
+            .expect(table);
+        assert_eq!(visible, 0, "{table} without app.tenant_id");
+        let mut tx = platform_db::begin_tenant_tx(&app, other)
+            .await
+            .expect("neighbour");
+        let foreign: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM {table} WHERE tenant_id = $1"
+        ))
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .expect(table);
+        assert_eq!(foreign, 0, "{table} of another workspace");
+    }
+    let mut tx = platform_db::begin_tenant_tx(&app, other)
+        .await
+        .expect("neighbour");
+    let smuggled = sqlx::query("UPDATE assistant_settings SET enabled = true WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .expect("update runs");
+    assert_eq!(smuggled.rows_affected(), 0, "another workspace's switch");
+    let write =
+        sqlx::query("INSERT INTO assistant_settings (tenant_id, enabled) VALUES ($1, true)")
+            .bind(Uuid::now_v7())
+            .execute(&mut *tx)
+            .await;
+    assert!(write.is_err(), "no row for another workspace");
 }
