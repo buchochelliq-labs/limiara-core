@@ -198,6 +198,9 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState('');
   const [canManage, setCanManage] = useState(false);
+  // Bumped when the quick-action editor changes this object's actions, so
+  // the assistant form reloads the actions it may offer.
+  const [actionsRevision, setActionsRevision] = useState(0);
   const [filtering, setFiltering] = useState<string | null>(null);
   const [allowing, setAllowing] = useState<string | null>(null);
   const object = load.status === 'ready' ? load.value : undefined;
@@ -265,9 +268,9 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
         {allowing && object.fields.some(field => field.apiName === allowing) && <AllowlistForm key={`${allowing}@${object.fields.find(field => field.apiName === allowing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === allowing) ?? object.fields[0]!} onDone={message => { setAllowing(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}
-      {canManage && <QuickActions client={client} object={object} onNotice={setNotice} />}
+      {canManage && <QuickActions client={client} object={object} onNotice={setNotice} onChanged={() => setActionsRevision(value => value + 1)} />}
       {canManage && <Automations client={client} object={object} onNotice={setNotice} />}
-      {canManage && <AssistantAccess client={client} object={object} onNotice={setNotice} />}
+      {canManage && <AssistantAccess client={client} object={object} onNotice={setNotice} actionsRevision={actionsRevision} />}
       {canManage && <RecordAccessSettings client={client} object={object} onSaved={message => { setNotice(message); retry(); }} />}
       {canManage && <ObjectPermissions client={client} object={object} />}
     </>}
@@ -684,7 +687,7 @@ export function indexFields(object: ObjectDescription): {apiName: string; label:
 }
 
 /** One object's assistant policy (ADR 0034 §4): exposed, writable, indexable with excluded fields, and the quick actions offered. */
-export function AssistantAccess({client, object, onNotice}: {client: Pick<ObjectsClient, 'assistantPolicy' | 'updateAssistantPolicy' | 'assistantSettings' | 'quickActions'>; object: ObjectDescription; onNotice: (message: string) => void}) {
+export function AssistantAccess({client, object, onNotice, actionsRevision = 0}: {client: Pick<ObjectsClient, 'assistantPolicy' | 'updateAssistantPolicy' | 'assistantSettings' | 'quickActions'>; object: ObjectDescription; onNotice: (message: string) => void; actionsRevision?: number}) {
   const [load, setLoad] = useState<SectionLoad<AssistantData>>({status: 'loading'});
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -694,14 +697,14 @@ export function AssistantAccess({client, object, onNotice}: {client: Pick<Object
       .then(([policy, actions, settings]) => { if (!controller.signal.aborted) setLoad({status: 'ready', value: {policy, actions, settings}}); })
       .catch(reason => { if (!controller.signal.aborted) setLoad(sectionFailure(reason)); });
     return () => controller.abort();
-  }, [client, object.apiName, attempt]);
+  }, [client, object.apiName, attempt, actionsRevision]);
   return <section className="object-section" aria-labelledby="assistant-access-heading" aria-busy={load.status === 'loading'}>
     <h2 id="assistant-access-heading">Assistant access</h2>
     <p>What Siri and Gemini may reach on members' phones. It only narrows: assistants act as the member and never reach what the member cannot. Everything is off until you turn it on.</p>
     {load.status === 'loading' && <Skeleton label="Loading assistant access" lines={3} />}
     {load.status === 'denied' && <Alert variant="warning" title="Permission needed">You do not have permission to see assistant access for {object.label}.</Alert>}
     {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Assistant access could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
-    {load.status === 'ready' && <AssistantPolicyForm key={load.value.policy.version} client={client} object={object} data={load.value} onSaved={message => { onNotice(message); setAttempt(value => value + 1); }} onStale={() => setAttempt(value => value + 1)} />}
+    {load.status === 'ready' && <AssistantPolicyForm key={`${load.value.policy.version}:${load.value.actions.map(action => action.name).join(',')}`} client={client} object={object} data={load.value} onSaved={message => { onNotice(message); setAttempt(value => value + 1); }} onStale={() => setAttempt(value => value + 1)} />}
   </section>;
 }
 
