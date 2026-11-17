@@ -27,6 +27,7 @@ pub fn remote(record: &Record) -> RemoteRecord {
         updated_at: record.updated_at,
         updated_by: record.updated_by,
         touched_at: record.touched_at,
+        archived_at: record.archived_at,
         deleted_at: record.deleted_at,
     }
 }

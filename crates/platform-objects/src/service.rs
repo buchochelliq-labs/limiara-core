@@ -65,6 +65,13 @@ impl MutationContext {
     }
 }
 
+/// Archiving a record in the recycle bin, or unarchiving one (ADR 0035 G1).
+pub const ARCHIVE_DELETED: &str = "records.deleted";
+/// Archiving a record that is already archived.
+pub const ALREADY_ARCHIVED: &str = "records.already_archived";
+/// Unarchiving a record that is not archived.
+pub const NOT_ARCHIVED: &str = "records.not_archived";
+
 /// How long the change log keeps changes (ADR 0018); Salesforce keeps
 /// change events for three days too.
 pub const CHANGE_RETENTION: chrono::TimeDelta = chrono::TimeDelta::hours(72);
@@ -2650,6 +2657,113 @@ impl ObjectService {
         )
         .await?;
         Ok((object, record))
+    }
+
+    /// Archives a record (ADR 0035 G1): it leaves default lists, queries,
+    /// global search, lookup pickers and related lists, and stays readable
+    /// by id. Archiving is an edit, so it needs edit access to the record,
+    /// as an update does; it moves the version and the update stamps and
+    /// sets `archived_at`. It changes no values, so validation rules and
+    /// automations do not run. A record already archived is refused with
+    /// `records.already_archived`, and one in the recycle bin with
+    /// `records.deleted`.
+    pub async fn archive_record(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        self.set_archived(api_name, public_id, expected_version, true, context)
+            .await
+    }
+
+    /// Brings an archived record back to default lists. It needs edit
+    /// access, as archiving does; a record that is not archived is refused
+    /// with `records.not_archived`, and one in the recycle bin with
+    /// `records.deleted`.
+    pub async fn unarchive_record(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        self.set_archived(api_name, public_id, expected_version, false, context)
+            .await
+    }
+
+    async fn set_archived(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        archive: bool,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        // A replica takes archive state from the server; its push queue
+        // carries no archive, so a local one would never reach the server.
+        if self.is_replica() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let mut tx = self.begin().await?;
+        let access = self.access(tx.as_mut()).await?;
+        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let flags = access.for_object(object.id);
+        if !flags.read {
+            return Err(ObjectError::NotFound);
+        }
+        if !flags.edit {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let mut record = tx
+            .record(object.id, public_id)
+            .await?
+            .ok_or(ObjectError::NotFound)?;
+        let rights = self
+            .rights_on(tx.as_mut(), &access, &object, &record)
+            .await?;
+        if !rights.read {
+            return Err(ObjectError::NotFound);
+        }
+        if !rights.edit {
+            return Err(ObjectError::PermissionDenied);
+        }
+        // The record's state decides before its version, so a member who
+        // missed someone else's archive learns what happened.
+        if record.deleted_at.is_some() {
+            return Err(ObjectError::Conflict(ARCHIVE_DELETED));
+        }
+        match (archive, record.archived_at.is_some()) {
+            (true, true) => return Err(ObjectError::Conflict(ALREADY_ARCHIVED)),
+            (false, false) => return Err(ObjectError::Conflict(NOT_ARCHIVED)),
+            _ => {}
+        }
+        if record.version != expected_version {
+            return Err(ObjectError::VersionConflict);
+        }
+        self.stamp(&mut record);
+        record.archived_at = archive.then_some(record.updated_at);
+        if !tx.update_record(&record, expected_version).await? {
+            return Err(ObjectError::VersionConflict);
+        }
+        let (change, kind) = if archive {
+            (
+                Change::RecordArchived(&object, &record),
+                HistoryKind::Archived,
+            )
+        } else {
+            (
+                Change::RecordUnarchived(&object, &record),
+                HistoryKind::Unarchived,
+            )
+        };
+        self.record_change(tx.as_mut(), context, change).await?;
+        self.track(tx.as_mut(), &object, None, &record, kind, context)
+            .await?;
+        tx.commit().await?;
+        self.with_formula(&object, Self::project(&object, record))
+            .await
     }
 
     /// Brings back the details deleted with `root` (ADR 0025). A junction

@@ -449,6 +449,7 @@ impl ObjectService {
             cursor,
             page_size: Some(page_size),
             include_deleted: false,
+            include_archived: false,
         };
         match self.query_in(tx, access, &request).await {
             Ok(result) => Ok(Some(result)),

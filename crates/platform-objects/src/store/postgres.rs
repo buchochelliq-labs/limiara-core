@@ -10,8 +10,8 @@ use crate::{
     AccessFlags, ChangeKind, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType,
     GranteeKind, HistoryEntry, HistoryKind, IndexValue, ObjectDefinition, ObjectError, Origin,
     PicklistOption, Record, RecordChange, RecordIndex, RecordQuery, RecordShare, RecordSort,
-    RecordStatus, RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel,
-    SortDirection, ValidationRule, ENGINE_CONTEXT,
+    RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel, SortDirection,
+    ValidationRule, ENGINE_CONTEXT,
 };
 use crate::{MutationSource, RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
 use async_trait::async_trait;
@@ -1250,11 +1250,7 @@ impl ObjectTx for PostgresObjectTx {
         sql.push_bind(self.tenant_id)
             .push(" AND r.object_id = ")
             .push_bind(object_id);
-        sql.push(match query.status {
-            RecordStatus::Active => " AND r.deleted_at IS NULL",
-            RecordStatus::Deleted => " AND r.deleted_at IS NOT NULL",
-            RecordStatus::Any => "",
-        });
+        sql.push(query.status.condition());
         if let Some(owner) = query.owner {
             sql.push(" AND r.owner_id = ").push_bind(owner);
         }

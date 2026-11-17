@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+pub mod archive;
 pub mod automations;
 pub mod bulk;
 pub mod client_ids;

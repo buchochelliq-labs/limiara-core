@@ -23,8 +23,9 @@ const isSearchIndex = (file) => /(^|[\\/])@localSearchIndex[^\\/]*\.js$/.test(fi
 // The whole site grows with every page (about 30-60 KB per ADR including its
 // search entries); the per-asset budgets below keep first-page load in check,
 // so the total only guards against accidental bulk such as stray media.
-// Raised from 6 MB at 84 pages (ADR 0032), when page growth alone reached it.
-const TOTAL_BUDGET = 7_000_000;
+// Raised from 6 MB at 84 pages (ADR 0032), and to 7.5 MB at 89 pages (ADR
+// 0036), each time when page growth alone reached it.
+const TOTAL_BUDGET = 7_500_000;
 if (totalBytes > TOTAL_BUDGET) failures.push(`built output is ${totalBytes} bytes; budget is ${TOTAL_BUDGET}`);
 for (const { file, bytes } of sizes) {
   const budget = isSearchIndex(file) ? SEARCH_INDEX_BUDGET : ASSET_BUDGET;

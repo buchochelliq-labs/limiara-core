@@ -888,3 +888,64 @@ async fn postgres_store_passes_the_change_source_conformance_suite() {
             .await;
     assert!(refused.is_err(), "the source kind is a closed set");
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_archive_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Archive conformance')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    let report = conformance::archive::run(store, tenant).await;
+
+    for (kind, records) in [
+        ("archived", &report.archived),
+        ("unarchived", &report.unarchived),
+    ] {
+        let envelopes: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT envelope FROM outbox WHERE tenant_id = $1 AND event_type = $2",
+        )
+        .bind(tenant)
+        .bind(format!("platform.objects.record-{kind}.v1"))
+        .fetch_all(&migrator)
+        .await
+        .expect("events");
+        assert_eq!(
+            envelopes.len(),
+            records.len() + usize::from(kind == "archived"),
+            "{kind}"
+        );
+        for record in records {
+            let envelope = envelopes
+                .iter()
+                .find(|envelope| envelope["payload"]["entity_id"] == *record.as_str())
+                .expect("event for the record");
+            assert_eq!(envelope["payload"]["source"], "web");
+            assert_eq!(envelope["payload"]["changed_fields"], serde_json::json!([]));
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = $2 AND target = $3",
+            )
+            .bind(tenant)
+            .bind(format!("records.record.{kind}"))
+            .bind(format!("record:{record}"))
+            .fetch_one(&migrator)
+            .await
+            .expect("audit");
+            assert!(audited >= 1, "{kind} {record}");
+        }
+    }
+    // History rows of the new lifecycle kinds pass the table's CHECK.
+    let lifecycle: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM record_history WHERE tenant_id = $1 AND kind IN ('archived', 'unarchived')",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("history");
+    assert!(lifecycle >= 4);
+}

@@ -203,6 +203,7 @@ impl ObjectService {
                 cursor,
                 page_size,
                 include_deleted: false,
+                include_archived: false,
             })
             .await?;
         Ok((report, result))
@@ -361,6 +362,7 @@ impl ObjectService {
                 cursor: None,
                 page_size: Some(1),
                 include_deleted: false,
+                include_archived: false,
             })
             .await
         {

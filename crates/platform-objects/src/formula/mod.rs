@@ -355,6 +355,7 @@ pub fn record_value(record: &Record, leaf: &Leaf) -> Value {
             Standard::UpdatedAt => Value::DateTime(record.updated_at),
             Standard::TouchedAt => Value::DateTime(record.touched_at),
             Standard::DeletedAt => record.deleted_at.map_or(Value::Null, Value::DateTime),
+            Standard::ArchivedAt => record.archived_at.map_or(Value::Null, Value::DateTime),
             Standard::Version => Value::Number(record.version as f64),
             Standard::IsDeleted => Value::Bool(record.deleted_at.is_some()),
         },
