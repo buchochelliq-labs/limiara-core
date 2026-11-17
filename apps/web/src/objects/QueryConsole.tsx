@@ -59,8 +59,9 @@ export function QueryResults({result, onNavigate}: {result: QueryResult; onNavig
 export function QueryConsole({client, onNavigate, headingRef}: {client: Pick<ObjectsClient, 'query'>; onNavigate: (route: string) => void; headingRef?: RefObject<HTMLHeadingElement | null>}) {
   const [text, setText] = useState(example);
   const [includeDeleted, setIncludeDeleted] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
-  const [ran, setRan] = useState<{q: string; includeDeleted: boolean} | null>(null);
+  const [ran, setRan] = useState<{q: string; includeDeleted: boolean; includeArchived: boolean} | null>(null);
   const [problem, setProblem] = useState('');
   const [busy, setBusy] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -71,6 +72,7 @@ export function QueryConsole({client, onNavigate, headingRef}: {client: Pick<Obj
   const run = async (cursor?: string) => {
     const q = cursor && ran ? ran.q : text.trim();
     const deleted = cursor && ran ? ran.includeDeleted : includeDeleted;
+    const archived = cursor && ran ? ran.includeArchived : includeArchived;
     if (!q) return;
     controller.current?.abort();
     const current = new AbortController();
@@ -78,9 +80,9 @@ export function QueryConsole({client, onNavigate, headingRef}: {client: Pick<Obj
     setBusy(true);
     setProblem('');
     try {
-      const page = await client.query(q, {cursor, includeDeleted: deleted}, current.signal);
+      const page = await client.query(q, {cursor, includeDeleted: deleted, includeArchived: archived}, current.signal);
       if (current.signal.aborted) return;
-      setRan({q, includeDeleted: deleted});
+      setRan({q, includeDeleted: deleted, includeArchived: archived});
       setResult(previous => cursor && previous ? {...page, rows: [...previous.rows, ...page.rows]} : page);
     } catch (error) {
       if (current.signal.aborted) return;
@@ -114,6 +116,7 @@ export function QueryConsole({client, onNavigate, headingRef}: {client: Pick<Obj
         {problem && <span className="ui-field__error" id={`${id}-error`} role="alert">{problem}</span>}
       </div>
       <label className="object-checkbox"><input type="checkbox" checked={includeDeleted} onChange={event => setIncludeDeleted(event.target.checked)} /> Include records in the recycle bin</label>
+      <label className="object-checkbox"><input type="checkbox" checked={includeArchived} onChange={event => setIncludeArchived(event.target.checked)} /> Include archived records</label>
       <div className="object-page__actions"><Button type="submit" loading={busy} disabled={busy || !text.trim()}>Run query</Button></div>
     </form>
     <div className="sr-only" aria-live="polite">{result && !busy ? `${result.rows.length} rows${result.nextCursor ? ', more available' : ''}` : ''}</div>

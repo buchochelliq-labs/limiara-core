@@ -112,6 +112,38 @@ Inbox markers currently have indefinite retention. A future cleanup policy must 
 | `applies_to` | string | `person` or `organisation`. |
 | `version` | integer | Resulting optimistic-concurrency version. |
 
+## Object engine record events
+
+The object engine (ADR 0015) writes its events through the same outbox, with
+`source_plugin` set to `platform.objects`. The full list of engine events
+is in the [objects API](objects.md#events-and-audit); the record lifecycle
+events share one payload.
+
+| Event type | Trigger | Payload |
+| --- | --- | --- |
+| `platform.objects.record-created.v1` | A record is created. | Record payload |
+| `platform.objects.record-updated.v1` | A record's values change. | Record payload |
+| `platform.objects.record-deleted.v1` | A record is moved to the recycle bin. | Record payload |
+| `platform.objects.record-undeleted.v1` | A record is restored from the recycle bin. | Record payload |
+| `platform.objects.record-archived.v1` | A record is archived (ADR 0035 G1). | Record payload |
+| `platform.objects.record-unarchived.v1` | An archived record is brought back. | Record payload |
+
+### Record payload
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `object` | string | The object's API name, such as `custom:project`. |
+| `entity_id` | string | The record's public ID. |
+| `version` | integer | Resulting optimistic-concurrency version. |
+| `changed_fields` | array of strings | Field API names a create or update set; empty for the lifecycle events. |
+| `source` | string, optional | What the change came through: `web`, `api_client`, `device`, `automation`, `quick_action`, `assistant`, `import` or `system`. Its detail stays in the audit record. |
+| `automation_id` | UUID, optional | The automation that made the change. |
+
+Archiving and unarchiving also leave an audit record
+(`records.record.archived`, `records.record.unarchived`) and an `updated`
+change-log entry naming `archived_at`, so devices and change-data-capture
+clients that know only the earlier kinds read it as an update.
+
 ## Compatibility and privacy
 
 The `.v1` suffix and `schema_version: 1` define the compatibility boundary. A documented payload schema may gain optional fields in a compatible release, so consumers must ignore payload fields they do not recognise. The top-level envelope is canonical: the worker removes unknown stored top-level keys, and a new top-level field requires coordinated platform-contract support. Removing a documented field, changing its type or meaning, or making an optional field mandatory requires a new event type and schema version.

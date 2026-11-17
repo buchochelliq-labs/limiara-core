@@ -260,6 +260,14 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
             post(handlers::undelete_record::<H>),
         )
         .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/archive",
+            post(handlers::archive_record::<H>),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/unarchive",
+            post(handlers::unarchive_record::<H>),
+        )
+        .route(
             "/api/v1/workspaces/:workspace_id/search",
             get(handlers::search::<H>),
         )

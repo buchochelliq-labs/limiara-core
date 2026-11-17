@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -35,9 +35,9 @@ export function useObject(client: ObjectsClient, apiName: string): [Load<ObjectD
   return [load, () => setAttempt(value => value + 1)];
 }
 
-function PageHeader({breadcrumb, title, headingRef, children}: {breadcrumb: string; title: string; headingRef?: RefObject<HTMLHeadingElement | null>; children?: React.ReactNode}) {
+function PageHeader({breadcrumb, title, headingRef, badge, children}: {breadcrumb: string; title: string; headingRef?: RefObject<HTMLHeadingElement | null>; badge?: React.ReactNode; children?: React.ReactNode}) {
   return <header className="page-header">
-    <div><p className="page-header__breadcrumb">{breadcrumb}</p><h1 ref={headingRef} tabIndex={-1}>{title}</h1></div>
+    <div><p className="page-header__breadcrumb">{breadcrumb}</p><h1 ref={headingRef} tabIndex={-1}>{title}</h1>{badge}</div>
     {children && <div className="object-page__actions">{children}</div>}
   </header>;
 }
@@ -56,6 +56,8 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
   const [search, setSearch] = useState('');
   const [submitted, setSubmitted] = useState('');
   const [bin, setBin] = useState(false);
+  // Which live records the list shows; the recycle bin is its own view.
+  const [shown, setShown] = useState<Exclude<RecordListStatus, 'deleted'>>('active');
   const [cursor, setCursor] = useState<string | undefined>();
   const [page, setPage] = useState<Load<RecordPage>>({status: 'loading'});
   const [attempt, setAttempt] = useState(0);
@@ -67,11 +69,11 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
     if (!object) return;
     const controller = new AbortController();
     setPage({status: 'loading'});
-    client.listRecords(object.apiName, {search: submitted || undefined, status: bin ? 'deleted' : undefined, sort: 'name', direction: 'asc', cursor, limit: 50}, controller.signal)
+    client.listRecords(object.apiName, {search: submitted || undefined, status: bin ? 'deleted' : shown === 'active' ? undefined : shown, sort: 'name', direction: 'asc', cursor, limit: 50}, controller.signal)
       .then(value => { if (!controller.signal.aborted) setPage({status: 'ready', value}); })
       .catch(error => { if (!controller.signal.aborted) setPage(failed(error)); });
     return () => controller.abort();
-  }, [client, object, submitted, bin, cursor, attempt]);
+  }, [client, object, submitted, bin, shown, cursor, attempt]);
 
   useEffect(() => { if (object) document.title = `${object.pluralLabel} - Limiara`; }, [object]);
 
@@ -104,16 +106,21 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
     <form className="object-toolbar" role="search" onSubmit={event => { event.preventDefault(); setCursor(undefined); setSubmitted(search.trim()); }}>
       <TextField label={`Search ${object.pluralLabel.toLowerCase()}`} hideLabel placeholder={`Search ${object.pluralLabel.toLowerCase()}`} value={search} maxLength={100} onChange={event => setSearch(event.target.value)} />
       <Button type="submit" variant="secondary">Search</Button>
+      {!bin && <Select label="Show" value={shown} onChange={event => { setCursor(undefined); setShown(event.target.value as typeof shown); }}>
+        <option value="active">Active records</option>
+        <option value="archived">Archived records</option>
+        <option value="all">All records</option>
+      </Select>}
       {object.access.delete && <Button type="button" variant="quiet" aria-pressed={bin} onClick={() => { setCursor(undefined); setBin(value => !value); }}>{bin ? 'Back to records' : 'Recycle bin'}</Button>}
     </form>
     {page.status !== 'ready' && <LoadState load={page} noun="record list" onRetry={() => setAttempt(value => value + 1)} />}
-    {page.status === 'ready' && page.value.records.length === 0 && <EmptyState title={bin ? 'The recycle bin is empty' : submitted ? 'No matching records' : `No ${object.pluralLabel.toLowerCase()} yet`} description={bin ? 'Deleted records appear here until they are restored or purged.' : submitted ? 'Try a different search.' : object.access.create ? `Create the first ${object.label.toLowerCase()} to get started.` : 'Records you can see will appear here.'} />}
+    {page.status === 'ready' && page.value.records.length === 0 && <EmptyState title={bin ? 'The recycle bin is empty' : submitted ? 'No matching records' : shown === 'archived' ? `No archived ${object.pluralLabel.toLowerCase()}` : `No ${object.pluralLabel.toLowerCase()} yet`} description={bin ? 'Deleted records appear here until they are restored or purged.' : submitted ? 'Try a different search.' : shown === 'archived' ? 'Archived records appear here. They stay readable but leave lists and search.' : object.access.create ? `Create the first ${object.label.toLowerCase()} to get started.` : 'Records you can see will appear here.'} />}
     {page.status === 'ready' && page.value.records.length > 0 && <div className="object-table-wrap">
       <table className="object-table">
         <caption className="sr-only">{object.pluralLabel}</caption>
         <thead><tr><th scope="col">{object.nameLabel}</th>{columns.map(field => <th scope="col" key={field.apiName}>{field.label}</th>)}<th scope="col">{bin ? 'Deleted' : 'Last modified'}</th>{bin && <th scope="col"><span className="sr-only">Actions</span></th>}</tr></thead>
         <tbody>{page.value.records.map(record => <tr key={record.id}>
-          <th scope="row">{bin ? record.name : <a href={recordRoute(object.apiName, record.id)} onClick={event => { event.preventDefault(); onNavigate(recordRoute(object.apiName, record.id)); }}>{record.name}</a>}</th>
+          <th scope="row">{bin ? record.name : <a href={recordRoute(object.apiName, record.id)} onClick={event => { event.preventDefault(); onNavigate(recordRoute(object.apiName, record.id)); }}>{record.name}</a>}{record.archivedAt && <> <Badge variant="warning">Archived</Badge></>}</th>
           {columns.map(field => <td key={field.apiName}>{formatValue(field, record.values[field.apiName], record.related)}</td>)}
           <td>{formatRecordTimestamp(record.updatedAt)}</td>
           {bin && <td><Button size="small" variant="secondary" onClick={() => void restore(record)}>Restore</Button></td>}
@@ -155,6 +162,8 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState('');
+  const [archiving, setArchiving] = useState(false);
+  const [notice, setNotice] = useState('');
   const [running, setRunning] = useState<QuickAction | null>(null);
   const [relatedRefresh, setRelatedRefresh] = useState(0);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
@@ -189,6 +198,25 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
     }
   };
 
+  // Archiving is an edit (ADR 0035 G1): it moves the version, so the page takes the saved record.
+  const toggleArchive = async () => {
+    const archive = record.archivedAt === null;
+    setError('');
+    setNotice('');
+    setArchiving(true);
+    try {
+      const saved = archive
+        ? await client.archiveRecord(object.apiName, record.id, record.version)
+        : await client.unarchiveRecord(object.apiName, record.id, record.version);
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      setNotice(archive ? `${record.name} was archived.` : `${record.name} was restored from the archive.`);
+    } catch (reason) {
+      setError(archiveProblem(reason, archive));
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   // Record-level rights (ADR 0016) refine the object's permissions.
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
@@ -197,12 +225,15 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const runningTarget = running?.kind === 'create' ? actionTarget(running, actions.targets) : undefined;
 
   return <div className="content-canvas object-page">
-    <PageHeader breadcrumb={`Objects / ${object.label}`} title={record.name} headingRef={headingRef}>
+    <PageHeader breadcrumb={`Objects / ${object.label}`} title={record.name} headingRef={headingRef} badge={record.archivedAt && <Badge variant="warning">Archived</Badge>}>
       {available.map(action => <Button key={action.name} variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setRunning(action); }}>{action.label}</Button>)}
       {canEdit && <Button variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setEditing(true); }}>Edit</Button>}
+      {canEdit && <Button variant="secondary" disabled={archiving} aria-busy={archiving || undefined} onClick={() => void toggleArchive()}>{record.archivedAt ? 'Unarchive' : 'Archive'}</Button>}
       {canDelete && <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>}
     </PageHeader>
+    <div className="sr-only" aria-live="polite">{notice}</div>
     {error && <Alert variant="danger" title={error} />}
+    <ArchivedNotice record={record} />
     {confirmDelete && <div className="object-confirm" role="alertdialog" aria-labelledby="object-confirm-title">
       <p id="object-confirm-title"><strong>Delete {record.name}?</strong> It moves to the recycle bin, where it can be restored.</p>
       <div className="object-page__actions"><Button variant="danger" onClick={() => void remove()} autoFocus>Delete</Button><Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button></div>
@@ -243,6 +274,21 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
     <SharingPanel client={client} object={object} record={record} onTransferred={() => setAttempt(value => value + 1)} />
     <HistoryPanel client={client} object={object} record={record} onNavigate={onNavigate} />
   </div>;
+}
+
+/** What the member reads when archiving or unarchiving fails. */
+export function archiveProblem(reason: unknown, archive: boolean): string {
+  const code = reason instanceof ObjectsApiError ? reason.code : '';
+  if (code === 'records.already_archived' || code === 'records.not_archived' || code === 'records.version_conflict') return 'This record changed since it was opened. Reload it and try again.';
+  if (code === 'records.deleted') return 'This record is in the recycle bin. Restore it first.';
+  if (reason instanceof ObjectsApiError && reason.reason === 'denied') return 'You do not have permission to change this record.';
+  return archive ? 'The record could not be archived. Try again in a moment.' : 'The record could not be restored from the archive. Try again in a moment.';
+}
+
+/** The archived state of a record (ADR 0035 G1): readable by id, left out of lists. */
+export function ArchivedNotice({record}: {record: ObjectRecord}) {
+  if (!record.archivedAt) return null;
+  return <Alert variant="info" title="This record is archived">Archived {formatRecordTimestamp(record.archivedAt)}. It stays readable here but is left out of lists, search, lookup pickers and related lists.</Alert>;
 }
 
 /** The child object a create action makes records of, when the member's description of it names the action's reference field. */

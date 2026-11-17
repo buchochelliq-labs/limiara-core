@@ -714,3 +714,66 @@ async fn quick_actions_reach_the_device_and_run_offline() {
     let (_, listed) = world.call("GET", &actions_path, None).await;
     assert_eq!(listed["data"].as_array().map(Vec::len), Some(1), "{listed}");
 }
+
+#[tokio::test]
+async fn the_replica_follows_the_servers_archive_state() {
+    let world = World::new().await;
+    let acme = world
+        .admin
+        .list_records(ACCOUNT, Default::default())
+        .await
+        .expect("server records")
+        .records
+        .into_iter()
+        .find(|record| record.name == "Acme")
+        .expect("acme");
+    let records = world.path("/objects/custom:account/records");
+    let one = format!("{records}/{}", acme.public_id);
+
+    // Archiving is the server's: the bridge refuses it, as it refuses every
+    // write the sync loop does not push.
+    for action in ["archive", "unarchive"] {
+        let (status, refused) = world
+            .call(
+                "POST",
+                &format!("{one}/{action}?expected_version={}", acme.version),
+                None,
+            )
+            .await;
+        assert_eq!(status, 403, "{action}: {refused}");
+        assert_eq!(refused["code"], "sync.server_only");
+    }
+
+    // The server archives it; the next pull brings the state down.
+    let archived = world
+        .admin
+        .archive_record(ACCOUNT, &acme.public_id, acme.version, context())
+        .await
+        .expect("archive on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, page) = world.call("GET", &records, None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"], json!([]), "default lists leave it out");
+    let (status, page) = world
+        .call("GET", &format!("{records}?status=archived"), None)
+        .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"][0]["name"], "Acme");
+    assert!(page["data"][0]["archived_at"].is_string(), "{page}");
+    let (status, read) = world.call("GET", &one, None).await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["version"], json!(archived.version));
+    assert!(read["archived_at"].is_string(), "{read}");
+
+    // Unarchived on the server, it comes back on the device.
+    world
+        .admin
+        .unarchive_record(ACCOUNT, &acme.public_id, archived.version, context())
+        .await
+        .expect("unarchive on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, page) = world.call("GET", &records, None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"][0]["name"], "Acme");
+    assert!(page["data"][0]["archived_at"].is_null(), "{page}");
+}
