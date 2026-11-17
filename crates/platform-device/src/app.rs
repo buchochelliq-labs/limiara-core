@@ -12,7 +12,14 @@
 //! runs the first sync and then follows the workspace. Sign-out, and a
 //! server that refuses the device, delete the replica and its key. There
 //! is no password anywhere.
+//!
+//! It also owns the shell's local services (ADR 0034 §9): the replica change
+//! feed, which the open workspace's engine, bridge, sync loop and lease
+//! report to, and which sign-out and wipe close; and the route context the
+//! bridge sets. Native plugins reach them through [`Controller::grant`].
 
+use crate::capabilities::{LocalServices, PluginDeclaration, PluginGrant};
+use crate::feed::{ClearReason, FeedTap};
 use crate::{device_databases, Bridge, DatabaseKeys, DeviceHost, Member, Workspace};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -51,6 +58,9 @@ const PROFILE_EVERY: Duration = Duration::from_secs(15 * 60);
 const SIGN_OUT_WAIT: Duration = Duration::from_secs(10);
 /// The largest redirect request the loopback listener reads.
 const REDIRECT_MAX: usize = 8 * 1024;
+/// How often the app rereads the offline lease at most, so the change feed
+/// reports a replica that locks while the app is open.
+const LEASE_EVERY: Duration = Duration::from_secs(60);
 
 /// The member profile the app stores, from `GET /devices/current`.
 pub use platform_sync::{DeviceProfile, ProfileMember, ProfileWorkspace};
@@ -321,8 +331,12 @@ struct Active {
     engine: ObjectService,
     session: Arc<DeviceSession>,
     sink: Arc<Sink>,
+    /// Where the workspace reports to the change feed.
+    tap: FeedTap,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
+    /// Rereads the lease for the change feed ([`watch_lease`]).
+    lease_task: Option<JoinHandle<()>>,
     /// Rereads the member's profile ([`Controller::watch_profile`]).
     profile_task: Option<JoinHandle<()>>,
     /// Background wakes in flight ([`Controller::wake`]), stopped with the
@@ -381,6 +395,8 @@ pub struct Controller {
     /// The platform's push token ([`Controller::register_push`]), sent to
     /// the server whenever a workspace opens.
     push: Mutex<Option<(PushProvider, String)>>,
+    /// The change feed and the route context (ADR 0034 §9).
+    local: LocalServices,
 }
 
 /// What a background wake did ([`Controller::wake`]).
@@ -431,7 +447,19 @@ impl Controller {
             generation: AtomicU64::new(0),
             prepared: Mutex::new(None),
             push: Mutex::new(None),
+            local: LocalServices::default(),
         })
+    }
+
+    /// The change feed and the route context the open workspace reports to.
+    pub fn local_services(&self) -> &LocalServices {
+        &self.local
+    }
+
+    /// The handles a native plugin gets for what it declared (ADR 0024 §6,
+    /// ADR 0034 §9): the shell calls this when it builds the plugin.
+    pub fn grant(&self, declaration: &PluginDeclaration) -> PluginGrant {
+        self.local.grant(declaration)
     }
 
     fn update(&self, change: impl FnOnce(&mut Status)) {
@@ -457,6 +485,7 @@ impl Controller {
     /// [`Phase::SigningOut`] while its storage is deleted.
     fn closing(&self) {
         self.set_bridge(None);
+        self.local.routes().clear();
         if let Ok(mut sync) = self.sync.write() {
             *sync = None;
         }
@@ -474,6 +503,7 @@ impl Controller {
 
     fn signed_out(&self, notice: Option<String>) {
         self.set_bridge(None);
+        self.local.routes().clear();
         if let Ok(mut sync) = self.sync.write() {
             *sync = None;
         }
@@ -648,7 +678,9 @@ impl Controller {
         let profile = stored.profile.clone();
         let workspace = profile.workspace.id;
         let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(files.clone()));
-        let engine = replica_engine(store.clone(), &profile);
+        // Reports nothing until the workspace opens below.
+        let tap = self.local.feed().tap(workspace);
+        let engine = replica_engine(store.clone(), &profile, &tap);
         engine
             .set_offline_limit(stored.offline_limit_seconds)
             .await
@@ -672,7 +704,7 @@ impl Controller {
         let transport = HttpTransport::new(stored.server.clone(), workspace, session.clone())
             .map_err(|error| error.to_string())?;
         let sync = Arc::new(SyncClient::new(engine.clone(), transport));
-        let bridge = bridge_for(engine.clone(), &profile);
+        let bridge = bridge_for(engine.clone(), &profile, &tap, &self.local);
         if let Ok(mut prepared) = self.prepared.lock() {
             *prepared = Some(bridge.clone());
         }
@@ -699,18 +731,27 @@ impl Controller {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let (stop, stopped) = watch::channel(false);
         let mut active = self.active.lock().await;
-        let task =
-            tokio::spawn(
-                self.clone()
-                    .run_sync(generation, sync, session.clone(), stopped.clone()),
-            );
+        self.local.feed().activate(&tap);
+        if let Err(error) = tap.start(&engine).await {
+            // The first write or sync step reads the change log again.
+            tracing::warn!(%error, "the change feed could not read the replica");
+        }
+        let task = tokio::spawn(self.clone().run_sync(
+            generation,
+            sync,
+            session.clone(),
+            (tap.clone(), engine.clone()),
+            stopped.clone(),
+        ));
         let profile_task = tokio::spawn(self.clone().watch_profile(
             generation,
             session.clone(),
             sink.clone(),
             store,
-            stopped,
+            tap.clone(),
+            stopped.clone(),
         ));
+        let lease_task = tokio::spawn(watch_lease(tap.clone(), engine.clone(), stopped));
         *active = Some(Active {
             generation,
             workspace,
@@ -718,8 +759,10 @@ impl Controller {
             engine,
             session,
             sink,
+            tap,
             stop,
             task: Some(task),
+            lease_task: Some(lease_task),
             profile_task: Some(profile_task),
             wakes: Vec::new(),
         });
@@ -740,6 +783,7 @@ impl Controller {
         generation: u64,
         sync: Arc<SyncClient<HttpTransport>>,
         session: Arc<DeviceSession>,
+        feed: (FeedTap, ObjectService),
         mut stopped: watch::Receiver<bool>,
     ) {
         let mut delay = RETRY_MIN;
@@ -752,7 +796,13 @@ impl Controller {
                 let _ = stop.wait_for(|stop| *stop).await;
             };
             let observer = self.clone();
-            let observe = move |report: &SyncReport| observer.synced(generation, report);
+            let feed = feed.clone();
+            let observe = move |report: &SyncReport| {
+                observer.synced(generation, report);
+                // Settled conflicts and held-back edits are the member's
+                // own changes, in the change log.
+                local_writes(&feed);
+            };
             let result = sync
                 .follow(MutationContext::new(Uuid::now_v7()), until_stopped, observe)
                 .await;
@@ -820,6 +870,7 @@ impl Controller {
         session: Arc<DeviceSession>,
         sink: Arc<Sink>,
         store: Arc<dyn ObjectStore>,
+        tap: FeedTap,
         mut stopped: watch::Receiver<bool>,
     ) {
         loop {
@@ -828,7 +879,8 @@ impl Controller {
             }
             if let Ok(token) = session.access().await {
                 if let Ok(profile) = session.client().profile(&token, session.workspace()).await {
-                    self.apply_profile(generation, &sink, &store, profile).await;
+                    self.apply_profile(generation, &sink, &store, &tap, profile)
+                        .await;
                 }
             }
             tokio::select! {
@@ -841,7 +893,7 @@ impl Controller {
     /// Rereads the member's profile now, as when the app returns to the
     /// foreground, and applies a change to the replica's engine.
     pub async fn refresh_profile(&self) -> Result<(), String> {
-        let (generation, session, sink, files) = {
+        let (generation, session, sink, files, tap) = {
             let active = self.active.lock().await;
             let Some(active) = active.as_ref() else {
                 return Ok(());
@@ -851,6 +903,7 @@ impl Controller {
                 active.session.clone(),
                 active.sink.clone(),
                 active.files.clone(),
+                active.tap.clone(),
             )
         };
         let token = session.access().await.map_err(|error| error.to_string())?;
@@ -860,7 +913,8 @@ impl Controller {
             .await
             .map_err(|error| error.to_string())?;
         let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(files));
-        self.apply_profile(generation, &sink, &store, profile).await;
+        self.apply_profile(generation, &sink, &store, &tap, profile)
+            .await;
         Ok(())
     }
 
@@ -869,6 +923,7 @@ impl Controller {
         generation: u64,
         sink: &Sink,
         store: &Arc<dyn ObjectStore>,
+        tap: &FeedTap,
         profile: DeviceProfile,
     ) {
         let mut stored = sink.stored.lock().await;
@@ -883,7 +938,12 @@ impl Controller {
             tracing::warn!(%error, "the refreshed profile was not stored");
         }
         drop(stored);
-        let bridge = bridge_for(replica_engine(store.clone(), &profile), &profile);
+        let bridge = bridge_for(
+            replica_engine(store.clone(), &profile, tap),
+            &profile,
+            tap,
+            &self.local,
+        );
         if let Ok(mut prepared) = self.prepared.lock() {
             *prepared = Some(bridge.clone());
         }
@@ -953,7 +1013,7 @@ impl Controller {
         // Registered under the lock sign-out and a wipe take the workspace
         // with, so either the wake sees no workspace or it is stopped before
         // the workspace's storage is deleted.
-        let (generation, session, finished) = {
+        let (generation, session, feed, finished) = {
             let mut active = self.active.lock().await;
             let Some(active) = active.as_mut() else {
                 return Ok(WakeOutcome::NoWorkspace);
@@ -969,7 +1029,12 @@ impl Controller {
                     .await;
                 let _ = sender.send(result);
             }));
-            (active.generation, active.session.clone(), finished)
+            (
+                active.generation,
+                active.session.clone(),
+                (active.tap.clone(), active.engine.clone()),
+                finished,
+            )
         };
         // Stopped by sign-out or a wipe: the workspace is gone.
         let Ok(result) = finished.await else {
@@ -978,6 +1043,7 @@ impl Controller {
         match result {
             Ok(report) => {
                 self.synced(generation, &report);
+                local_writes(&feed);
                 Ok(WakeOutcome::Synced)
             }
             Err(SyncError::OutOfTime) => Ok(WakeOutcome::OutOfTime),
@@ -1031,6 +1097,10 @@ impl Controller {
         };
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.closing();
+        // Plugins hear it before the replica goes, so they can clear what
+        // they derived from it; nothing the workspace reports after it is
+        // published.
+        self.local.feed().clear(&active.tap, ClearReason::Wiped);
         stop_worker(&mut active).await;
         self.forget(&active).await;
         // Only now can another sign-in start: nothing of this workspace is
@@ -1062,6 +1132,7 @@ impl Controller {
         };
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.closing();
+        self.local.feed().clear(&active.tap, ClearReason::SignedOut);
         stop_worker(&mut active).await;
         let reached = tokio::time::timeout(SIGN_OUT_WAIT, async {
             let token = active.session.access().await.ok()?;
@@ -1084,8 +1155,10 @@ impl Controller {
         }));
     }
 
-    /// Opens the demonstration workspace the shell built.
-    pub fn show_demo(&self, bridge: Bridge) -> Result<(), SignInError> {
+    /// Opens the demonstration workspace the shell built, over `host`. It
+    /// takes route messages; it has no server, sync or lease, so it reports
+    /// nothing to the change feed.
+    pub fn show_demo(&self, host: DeviceHost) -> Result<(), SignInError> {
         let mut status = self.status.lock().map_err(|_| SignInError::Busy)?;
         if status.phase != Phase::SignedOut {
             return Err(SignInError::Busy);
@@ -1096,13 +1169,60 @@ impl Controller {
             ..Status::default()
         };
         drop(status);
-        self.set_bridge(Some(bridge));
+        self.set_bridge(Some(Bridge::new(
+            host.with_route_context(self.local.routes().clone()),
+        )));
         Ok(())
     }
 }
 
-/// The replica's engine, acting as the member the profile describes.
-fn replica_engine(store: Arc<dyn ObjectStore>, profile: &DeviceProfile) -> ObjectService {
+/// Reports the member's changes in the change log to the feed, after a
+/// sync step that may have made some.
+fn local_writes(feed: &(FeedTap, ObjectService)) {
+    let (tap, engine) = feed.clone();
+    tokio::spawn(async move {
+        if let Err(error) = tap.local_writes(&engine).await {
+            tracing::warn!(%error, "the change log could not be read for the feed");
+        }
+    });
+}
+
+/// Rereads the lease until stopped, so the feed reports a replica that
+/// locks while the app is open: time locks it, not a commit. A sync that
+/// reopens it is reported by the engine at once.
+async fn watch_lease(tap: FeedTap, engine: ObjectService, mut stopped: watch::Receiver<bool>) {
+    loop {
+        if *stopped.borrow() {
+            return;
+        }
+        let wait = match tap.check_lease(&engine).await {
+            Ok(lease) => lease
+                .expires_at
+                .filter(|_| !lease.locked)
+                .and_then(|expires| (expires - Utc::now()).to_std().ok())
+                .map_or(LEASE_EVERY, |left| {
+                    // Just after it runs out, or sooner.
+                    (left + Duration::from_secs(1)).min(LEASE_EVERY)
+                }),
+            Err(error) => {
+                tracing::warn!(%error, "the lease could not be read for the feed");
+                LEASE_EVERY
+            }
+        };
+        tokio::select! {
+            _ = stopped.wait_for(|stop| *stop) => return,
+            () = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
+/// The replica's engine, acting as the member the profile describes, and
+/// reporting what sync commits to the change feed.
+fn replica_engine(
+    store: Arc<dyn ObjectStore>,
+    profile: &DeviceProfile,
+    tap: &FeedTap,
+) -> ObjectService {
     ObjectService::new(
         store,
         ObjectCaller::new(
@@ -1114,9 +1234,15 @@ fn replica_engine(store: Arc<dyn ObjectStore>, profile: &DeviceProfile) -> Objec
     )
     .with_replica()
     .with_client_ids()
+    .with_replica_observer(Arc::new(tap.clone()))
 }
 
-fn bridge_for(engine: ObjectService, profile: &DeviceProfile) -> Bridge {
+fn bridge_for(
+    engine: ObjectService,
+    profile: &DeviceProfile,
+    tap: &FeedTap,
+    local: &LocalServices,
+) -> Bridge {
     Bridge::new(
         DeviceHost::new(
             engine,
@@ -1130,7 +1256,9 @@ fn bridge_for(engine: ObjectService, profile: &DeviceProfile) -> Bridge {
                 name: profile.workspace.name.clone(),
             },
         )
-        .with_device(profile.device_id),
+        .with_device(profile.device_id)
+        .with_feed(tap.clone())
+        .with_route_context(local.routes().clone()),
     )
 }
 
@@ -1140,6 +1268,10 @@ fn bridge_for(engine: ObjectService, profile: &DeviceProfile) -> Bridge {
 /// itself, wiping on the server's word, does not wait for itself.
 async fn stop_worker(active: &mut Active) {
     let _ = active.stop.send(true);
+    if let Some(lease_task) = active.lease_task.take() {
+        lease_task.abort();
+        let _ = lease_task.await;
+    }
     if let Some(profile_task) = active.profile_task.take() {
         // It may be mid-request; nothing it holds outlives the wipe.
         profile_task.abort();

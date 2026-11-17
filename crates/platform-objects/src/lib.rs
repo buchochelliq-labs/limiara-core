@@ -35,6 +35,7 @@ pub mod related;
 pub mod related_actions;
 pub mod replica;
 pub mod replica_definitions;
+pub mod replica_observer;
 pub mod reports;
 pub mod rules;
 pub mod search;
@@ -58,6 +59,9 @@ pub use replica::{
 };
 pub use replica_definitions::{
     DefinitionsApplied, RemoteField, RemoteObject, RemoteQuickAction, RemoteRollup, RemoteRule,
+};
+pub use replica_observer::{
+    LocalChange, LocalChanges, ReplicaEvent, ReplicaObserver, RetiredObject,
 };
 pub use reports::{CreateReport, Report, ReportChart, ReportVisibility, UpdateReport};
 pub use search::{SearchGroup, SearchHit, SearchRequest};

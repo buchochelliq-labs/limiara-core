@@ -10,6 +10,9 @@
 # 3. Packages the Tauri shell as a simulator app (`cargo tauri ios build`),
 #    installs and launches it, and records its size and cold start in the
 #    job summary against ADR 0024's footprint budget.
+# 4. Delivers a simulated push through the controller's wake (ADR 0030 §5),
+#    and a simulated route through the route probe (ADR 0034 §9): the web
+#    shell's route message reaches the probe's Swift half.
 set -Eeuo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -138,6 +141,29 @@ fi
 services=$(xcrun simctl spawn "$simulator" launchctl list)
 grep -q "$bundle_id" <<<"$services" || { echo "the app exited after the push" >&2; exit 1; }
 
+log "delivering a simulated route"
+# The route probe (route-probe/, ADR 0034 §9) is a debug-build test plugin
+# that declares `device.route_context`. A debug build reports a record
+# page of the demonstration workspace through the limiara:// scheme, as
+# the web shell does when it navigates, when this file appears; the
+# probe's Swift half records the route it received, as ids.
+route_trail="$container/tmp/device-route-probe.log"
+touch "$container/tmp/simulate-route"
+route_log=""
+for _ in $(seq 1 30); do
+  sleep 1
+  route_log=$(cat "$route_trail" 2>/dev/null || true)
+  grep -q '^route: record ' <<<"$route_log" && break
+done
+echo "--- the route probe's trail"
+printf '%s\n' "${route_log:-(none: the probe never started)}"
+grep -q "listening for routes" <<<"$route_log" || { echo "the route probe's Swift half did not start" >&2; exit 1; }
+grep -q "simulated a route to" <<<"$route_log" || { echo "the simulated route did not go through the shell" >&2; exit 1; }
+grep -Eq '^route: record [a-z0-9_.]+:[a-z0-9_]+ [0-9a-z]{18}$' <<<"$route_log" ||
+  { echo "the route did not reach the probe's Swift half as ids" >&2; exit 1; }
+services=$(xcrun simctl spawn "$simulator" launchctl list)
+grep -q "$bundle_id" <<<"$services" || { echo "the app exited after the route" >&2; exit 1; }
+
 app_size=$(du -sk "$app" | awk '{print $1}')
 binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")" | awk '{print $1}')
 {
@@ -151,4 +177,4 @@ binary_size=$(du -k "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutabl
   echo
   echo "ADR 0024's budget is for release device builds; a debug simulator build is an upper bound."
 } >>"$summary"
-log "iOS build, simulator tests, app launch and simulated push passed"
+log "iOS build, simulator tests, app launch, simulated push and route passed"

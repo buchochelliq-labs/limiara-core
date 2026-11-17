@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds and checks the desktop app shell (apps/device-shell, #383):
-# formatting, lints and the scheme tests, then launches the app under a
+# formatting, lints and the tests of the shell and its plugins (the scheme,
+# and the route probe, ADR 0034 §9), then launches the app under a
 # virtual display and checks it stays up. Needs WebKitGTK 4.1, libsoup 3,
 # GTK 3 and Xvfb (see apps/device-shell/README.md).
 set -euo pipefail
@@ -9,8 +10,8 @@ cd "$(dirname "$0")/.."
 pnpm --filter web build
 cd apps/device-shell/src-tauri
 cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --locked --workspace
 cargo build --locked
 
 log="$(mktemp)"

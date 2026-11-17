@@ -30,6 +30,7 @@ pub mod fixture;
 pub mod keychain;
 #[cfg(any(mobile, test))]
 pub mod phone;
+pub mod probe;
 
 /// The app's own sign-in route, answered by the shell rather than the
 /// bridge, so it works while no workspace is open.
@@ -98,7 +99,10 @@ impl Shell {
             return secure(no_store(self.session(request).await));
         }
         if path == "/api" || path.starts_with("/api/") {
-            let writes = !matches!(*request.method(), Method::GET | Method::HEAD);
+            // The route message (ADR 0034 §9) stays on the device: nothing
+            // to push.
+            let writes = !matches!(*request.method(), Method::GET | Method::HEAD)
+                && !path.ends_with("/ui/route");
             let response = match self.controller.bridge() {
                 Some(bridge) => bridge.handle(request).await,
                 None => problem(
@@ -161,7 +165,7 @@ impl Shell {
                 let body: Value = serde_json::from_slice(request.body()).unwrap_or(Value::Null);
                 let started = if body["demo"] == Value::Bool(true) {
                     match fixture::open(&self.directory).await {
-                        Ok(bridge) => controller.show_demo(bridge),
+                        Ok(host) => controller.show_demo(host),
                         Err(_) => {
                             return problem(
                                 StatusCode::SERVICE_UNAVAILABLE,

@@ -9,8 +9,9 @@
 #   test-device-android.sh device
 #     With an emulator attached (adb): runs the object engine's conformance
 #     suite on SQLite and the platform-device tests on it, installs and
-#     launches the APK, and records its size and cold start in the job
-#     summary against ADR 0024's footprint budget.
+#     launches the APK, checks the Keystore, the sign-in redirect and the
+#     route probe (ADR 0034 §9), and records its size and cold start in the
+#     job summary against ADR 0024's footprint budget.
 set -Eeuo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -151,6 +152,28 @@ device() {
   sleep 3
   adb shell pidof "$package" >/dev/null </dev/null || fail "a stray sign-in redirect stopped the app"
   log "the sign-in redirect reaches the app, and a stray one is dropped"
+
+  # The route probe (route-probe/, ADR 0034 §9) is a debug-build test plugin
+  # that declares `device.route_context`. A debug build reports a record
+  # page of the demonstration workspace through the limiara:// scheme, as
+  # the web shell does when it navigates, when `simulate-route` appears in
+  # the app's cache directory; the probe's Kotlin half records the route it
+  # received, as ids.
+  adb shell run-as "$package" rm -f cache/device-route-probe.log </dev/null || true
+  adb shell run-as "$package" touch cache/simulate-route </dev/null
+  route_log=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    route_log=$(adb shell run-as "$package" cat cache/device-route-probe.log </dev/null 2>/dev/null | tr -d '\r' || true)
+    grep -q '^route: record ' <<<"$route_log" && break
+  done
+  echo "--- the route probe's trail"
+  printf '%s\n' "${route_log:-(none: the probe never started)}"
+  grep -q "simulated a route to" <<<"$route_log" || fail "the simulated route did not go through the shell"
+  grep -Eq '^route: record [a-z0-9_.]+:[a-z0-9_]+ [0-9a-z]{18}$' <<<"$route_log" ||
+    fail "the route did not reach the probe's Kotlin half as ids"
+  adb shell pidof "$package" >/dev/null </dev/null || fail "the app exited after the route"
+  log "the route probe received the route as ids"
 
   apk_size=$(du -k "$apk" | awk '{print $1}')
   library=$(unzip -l "$apk" | awk '/lib\/x86_64\/.*\.so$/ {print $1, $4}' | sort -n | tail -n 1)

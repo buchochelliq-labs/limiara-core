@@ -122,6 +122,86 @@ fn follow_push(app: &tauri::App<tauri::Wry>, controller: Arc<Controller>) {
         .spawn(follow);
 }
 
+/// Debug builds: grants the route probe what it declared and hands it each
+/// route change (ADR 0034 §9). On a phone, the probe's native half records
+/// them, and a simulated route can be asked for (see
+/// [`watch_simulated_routes`]).
+fn start_route_probe(app: &tauri::App<tauri::Wry>, shell: Shell) {
+    #[cfg(mobile)]
+    let probe = app
+        .try_state::<device_route_probe::Probe<tauri::Wry>>()
+        .map(|probe| probe.inner().clone());
+    #[cfg(desktop)]
+    let probe = app
+        .try_state::<device_route_probe::Probe>()
+        .map(|probe| probe.inner().clone());
+    let Some(probe) = probe else {
+        return;
+    };
+    // The controller hands out only what the probe declared.
+    let Ok(routes) = crate::probe::declaration()
+        .map_err(|error| error.to_string())
+        .and_then(|declaration| {
+            shell
+                .controller()
+                .grant(&declaration)
+                .route_context()
+                .map_err(|error| error.to_string())
+        })
+    else {
+        return;
+    };
+    let follower = probe.clone();
+    let _ = std::thread::Builder::new()
+        .name("route-probe".into())
+        .spawn(move || {
+            tauri::async_runtime::block_on(crate::probe::follow(routes, |route| {
+                // A route the native half missed is followed by the next.
+                let _ = follower.deliver(route);
+            }));
+        });
+    #[cfg(mobile)]
+    watch_simulated_routes(probe, shell);
+    #[cfg(desktop)]
+    let _ = shell;
+}
+
+/// A CI runner cannot tap through the web shell, so a debug phone build
+/// reports a simulated route when `simulate-route` appears in the probe's
+/// directory: the app's temporary directory on iOS, its cache directory on
+/// Android. The route goes through the `limiara://` scheme, as the web
+/// shell's would, and the outcome joins the probe's trail.
+#[cfg(mobile)]
+fn watch_simulated_routes(probe: device_route_probe::Probe<tauri::Wry>, shell: Shell) {
+    let _ = std::thread::Builder::new()
+        .name("route-probe-simulation".into())
+        .spawn(move || {
+            let Ok(directory) = probe.directory() else {
+                return;
+            };
+            let request = directory.join(crate::probe::SIMULATE_FILE);
+            let trail = directory.join("device-route-probe.log");
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if std::fs::remove_file(&request).is_err() {
+                    continue;
+                }
+                let line = match tauri::async_runtime::block_on(crate::probe::simulate(&shell)) {
+                    Ok(record) => format!("simulated a route to {record}\n"),
+                    Err(error) => format!("the simulated route failed: {error}\n"),
+                };
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&trail)
+                {
+                    let _ = file.write_all(line.as_bytes());
+                }
+            }
+        });
+}
+
 /// The platform the server records for the device (ADR 0029).
 fn platform() -> &'static str {
     if cfg!(target_os = "ios") {
@@ -154,10 +234,17 @@ fn device_name() -> String {
 pub fn run() {
     let shell: Arc<std::sync::OnceLock<Shell>> = Arc::new(std::sync::OnceLock::new());
     let handler_shell = shell.clone();
-    let result = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(device_keystore::init())
         .plugin(device_browser::init())
-        .plugin(device_push::init())
+        .plugin(device_push::init());
+    // The route probe is a test plugin (ADR 0034 §9): debug builds only.
+    let builder = if cfg!(debug_assertions) {
+        builder.plugin(device_route_probe::init())
+    } else {
+        builder
+    };
+    let result = builder
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let shell = handler_shell.clone();
             tauri::async_runtime::spawn(async move {
@@ -210,11 +297,11 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             follow_push(app, controller.clone());
             let assets: Arc<dyn Assets> = Arc::new(Embedded(app.handle().clone()));
-            let _ = shell.set(Shell::new(
-                controller,
-                assets,
-                directory.join("demonstration"),
-            ));
+            let opened = Shell::new(controller, assets, directory.join("demonstration"));
+            if cfg!(debug_assertions) {
+                start_route_probe(app, opened.clone());
+            }
+            let _ = shell.set(opened);
             let url = start_url()
                 .parse()
                 .map_err(|error| format!("the start URL is invalid: {error}"))?;

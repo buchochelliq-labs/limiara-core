@@ -119,6 +119,11 @@ impl ObjectService {
             .take_remote(tx.as_mut(), &object, existing.as_ref(), remote)
             .await?;
         tx.commit().await?;
+        self.observe(crate::ReplicaEvent::RecordStored {
+            object: object.api_name.clone(),
+            record: record.public_id.clone(),
+            deleted: record.deleted_at.is_some(),
+        });
         let record = Self::project(&object, record);
         Ok(match existing {
             Some(_) => Applied::Updated(record),
@@ -242,15 +247,22 @@ impl ObjectService {
             tx.commit().await?;
             return Ok(0);
         };
-        let mut forgotten = 0;
+        let mut forgotten = Vec::new();
         for public_id in public_ids {
             if let Some(record) = tx.record(object.id, public_id).await? {
                 tx.forget_record(record.id).await?;
-                forgotten += 1;
+                forgotten.push(record.public_id);
             }
         }
         tx.commit().await?;
-        Ok(forgotten)
+        let count = forgotten.len();
+        if !forgotten.is_empty() {
+            self.observe(crate::ReplicaEvent::RecordsForgotten {
+                object: object.api_name,
+                records: forgotten,
+            });
+        }
+        Ok(count)
     }
 }
 
@@ -458,6 +470,7 @@ impl ObjectService {
         let shown = Lease::at(&lease, Utc::now(), self.trusted_now().as_ref());
         tx.set_replica_lease(lease).await?;
         tx.commit().await?;
+        self.observe(crate::ReplicaEvent::Lease(shown));
         Ok(shown)
     }
 }
@@ -676,7 +689,15 @@ impl ObjectService {
         let result = self
             .settle_in(api_name, remote, choices, context, &mut run)
             .await;
-        self.keep_failed_runs(run, result).await
+        let settled = self.keep_failed_runs(run, result).await?;
+        // The server's copy is stored; edits the member keeps are in the
+        // change log too.
+        self.observe(crate::ReplicaEvent::RecordStored {
+            object: api_name.to_owned(),
+            record: settled.public_id.clone(),
+            deleted: settled.deleted_at.is_some(),
+        });
+        Ok(settled)
     }
 
     async fn settle_in(

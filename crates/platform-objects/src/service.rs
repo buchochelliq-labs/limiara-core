@@ -143,6 +143,7 @@ pub struct ObjectService {
     replica: bool,
     client_ids: bool,
     trusted_clock: Option<Arc<dyn crate::TrustedClock>>,
+    observer: Option<Arc<dyn crate::ReplicaObserver>>,
 }
 
 impl ObjectService {
@@ -153,7 +154,16 @@ impl ObjectService {
             replica: false,
             client_ids: false,
             trusted_clock: None,
+            observer: None,
         }
+    }
+
+    pub(crate) fn set_observer(&mut self, observer: Arc<dyn crate::ReplicaObserver>) {
+        self.observer = Some(observer);
+    }
+
+    pub(crate) fn observer(&self) -> Option<&Arc<dyn crate::ReplicaObserver>> {
+        self.observer.as_ref()
     }
 
     /// Measures the offline lease by the device's monotonic clock as well
