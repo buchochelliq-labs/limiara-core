@@ -337,6 +337,11 @@ struct Active {
     task: Option<JoinHandle<()>>,
     /// Rereads the lease for the change feed ([`watch_lease`]).
     lease_task: Option<JoinHandle<()>>,
+    /// Asks [`read_local_writes`] for a read of the change log.
+    reads: LocalWrites,
+    /// Reads the change log for the feed ([`read_local_writes`]), stopped
+    /// with the rest before the workspace's storage is deleted.
+    reader_task: Option<JoinHandle<()>>,
     /// Rereads the member's profile ([`Controller::watch_profile`]).
     profile_task: Option<JoinHandle<()>>,
     /// Background wakes in flight ([`Controller::wake`]), stopped with the
@@ -736,11 +741,18 @@ impl Controller {
             // The first write or sync step reads the change log again.
             tracing::warn!(%error, "the change feed could not read the replica");
         }
+        let reads = LocalWrites::default();
+        let reader_task = tokio::spawn(read_local_writes(
+            tap.clone(),
+            engine.clone(),
+            reads.clone(),
+            stopped.clone(),
+        ));
         let task = tokio::spawn(self.clone().run_sync(
             generation,
             sync,
             session.clone(),
-            (tap.clone(), engine.clone()),
+            reads.clone(),
             stopped.clone(),
         ));
         let profile_task = tokio::spawn(self.clone().watch_profile(
@@ -763,6 +775,8 @@ impl Controller {
             stop,
             task: Some(task),
             lease_task: Some(lease_task),
+            reads,
+            reader_task: Some(reader_task),
             profile_task: Some(profile_task),
             wakes: Vec::new(),
         });
@@ -783,7 +797,7 @@ impl Controller {
         generation: u64,
         sync: Arc<SyncClient<HttpTransport>>,
         session: Arc<DeviceSession>,
-        feed: (FeedTap, ObjectService),
+        reads: LocalWrites,
         mut stopped: watch::Receiver<bool>,
     ) {
         let mut delay = RETRY_MIN;
@@ -796,12 +810,12 @@ impl Controller {
                 let _ = stop.wait_for(|stop| *stop).await;
             };
             let observer = self.clone();
-            let feed = feed.clone();
+            let reads = reads.clone();
             let observe = move |report: &SyncReport| {
                 observer.synced(generation, report);
                 // Settled conflicts and held-back edits are the member's
                 // own changes, in the change log.
-                local_writes(&feed);
+                reads.ask();
             };
             let result = sync
                 .follow(MutationContext::new(Uuid::now_v7()), until_stopped, observe)
@@ -1013,7 +1027,7 @@ impl Controller {
         // Registered under the lock sign-out and a wipe take the workspace
         // with, so either the wake sees no workspace or it is stopped before
         // the workspace's storage is deleted.
-        let (generation, session, feed, finished) = {
+        let (generation, session, reads, finished) = {
             let mut active = self.active.lock().await;
             let Some(active) = active.as_mut() else {
                 return Ok(WakeOutcome::NoWorkspace);
@@ -1032,7 +1046,7 @@ impl Controller {
             (
                 active.generation,
                 active.session.clone(),
-                (active.tap.clone(), active.engine.clone()),
+                active.reads.clone(),
                 finished,
             )
         };
@@ -1043,7 +1057,8 @@ impl Controller {
         match result {
             Ok(report) => {
                 self.synced(generation, &report);
-                local_writes(&feed);
+                // A no-op once sign-out or a wipe stopped the reader.
+                reads.ask();
                 Ok(WakeOutcome::Synced)
             }
             Err(SyncError::OutOfTime) => Ok(WakeOutcome::OutOfTime),
@@ -1176,15 +1191,41 @@ impl Controller {
     }
 }
 
-/// Reports the member's changes in the change log to the feed, after a
-/// sync step that may have made some.
-fn local_writes(feed: &(FeedTap, ObjectService)) {
-    let (tap, engine) = feed.clone();
-    tokio::spawn(async move {
+/// Asks the workspace's change-log reader to report the member's changes
+/// to the feed, after a sync step that may have made some. Asks made before
+/// a read starts are answered by that one read.
+#[derive(Clone, Default)]
+struct LocalWrites(Arc<tokio::sync::Notify>);
+
+impl LocalWrites {
+    fn ask(&self) {
+        self.0.notify_one();
+    }
+}
+
+/// Reads the change log whenever asked, until stopped. It is one task the
+/// workspace owns rather than one per step, so [`stop_worker`] stops it
+/// before the storage goes: a read after the wipe would reopen the replica,
+/// creating its file and key again.
+async fn read_local_writes(
+    tap: FeedTap,
+    engine: ObjectService,
+    reads: LocalWrites,
+    mut stopped: watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = stopped.wait_for(|stop| *stop) => return,
+            () = reads.0.notified() => {}
+        }
+        if *stopped.borrow() {
+            return;
+        }
         if let Err(error) = tap.local_writes(&engine).await {
             tracing::warn!(%error, "the change log could not be read for the feed");
         }
-    });
+    }
 }
 
 /// Rereads the lease until stopped, so the feed reports a replica that
@@ -1268,6 +1309,12 @@ fn bridge_for(
 /// itself, wiping on the server's word, does not wait for itself.
 async fn stop_worker(active: &mut Active) {
     let _ = active.stop.send(true);
+    // A read in progress is cut off, and none starts after this: it would
+    // reopen the replica the wipe deletes.
+    if let Some(reader_task) = active.reader_task.take() {
+        reader_task.abort();
+        let _ = reader_task.await;
+    }
     if let Some(lease_task) = active.lease_task.take() {
         lease_task.abort();
         let _ = lease_task.await;
@@ -1373,5 +1420,162 @@ mod tests {
         assert!(callback.contains("return to the Limiara app"));
         assert_eq!(url.path(), "/callback");
         assert_eq!(url.query(), Some("code=abc&state=xyz"));
+    }
+
+    /// Keys that say which workspaces hold one, so a test sees a key
+    /// created again after a wipe destroyed it.
+    #[derive(Default)]
+    struct HeldKeys {
+        inner: crate::MemoryKeys,
+        held: Mutex<std::collections::BTreeSet<Uuid>>,
+    }
+
+    impl HeldKeys {
+        fn holds(&self, workspace: Uuid) -> bool {
+            self.held
+                .lock()
+                .map(|held| held.contains(&workspace))
+                .unwrap_or(true)
+        }
+    }
+
+    #[async_trait]
+    impl DatabaseKeys for HeldKeys {
+        async fn key(&self, tenant_id: Uuid) -> Result<crate::DatabaseKey, crate::KeyError> {
+            if let Ok(mut held) = self.held.lock() {
+                held.insert(tenant_id);
+            }
+            self.inner.key(tenant_id).await
+        }
+
+        async fn destroy(&self, tenant_id: Uuid) -> Result<(), crate::KeyError> {
+            if let Ok(mut held) = self.held.lock() {
+                held.remove(&tenant_id);
+            }
+            self.inner.destroy(tenant_id).await
+        }
+    }
+
+    struct NoBrowser;
+
+    impl Browser for NoBrowser {
+        fn open(&self, _url: &str) -> Result<(), String> {
+            Err("no browser in tests".into())
+        }
+    }
+
+    /// A controller over a saved session for a server that cannot be
+    /// reached, so the replica opens offline.
+    async fn offline(
+        directory: &std::path::Path,
+        workspace: Uuid,
+    ) -> (Arc<Controller>, Arc<HeldKeys>) {
+        let vault = Arc::new(MemoryVault::default());
+        vault
+            .save(&StoredSession {
+                server: "http://127.0.0.1:1".into(),
+                refresh_token: "refresh".into(),
+                offline_limit_seconds: 3_600,
+                profile: DeviceProfile {
+                    device_id: Uuid::now_v7(),
+                    member: ProfileMember {
+                        id: Uuid::now_v7(),
+                        display_name: "Ada Lovelace".into(),
+                        email: None,
+                        permissions: std::collections::BTreeSet::new(),
+                        roles: std::collections::BTreeSet::new(),
+                        role_ids: Vec::new(),
+                    },
+                    workspace: ProfileWorkspace {
+                        id: workspace,
+                        name: "Analytical Engines".into(),
+                    },
+                },
+            })
+            .await
+            .expect("saved");
+        let keys = Arc::new(HeldKeys::default());
+        let controller = Controller::new(
+            directory,
+            AppSettings {
+                redirect_uri: "http://127.0.0.1:47185/callback".into(),
+                device_name: "Test".into(),
+                platform: "desktop".into(),
+            },
+            Services {
+                vault,
+                keys: keys.clone(),
+                browser: Arc::new(NoBrowser),
+                redirects: Arc::new(
+                    LoopbackRedirects::new("http://127.0.0.1:47185/callback").expect("loopback"),
+                ),
+            },
+        );
+        controller.resume().await;
+        assert!(controller.bridge().is_some(), "the replica opens offline");
+        assert!(keys.holds(workspace));
+        (controller, keys)
+    }
+
+    /// What of the workspace is left on disk.
+    fn files_of(directory: &std::path::Path, workspace: Uuid) -> Vec<String> {
+        let workspace = workspace.as_hyphenated().to_string();
+        std::fs::read_dir(directory)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.contains(&workspace))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A sync step asks for a change-log read just before the workspace
+    /// closes, and another finishes as it closes and asks again: neither
+    /// read may reopen the replica once its files and key are deleted.
+    async fn no_read_outlives(close: impl AsyncFnOnce(&Arc<Controller>)) {
+        let directory = tempfile::tempdir().expect("dir");
+        let workspace = Uuid::now_v7();
+        let (controller, keys) = offline(directory.path(), workspace).await;
+        assert!(!files_of(directory.path(), workspace).is_empty());
+        let reads = controller
+            .active
+            .lock()
+            .await
+            .as_ref()
+            .expect("open")
+            .reads
+            .clone();
+        // Pending: the reader has not run since.
+        reads.ask();
+        close(&controller).await;
+        reads.ask();
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(controller.active.lock().await.is_none());
+        assert_eq!(files_of(directory.path(), workspace), Vec::<String>::new());
+        assert!(!keys.holds(workspace), "the key was created again");
+    }
+
+    #[tokio::test]
+    async fn no_change_log_read_reopens_a_workspace_after_sign_out() {
+        no_read_outlives(async |controller| controller.sign_out().await).await;
+    }
+
+    #[tokio::test]
+    async fn no_change_log_read_reopens_a_workspace_after_a_wipe() {
+        no_read_outlives(async |controller| {
+            let generation = controller.generation.load(Ordering::SeqCst);
+            controller.wipe(generation, WIPED).await;
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_change_log_read_reopens_a_workspace_on_many_threads() {
+        no_read_outlives(async |controller| controller.sign_out().await).await;
     }
 }

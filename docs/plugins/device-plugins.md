@@ -61,7 +61,11 @@ A `RouteSubscription` holds the latest `CurrentRoute`: the workspace, a
 route pattern (`home`, `object`, `new_record`, `record`, `search`,
 `settings` or `other`), and the object and record id where the pattern has
 them, or nothing when no workspace page is shown. It holds one value, so a
-slow plugin sees where the shell is now rather than every step.
+slow plugin sees where the shell is now rather than every step. The route
+never steps back: the web shell sends one message at a time, and the bridge
+keeps the latest one it received over an earlier one it is still checking.
+When the shell shows no workspace page while the workspace stays open, such
+as when every feature is disabled, the route is `other`.
 
 The web shell sends it only to a host whose UI contributions carry
 `route_context: true`, which the server's never do. It sends the pattern's

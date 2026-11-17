@@ -19,6 +19,7 @@
 use platform_id::PublicId;
 use platform_objects::naming::ApiName;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -147,14 +148,34 @@ pub struct CurrentRoute {
 
 /// The route context. The controller owns it; the bridge sets it, and
 /// plugins read it through [`crate::capabilities::PluginGrant`].
+///
+/// The latest message the bridge received wins, not the latest it finished
+/// checking: each message takes a [`RouteTicket`] as it arrives, and one
+/// that a later message overtook while its object was being looked up is
+/// dropped. A clear drops every message received before it.
 #[derive(Clone)]
-pub struct RouteContext(Arc<watch::Sender<Option<CurrentRoute>>>);
+pub struct RouteContext {
+    route: Arc<watch::Sender<Option<CurrentRoute>>>,
+    /// The last ticket handed out.
+    issued: Arc<AtomicU64>,
+    /// The newest ticket applied, or the last issued at a clear. Changed
+    /// only inside `send_if_modified`, under the watch's lock.
+    applied: Arc<AtomicU64>,
+}
 
 impl Default for RouteContext {
     fn default() -> Self {
-        Self(Arc::new(watch::Sender::new(None)))
+        Self {
+            route: Arc::new(watch::Sender::new(None)),
+            issued: Arc::new(AtomicU64::new(0)),
+            applied: Arc::new(AtomicU64::new(0)),
+        }
     }
 }
+
+/// When a route message arrived, relative to the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RouteTicket(u64);
 
 impl std::fmt::Debug for RouteContext {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,28 +188,48 @@ impl RouteContext {
         Self::default()
     }
 
-    pub(crate) fn set(&self, route: CurrentRoute) {
-        self.0.send_if_modified(|current| {
+    /// Taken as a route message arrives, before anything is awaited.
+    pub(crate) fn ticket(&self) -> RouteTicket {
+        RouteTicket(self.issued.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    /// Sets the route a message received with `ticket` names, unless a
+    /// message received after it was set already, or a clear came after it.
+    /// Returns whether the route is now the message's.
+    pub(crate) fn set(&self, ticket: RouteTicket, route: CurrentRoute) -> bool {
+        let mut current_now = false;
+        self.route.send_if_modified(|current| {
+            if ticket.0 <= self.applied.load(Ordering::SeqCst) {
+                return false;
+            }
+            self.applied.store(ticket.0, Ordering::SeqCst);
+            current_now = true;
             if current.as_ref() == Some(&route) {
                 return false;
             }
             *current = Some(route);
             true
         });
+        current_now
     }
 
-    /// Forgets the route, as when the workspace closes.
+    /// Forgets the route, as when the workspace closes. A message received
+    /// before it and still being checked is dropped.
     pub fn clear(&self) {
-        self.0.send_if_modified(|current| current.take().is_some());
+        self.route.send_if_modified(|current| {
+            let issued = self.issued.load(Ordering::SeqCst);
+            self.applied.fetch_max(issued, Ordering::SeqCst);
+            current.take().is_some()
+        });
     }
 
     /// The route now.
     pub fn current(&self) -> Option<CurrentRoute> {
-        self.0.borrow().clone()
+        self.route.borrow().clone()
     }
 
     pub(crate) fn subscribe(&self) -> RouteSubscription {
-        let mut receiver = self.0.subscribe();
+        let mut receiver = self.route.subscribe();
         // The route as it is now counts as a change, so a new subscriber
         // hears it first.
         receiver.mark_changed();
@@ -333,7 +374,7 @@ mod tests {
             object: Some(object.into()),
             record_id: None,
         };
-        context.set(route("custom:account"));
+        context.set(context.ticket(), route("custom:account"));
         let mut subscription = context.subscribe();
         // A new subscriber hears the route as it is.
         assert_eq!(
@@ -341,13 +382,44 @@ mod tests {
             Ok(Some(route("custom:account")))
         );
         // Several steps while it is busy: it sees where the shell is now.
-        context.set(route("custom:contact"));
-        context.set(route("custom:deal"));
+        context.set(context.ticket(), route("custom:contact"));
+        context.set(context.ticket(), route("custom:deal"));
         assert_eq!(subscription.changed().await, Ok(Some(route("custom:deal"))));
         // The same route again is no change.
-        context.set(route("custom:deal"));
+        context.set(context.ticket(), route("custom:deal"));
         context.clear();
         assert_eq!(subscription.changed().await, Ok(None));
         assert_eq!(subscription.current(), None);
+    }
+
+    #[test]
+    fn the_latest_message_received_wins_over_a_slower_earlier_one() {
+        let context = RouteContext::new();
+        let workspace = Uuid::now_v7();
+        let route = |pattern: RoutePattern, object: Option<&str>| CurrentRoute {
+            workspace,
+            route: pattern,
+            object: object.map(str::to_owned),
+            record_id: None,
+        };
+        // A record page arrives and its object is looked up; home arrives
+        // after it, needs no lookup, and is set first.
+        let record = context.ticket();
+        let home = context.ticket();
+        assert!(context.set(home, route(RoutePattern::Home, None)));
+        // The record page's lookup finishes: it was overtaken.
+        assert!(!context.set(record, route(RoutePattern::Object, Some("custom:account"))));
+        assert_eq!(context.current(), Some(route(RoutePattern::Home, None)));
+        // The same route again is still current.
+        assert!(context.set(context.ticket(), route(RoutePattern::Home, None)));
+
+        // A message still being checked when the workspace closes is
+        // dropped; one received after the clear is not.
+        let pending = context.ticket();
+        context.clear();
+        assert!(!context.set(pending, route(RoutePattern::Search, None)));
+        assert_eq!(context.current(), None);
+        assert!(context.set(context.ticket(), route(RoutePattern::Search, None)));
+        assert_eq!(context.current(), Some(route(RoutePattern::Search, None)));
     }
 }

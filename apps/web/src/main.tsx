@@ -105,11 +105,13 @@ function LimiaraApp() {
   }, [revalidateActivation]);
 
   // Only a host whose contributions ask for route messages gets them
-  // (ADR 0034 §9): the pattern's name and ids, never the address.
+  // (ADR 0034 §9): the pattern's name and ids, never the address. When the
+  // shell stops showing a workspace page (no features left, or navigation
+  // that could not be loaded), a host that was told one is told `other`.
   const routeReporter = useRef(new RouteReporter());
   useEffect(() => {
     if (!model.routeContext || model.status !== 'ready' || !model.activeWorkspaceId) {
-      routeReporter.current.reset();
+      routeReporter.current.leave();
       return;
     }
     routeReporter.current.report(model.activeWorkspaceId, route);

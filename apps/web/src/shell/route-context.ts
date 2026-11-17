@@ -42,26 +42,65 @@ export async function sendRouteContext(workspaceId: string, message: RouteContex
   });
 }
 
+type Delivery = {workspaceId: string; message: RouteContextMessage};
+
 /**
  * Sends a route message when the page kind or ids change, and nothing when
  * they do not, such as when only the search terms change. A message the
  * host refuses or cannot take changes nothing in the shell.
+ *
+ * Messages go one at a time, in navigation order: the next is sent once the
+ * host has answered the last, and only the latest one waiting is sent, so a
+ * message the host validates slowly cannot land after a later one. The host
+ * also keeps the latest message it received over a slower earlier one (ADR
+ * 0034 §9), which covers a page that reloads with a message in flight.
  */
 export class RouteReporter {
   private last = '';
+  private reported = '';
+  private waiting: Delivery | undefined;
+  private sending = false;
 
   constructor(private readonly send: typeof sendRouteContext = sendRouteContext) {}
 
   report(workspaceId: string, path: string): void {
-    const message = routeContextFor(path);
+    this.deliver(workspaceId, routeContextFor(path));
+  }
+
+  /**
+   * The shell stopped showing a workspace page, as when its features are
+   * all disabled or its navigation cannot be loaded: a host that was told a
+   * page is told `other`, so it stops treating that page as current. A host
+   * that was never told anything, such as the server, is sent nothing.
+   */
+  leave(): void {
+    if (!this.reported) return;
+    this.deliver(this.reported, {route: 'other'});
+  }
+
+  private deliver(workspaceId: string, message: RouteContextMessage): void {
     const key = JSON.stringify([workspaceId, message]);
     if (key === this.last) return;
     this.last = key;
-    void this.send(workspaceId, message).catch(() => undefined);
+    this.reported = workspaceId;
+    this.waiting = {workspaceId, message};
+    this.next();
   }
 
-  /** Forgets the last message, as when the host stops asking. */
-  reset(): void {
-    this.last = '';
+  private next(): void {
+    if (this.sending || !this.waiting) return;
+    const {workspaceId, message} = this.waiting;
+    this.waiting = undefined;
+    this.sending = true;
+    let sent: Promise<void>;
+    try {
+      sent = this.send(workspaceId, message);
+    } catch {
+      sent = Promise.resolve();
+    }
+    void sent.catch(() => undefined).finally(() => {
+      this.sending = false;
+      this.next();
+    });
   }
 }

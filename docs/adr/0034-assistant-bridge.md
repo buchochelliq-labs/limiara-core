@@ -484,7 +484,11 @@ Built (2026-11-17), slice 2:
   member reads in the replica, and a record id of that object's
   (`route.invalid`, `route.object_not_found`, `route.record_id_invalid`).
   Subscribers hold the latest route, not a queue: a slow plugin sees where
-  the shell is now. The route message is the one device-local write the
+  the shell is now. The web shell sends one message at a time, the latest
+  waiting, and the bridge keeps the latest message it received over an
+  earlier one still being checked, so the route never steps back. When the
+  shell stops showing a workspace page (every feature disabled, or
+  navigation that cannot be loaded), it sends `other`. The route message is the one device-local write the
   bridge accepts; it never reaches the server or the sync queue.
 - **Capabilities** are `platform_device::capabilities`.
   `device.replica_changes` and `device.route_context` are the two local

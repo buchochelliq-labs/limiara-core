@@ -444,6 +444,9 @@ async fn route_message(State(host): State<DeviceHost>, request: Request) -> Resp
             "the requested resource is unavailable",
         );
     };
+    // Taken on arrival: a later message that needs no lookup must not be
+    // overwritten by this one once its lookup finishes.
+    let ticket = routes.ticket();
     let json = request
         .headers()
         .get(http::header::CONTENT_TYPE)
@@ -493,12 +496,17 @@ async fn route_message(State(host): State<DeviceHost>, request: Request) -> Resp
             Err(_) => return offline(),
         }
     }
-    routes.set(route::CurrentRoute {
-        workspace: host.0.caller.tenant_id,
-        route: message.route,
-        object: message.object,
-        record_id: message.record_id,
-    });
+    // A message that was overtaken is answered as taken: the shell already
+    // sent the page it shows now.
+    routes.set(
+        ticket,
+        route::CurrentRoute {
+            workspace: host.0.caller.tenant_id,
+            route: message.route,
+            object: message.object,
+            record_id: message.record_id,
+        },
+    );
     StatusCode::NO_CONTENT.into_response()
 }
 
