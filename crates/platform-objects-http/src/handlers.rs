@@ -1665,6 +1665,8 @@ fn list_request(raw: Option<&str>, me: Uuid) -> Option<ListRecords> {
             "status" => {
                 request.status = match value.as_str() {
                     "active" => RecordStatus::Active,
+                    "archived" => RecordStatus::Archived,
+                    "all" => RecordStatus::All,
                     "deleted" => RecordStatus::Deleted,
                     "any" => RecordStatus::Any,
                     _ => return None,
@@ -1907,6 +1909,8 @@ pub(crate) struct QueryParams {
     page_size: Option<u16>,
     #[serde(default)]
     include_deleted: bool,
+    #[serde(default)]
+    include_archived: bool,
 }
 
 /// `GET /query`: runs a record query as the caller (ADR 0019).
@@ -1928,6 +1932,7 @@ pub async fn run_query<H: ObjectsHost>(
         cursor: params.cursor,
         page_size: params.page_size,
         include_deleted: params.include_deleted,
+        include_archived: params.include_archived,
     };
     match service.query(request).await {
         Ok(result) => Json(json!({
@@ -2653,6 +2658,69 @@ pub async fn undelete_record<H: ObjectsHost>(
     }
 }
 
+/// `POST .../records/{id}/archive?expected_version=`: archives a record
+/// (ADR 0035 G1), an edit that needs edit access to it.
+pub async fn archive_record<H: ObjectsHost>(
+    state: State<H>,
+    path: Path<(Uuid, String, String)>,
+    caller: Extension<Caller>,
+    request_id: Extension<RequestId>,
+    version: Result<Query<ExpectedVersion>, QueryRejection>,
+) -> Response {
+    set_archived(state, path, caller, request_id, version, true).await
+}
+
+/// `POST .../records/{id}/unarchive?expected_version=`: brings an archived
+/// record back to default lists.
+pub async fn unarchive_record<H: ObjectsHost>(
+    state: State<H>,
+    path: Path<(Uuid, String, String)>,
+    caller: Extension<Caller>,
+    request_id: Extension<RequestId>,
+    version: Result<Query<ExpectedVersion>, QueryRejection>,
+) -> Response {
+    set_archived(state, path, caller, request_id, version, false).await
+}
+
+async fn set_archived<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object, record)): Path<(Uuid, String, String)>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    version: Result<Query<ExpectedVersion>, QueryRejection>,
+    archive: bool,
+) -> Response {
+    let Ok(Query(version)) = version else {
+        return invalid_query();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    let context = context(&request_id, &caller);
+    let result = if archive {
+        service
+            .archive_record(&object, &record, version.expected_version, context)
+            .await
+    } else {
+        service
+            .unarchive_record(&object, &record, version.expected_version, context)
+            .await
+    };
+    match result {
+        Ok(changed) => {
+            respond_records(
+                &state,
+                &caller,
+                StatusCode::OK,
+                one_record_json(&service, &object, &changed).await,
+            )
+            .await
+        }
+        Err(error) => error_response(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2686,10 +2754,19 @@ mod tests {
             sync.touched_after.map(|time| time.to_rfc3339()),
             Some("2026-10-11T20:04:19.260+00:00".to_owned())
         );
+        for (raw, status) in [
+            ("status=active", RecordStatus::Active),
+            ("status=archived", RecordStatus::Archived),
+            ("status=all", RecordStatus::All),
+            ("status=deleted", RecordStatus::Deleted),
+            ("status=any", RecordStatus::Any),
+        ] {
+            assert_eq!(list_request(Some(raw), me).expect(raw).status, status);
+        }
         for bad in [
             "touched_after=yesterday",
             "nope=1",
-            "status=archived",
+            "status=archive",
             "limit=x",
             "owner=someone",
             "filter[x",

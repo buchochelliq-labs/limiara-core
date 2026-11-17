@@ -21,8 +21,8 @@
 //!
 //! Only the writes the sync loop takes to the server run on the device:
 //! record changes. Definitions, validation rules, quick actions,
-//! automations, object permissions, sharing, saved reports and bulk jobs
-//! are made on the server, and the bridge answers `403 sync.server_only`
+//! automations, object permissions, sharing, archiving (ADR 0035 G1),
+//! saved reports and bulk jobs are made on the server, and the bridge answers `403 sync.server_only`
 //! for them. Running a quick action is a record change (ADR 0032 §3), and
 //! the replica lists the actions it took with its definitions.
 
@@ -247,7 +247,7 @@ fn path_workspace(path: &str) -> Option<&str> {
 /// server: record changes, which the push queue sends as composite
 /// operations (create, update, delete, undelete, owner change). Every other
 /// write (definitions, validation rules, automations, object permissions,
-/// sharing, saved reports, bulk jobs) is the server's to make: on the
+/// sharing, archiving, saved reports, bulk jobs) is the server's to make: on the
 /// device it would succeed locally, never reach the server, and be
 /// overwritten by the next definitions refresh.
 fn reaches_the_server(method: &Method, path: &str) -> bool {

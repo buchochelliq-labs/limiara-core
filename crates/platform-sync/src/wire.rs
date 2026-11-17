@@ -60,6 +60,10 @@ pub fn remote_record(value: &Value) -> Result<RemoteRecord, SyncError> {
         updated_at: time(map, "updated_at")?,
         updated_by: user(map, "updated_by")?,
         touched_at: time(map, "touched_at")?,
+        archived_at: match map.get("archived_at") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(time(map, "archived_at")?),
+        },
         deleted_at: match map.get("deleted_at") {
             None | Some(Value::Null) => None,
             Some(_) => Some(time(map, "deleted_at")?),
@@ -459,6 +463,19 @@ mod tests {
         assert_eq!(record.version, 3);
         assert!(record.owner_id.is_some() && record.created_by.is_none());
         assert!(record.deleted_at.is_some());
+        assert!(record.archived_at.is_none());
+        let archived = remote_record(&json!({
+            "id": "a0B000000000003AAA", "name": "Old", "owner": null,
+            "created_at": "2026-11-01T10:00:00Z", "created_by": null,
+            "updated_at": "2026-11-02T10:00:00Z", "updated_by": null,
+            "touched_at": "2026-11-02T10:00:00Z", "version": 2,
+            "archived_at": "2026-11-02T10:00:00Z", "is_deleted": false, "deleted_at": null
+        }))
+        .expect("archived record");
+        assert_eq!(
+            archived.archived_at.map(|at| at.to_rfc3339()),
+            Some("2026-11-02T10:00:00+00:00".to_owned())
+        );
         assert_eq!(
             record.values.keys().collect::<Vec<_>>(),
             vec!["custom:parent", "custom:tier"]

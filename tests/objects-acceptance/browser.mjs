@@ -173,6 +173,20 @@ try {
   await dialog.waitFor({state: 'detached'});
   await page.getByText('BR-2', {exact: true}).waitFor();
 
+  step('archive hides the record from the list; unarchive brings it back');
+  await page.getByRole('button', {name: 'Archive', exact: true}).click();
+  await page.getByText('This record is archived').waitFor();
+  await page.goto(`${origin}/o/custom:project`);
+  await page.getByRole('heading', {level: 1, name: 'Projects'}).waitFor();
+  await page.getByRole('link', {name: 'Batch one'}).waitFor();
+  if (await page.getByRole('link', {name: 'Browser project'}).count() !== 0) throw new Error('an archived record must leave the default list');
+  await page.getByLabel('Show', {exact: true}).selectOption('archived');
+  await page.getByRole('link', {name: 'Browser project'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Browser project'}).waitFor();
+  await page.getByRole('button', {name: 'Unarchive', exact: true}).click();
+  await page.getByRole('button', {name: 'Archive', exact: true}).waitFor();
+  if (await page.getByText('This record is archived').count() !== 0) throw new Error('unarchiving must clear the archived state');
+
   step('delete moves the record to the recycle bin; restore brings it back');
   await page.getByRole('button', {name: 'Delete'}).click();
   await page.getByRole('alertdialog').getByRole('button', {name: 'Delete'}).click();

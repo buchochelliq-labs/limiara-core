@@ -15,7 +15,7 @@ mod devices;
 pub use devices::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0041_assistant_policy.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0042_assistant_policy.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]

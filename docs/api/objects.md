@@ -34,7 +34,7 @@ the plugin lookup `example.tracker:milestone`.
 | Create, change and delete objects and fields; read and set object permissions | `objects.manage` |
 | See an object and read its records | object `read` |
 | Create records | object `create` |
-| Change records | object `edit` |
+| Change, archive and unarchive records | object `edit`, and edit access to the record |
 | Delete and undelete records | object `delete` |
 | Read or change every record whatever sharing says | object `view_all` / `modify_all`, or the system permissions `records.view_all` / `records.modify_all` |
 
@@ -192,6 +192,8 @@ be a roll-up's relationship (`objects.rollup_relationship_invalid`).
 | `PATCH /objects/{api_name}/records/{id}` | Change only the values sent; `null` clears; send `expected_version` |
 | `DELETE /objects/{api_name}/records/{id}?expected_version=` | Move a record to the recycle bin |
 | `POST /objects/{api_name}/records/{id}/undelete?expected_version=` | Restore a record from the recycle bin |
+| `POST /objects/{api_name}/records/{id}/archive?expected_version=` | Archive a record |
+| `POST /objects/{api_name}/records/{id}/unarchive?expected_version=` | Bring an archived record back |
 
 A record carries the standard fields of ADR 0014 (`id`, `object`, `name`,
 `owner`, `created_at`, `created_by`, `updated_at`, `updated_by`,
@@ -220,8 +222,10 @@ returns the record the caller already created; anyone else's id is
 same way, so offline records that refer to each other push with their
 references intact.
 
-Lists accept `status` (`active`, `deleted`, or `any` for sync clients, where
-deleted records are tombstones), `sort` (`name`, `created_at`, `updated_at`,
+Lists accept `status`: `active` (the default: live records that are not
+archived), `archived` (live, archived records), `all` (every live record),
+`deleted` (the recycle bin, archived or not), or `any` for sync clients, where
+deleted records are tombstones and archived ones carry `archived_at`; `sort` (`name`, `created_at`, `updated_at`,
 `touched_at`), `touched_after` (an RFC 3339 time; only records touched
 strictly after it), `direction` (`asc`, `desc`), `limit` (1 to 200), `cursor`,
 `search` (text the record name contains, at most 100 characters), `owner=me` and up to ten
@@ -357,11 +361,60 @@ whose object the caller cannot read, contribute nothing.
   page offers these in the Activity section. Whether the member may run
   one is still decided by the target object's `create` access.
 
+### Archiving
+
+Archiving (ADR 0035 G1) takes a live record out of everyday use without
+deleting it, as Salesforce's archived records are kept: it stays readable by
+id, keeps its values, lookups, owner and shares, and can still be changed,
+deleted and restored. Archive and unarchive are edits: they need the
+object's `edit` permission and edit access to the record through ownership,
+the role hierarchy, a manual edit share or `modify_all` (ADR 0016), exactly
+as an update does, and they take `expected_version`. Each one moves the
+record's `version`, `updated_at`, `updated_by` and `touched_at`, sets or
+clears `archived_at`, and answers with the record. Neither runs validation
+rules or automations, since no value changes.
+
+Archiving is not idempotent. The refusals are, in this order after access:
+
+| Status and code | When |
+| --- | --- |
+| `404 resource.unavailable` | The record does not exist or the caller cannot see it |
+| `403 auth.permission_denied` | The caller can see it but has no edit access |
+| `409 records.deleted` | The record is in the recycle bin; restore it first |
+| `409 records.already_archived` | Archiving a record that is archived |
+| `409 records.not_archived` | Unarchiving a record that is not archived |
+| `409 records.version_conflict` | `expected_version` is not the current version |
+
+The record's state is checked before its version, so a client that missed
+someone else's archive learns that rather than seeing a version conflict.
+
+Where an archived record shows:
+
+| Surface | Archived records |
+| --- | --- |
+| `GET .../records/{id}` and record history | shown, with `archived_at` |
+| `GET .../records` | left out unless `status=archived` or `status=all` |
+| Record queries and saved reports | left out unless the query sends `include_archived=true` (or `include_deleted=true`) |
+| Global search | left out |
+| Lookup and related-to pickers (`.../candidates`) | left out |
+| Related lists and the Activity timeline | left out |
+| Existing lookups to an archived record | kept, with its name in `related`; paths through the lookup still read it |
+| Setting a lookup to an archived record by id | allowed, subject to the field's lookup filter |
+| Sync (`status=any`, revocations) | kept, with `archived_at`, so devices hold it |
+
+A record in the recycle bin keeps its `archived_at`: `status=deleted` lists
+it, and undeleting it brings it back archived. On a synced device
+archiving and unarchiving are made on the server: the command bridge
+answers `403 sync.server_only`, and the replica takes the server's
+`archived_at` with each record it pulls.
+
 ## Change data capture
 
 `GET /objects/changes` returns the workspace's change log after `after`
 (ADR 0018): `data` holds `position`, `object`, `record`, `kind` (`created`,
-`updated`, `deleted`, `undeleted`), the changed `fields` by name,
+`updated`, `deleted`, `undeleted`), the changed `fields` by name (an
+archive or unarchive is an `updated` entry naming `archived_at`, as an
+owner change names `owner`),
 `changed_at`, `changed_by` and `correlation_id`; `next_after` is where to
 resume and `head` the newest position. Positions are gap-free and in commit
 order. Only changes to records the caller can currently see are returned,
@@ -429,8 +482,8 @@ LIMIT 500
 
 - Names are API names; standard fields are `id`, `name`, `owner`,
   `created_at`, `created_by`, `updated_at`, `updated_by`, `touched_at`,
-  `version`, `is_deleted` and `deleted_at`. A dot follows a lookup, up to
-  three hops.
+  `version`, `is_deleted`, `deleted_at` and `archived_at`. A dot follows a
+  lookup, up to three hops.
 - Conditions: `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`,
   `NOT LIKE`, `= null`, `!= null`, and `INCLUDES` / `EXCLUDES` for
   multi-select picklists, with `AND`, `OR`, `NOT` and parentheses. Text
@@ -450,7 +503,10 @@ LIMIT 500
   come back as their lowercase key.
 - Sharing applies to the object and to every relationship hop, so a hidden
   parent never matches a condition and its selected fields are `null`.
-  `include_deleted=true` adds records in the recycle bin.
+  Archived records are left out, as lists leave them out:
+  `include_archived=true` adds them, and `include_deleted=true` adds records
+  in the recycle bin, archived or not. A cursor works only with the flags it
+  was issued with.
 
 The response holds `object`, `columns` (`key` and `type`), `data` (rows keyed
 by each selected item or alias; record rows always carry `id`) and
@@ -955,7 +1011,8 @@ by object, best group first:
 Objects with `track_history` keep each record's lifecycle, name and owner
 changes; fields with `track_history` also keep their old and new values
 (ADR 0017). `GET /objects/{api_name}/records/{id}/history` returns entries
-newest first with `kind` (`created`, `changed`, `deleted`, `undeleted`),
+newest first with `kind` (`created`, `changed`, `deleted`, `undeleted`,
+`archived`, `unarchived`),
 `field`, `old_value`, `new_value`, `changed_at` and `changed_by`; owner
 changes also carry `old_user` and `new_user`. `related` names lookup values
 the caller can see, and `cursor` and `limit` (1 to 200) page through older
@@ -1074,7 +1131,8 @@ the codes for refused plugin installations are listed in
 
 Every mutation writes an audit record and a `platform.objects.*.v1` event in
 the same transaction: object, field and object-permission changes, record
-created, updated, deleted and undeleted, and reports created, updated and
+created, updated, deleted, undeleted, archived and unarchived
+(`record-archived`, `record-unarchived`, with the record payload), and reports created, updated and
 deleted (`report-created`, `report-updated`, `report-deleted`, naming the
 report, chart and visibility but not the query), and quick actions created,
 updated and deleted (`platform.objects.quick-action-created.v1`,

@@ -143,6 +143,7 @@ impl ObjectService {
             cursor: None,
             page_size: Some(1),
             include_deleted: false,
+            include_archived: false,
         };
         match self.query_in(tx, &access, &request).await {
             Ok(_) => Ok(()),
@@ -182,6 +183,9 @@ impl ObjectService {
             cursor: None,
             page_size: Some(1),
             include_deleted: false,
+            // The filter alone decides: an archived target still counts, as
+            // archiving hides a record from pickers, not from lookups.
+            include_archived: true,
         };
         match self.query_in(tx, access, &request).await {
             Ok(result) => Ok(!result.rows.is_empty()),
@@ -279,6 +283,7 @@ impl ObjectService {
             cursor,
             page_size: Some(RELATED_PAGE),
             include_deleted: false,
+            include_archived: false,
         };
         let result = match self.query_in(tx.as_mut(), &access, &request).await {
             Err(ObjectError::Validation(issues))
@@ -363,6 +368,7 @@ impl ObjectService {
             cursor,
             page_size: Some(page_size),
             include_deleted: false,
+            include_archived: false,
         };
         self.query_in(tx, access, &request).await
     }

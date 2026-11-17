@@ -4,7 +4,7 @@ import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, sourceFromApi, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
 import {AllowlistForm, allowlistChoices, AssistantAccess, AssistantPolicyForm, AssistantSwitch, indexFields, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
-import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
+import {ArchivedNotice, archiveProblem, RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
@@ -112,6 +112,58 @@ describe('workspace objects client', () => {
   });
 });
 
+describe('archiving records (ADR 0035 G1)', () => {
+  it('posts archive and unarchive with the version and reads archived_at', async () => {
+    const shape = {...recordFromApiShape(), archived_at: '2026-11-02T10:00:00Z'};
+    const fetcher = respond(200, shape);
+    const client = createObjectsApiClient(workspace, fetcher);
+    const archived = await client.archiveRecord('custom:project', '000abc', 5);
+    expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records/000abc/archive?expected_version=5`);
+    expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.method).toBe('POST');
+    expect(archived.archivedAt).toBe('2026-11-02T10:00:00Z');
+    expect(archived.values).toEqual({});
+    await client.unarchiveRecord('custom:project', '000abc', 6);
+    expect(vi.mocked(fetcher).mock.calls[1]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records/000abc/unarchive?expected_version=6`);
+    expect(recordFromApi(recordFromApiShape()).archivedAt).toBeNull();
+    const list = respond(200, {data: [], next_cursor: null});
+    await createObjectsApiClient(workspace, list).listRecords('custom:project', {status: 'archived'});
+    expect(vi.mocked(list).mock.calls[0]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records?status=archived`);
+    await expect(createObjectsApiClient(workspace, respond(409, {code: 'records.already_archived'})).archiveRecord('custom:project', '000abc', 5)).rejects.toMatchObject({reason: 'conflict', code: 'records.already_archived'});
+  });
+
+  it('hides archived records from default lists, pickers and search in the fixture engine', async () => {
+    const client = createFixtureObjectsClient();
+    const [apollo] = (await client.listRecords('custom:project', {search: 'apollo'})).records;
+    if (!apollo) throw new Error('fixture');
+    const archived = await client.archiveRecord('custom:project', apollo.id, apollo.version);
+    expect(archived.version).toBe(apollo.version + 1);
+    expect(archived.archivedAt).not.toBeNull();
+    const names = async (status?: 'archived' | 'all') => (await client.listRecords('custom:project', {status})).records.map(record => record.name);
+    expect(await names()).not.toContain('Apollo');
+    expect(await names('archived')).toEqual(['Apollo']);
+    expect(await names('all')).toContain('Apollo');
+    expect((await client.getRecord('custom:project', apollo.id)).archivedAt).not.toBeNull();
+    await expect(client.archiveRecord('custom:project', apollo.id, archived.version)).rejects.toMatchObject({code: 'records.already_archived'});
+    const restored = await client.unarchiveRecord('custom:project', apollo.id, archived.version);
+    expect(restored.archivedAt).toBeNull();
+    expect(await names()).toContain('Apollo');
+    await expect(client.unarchiveRecord('custom:project', apollo.id, restored.version)).rejects.toMatchObject({code: 'records.not_archived'});
+  });
+
+  it('shows the archived state and explains failures', () => {
+    const record = recordFromApi({...recordFromApiShape(), archived_at: '2026-11-02T10:00:00Z'} as Parameters<typeof recordFromApi>[0]);
+    const markup = renderToStaticMarkup(<ArchivedNotice record={record} />);
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('This record is archived');
+    expect(markup).toContain('left out of lists, search, lookup pickers and related lists');
+    expect(renderToStaticMarkup(<ArchivedNotice record={{...record, archivedAt: null}} />)).toBe('');
+    expect(archiveProblem(new ObjectsApiError('conflict', 'records.already_archived'), true)).toContain('changed since it was opened');
+    expect(archiveProblem(new ObjectsApiError('conflict', 'records.deleted'), true)).toContain('recycle bin');
+    expect(archiveProblem(new ObjectsApiError('denied'), false)).toContain('permission');
+    expect(archiveProblem(new Error('offline'), false)).toContain('could not be restored from the archive');
+  });
+});
+
 describe('record sharing (ADR 0016)', () => {
   it('reads rights and shares from the API and sends shares and transfers', async () => {
     const record = await createObjectsApiClient(workspace, respond(200, {id: '000a', name: 'Deal', owner: {id: 'u1'}, created_at: '', created_by: null, updated_at: '', updated_by: null, version: 2, is_deleted: false, access: {read: true, edit: true, delete: false, share: false, transfer: false}})).getRecord('custom:deal', '000a');
@@ -143,7 +195,7 @@ describe('record sharing (ADR 0016)', () => {
 
   it('offers sharing only to those who may share or transfer', () => {
     const client = createFixtureObjectsClient();
-    const base = {id: '000a', name: 'Deal', owner: {id: 'u1', name: 'Riley <b>Rep</b>'}, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, values: {}, related: {}};
+    const base = {id: '000a', name: 'Deal', owner: {id: 'u1', name: 'Riley <b>Rep</b>'}, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, archivedAt: null, values: {}, related: {}};
     expect(renderToStaticMarkup(<SharingPanel client={client} object={project} record={{...base, rights: {read: true, edit: true, delete: false, share: false, transfer: false}}} onTransferred={noop} />)).toBe('');
     const owner = renderToStaticMarkup(<SharingPanel client={client} object={project} record={{...base, rights: {read: true, edit: true, delete: true, share: true, transfer: true}}} onTransferred={noop} />);
     expect(owner).toContain('Change owner');
@@ -207,7 +259,7 @@ describe('field history (ADR 0017)', () => {
 
   it('shows history only for objects that track it', () => {
     const client = createFixtureObjectsClient();
-    const record = {id: '000a', name: 'Deal', owner: null, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, values: {}, related: {}};
+    const record = {id: '000a', name: 'Deal', owner: null, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, archivedAt: null, values: {}, related: {}};
     expect(renderToStaticMarkup(<HistoryPanel client={client} object={{...project, trackHistory: false}} record={record} onNavigate={noop} />)).toBe('');
     expect(renderToStaticMarkup(<HistoryPanel client={client} object={project} record={record} onNavigate={noop} />)).toContain('Loading history');
   });
@@ -327,6 +379,9 @@ describe('query console', () => {
     expect(url.searchParams.get('q')).toBe("SELECT name FROM custom:project WHERE name = 'a&b'");
     expect(url.searchParams.get('cursor')).toBe('c1');
     expect(url.searchParams.get('include_deleted')).toBe('true');
+    expect(url.searchParams.get('include_archived')).toBeNull();
+    await createObjectsApiClient(workspace, fetcher).query('SELECT name FROM custom:project WHERE archived_at != null', {includeArchived: true});
+    expect(new URL(String(vi.mocked(fetcher).mock.calls[1]?.[0]), 'http://localhost').searchParams.get('include_archived')).toBe('true');
     expect(result).toEqual({object: 'custom:project', columns: [{key: 'name', type: 'text'}], rows: [{id: '000abc', name: 'Apollo'}], nextCursor: 'next'});
   });
 
