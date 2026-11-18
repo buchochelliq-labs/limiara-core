@@ -90,7 +90,11 @@ permissions, formats values or writes its own messages.
 ### Requests and answers
 
 Every request is an `AssistantRequest` under the `assistant.v1` contract,
-as Rust types or as JSON through `call_json`:
+as Rust types or as JSON through `call_json`. The contract file,
+`crates/platform-device/contract/assistant.v1.schema.json`
+(`platform_device::assistant::SCHEMA`), is a JSON Schema of every request,
+answer and index update, with each code's sentence; code the native half
+against it:
 
 ```json
 {"contract": "assistant.v1", "assistant": "siri", "device_unlocked": true,
@@ -132,8 +136,9 @@ sharing, bulk changes and metadata changes are not offered.
 
 `create`, `update` and `run_action` run the save path as a dry run and
 answer with a `Confirmation`: the object's label, the record's name for an
-update or a quick action, each field that would change with its label and
-display value, and a `token`. Show it to the member with the platform's own
+update or a quick action, each field the request sets with its label and
+new display value (not what a before-save automation adds when the change
+is saved), and a `token`. Show it to the member with the platform's own
 confirmation, every time, then send `commit` with the token. There is no
 way to skip the confirmation, and nothing writes without a token.
 
@@ -209,6 +214,89 @@ Remove every workspace it lists, and every entry that expired before
 On-screen awareness uses `on_screen` and ids only. Describe the activity
 with the record's name only when the object is indexable, and never mark
 it as eligible for public indexing.
+
+### The reference harness
+
+`apps/assistant-harness` drives the assistant bridge with no phone, and
+is the conformance check native assistant plugins are built against
+([ADR 0034](../adr/0034-assistant-bridge.md), slice 4). It starts a
+workspace server on a loopback port, signs a device in, syncs it into an
+encrypted SQLite replica, and sends each request through `call_json` as
+the JSON bytes a plugin would. Time moves only when a script moves the
+harness's clock, which is both the confirmation token's clock and the
+replica's trusted clock for the offline lease.
+
+```sh
+cargo run --locked -p assistant-harness -- run --assistant both
+cargo run --locked -p assistant-harness -- run tests/assistant-harness/04-tokens.json
+cargo run --locked -p assistant-harness -- export --assistant both --out harness-export
+cargo run --locked -p assistant-harness -- session --assistant gemini
+cargo run --locked -p assistant-harness -- schema
+```
+
+Scripts are JSON files in `tests/assistant-harness/`, in the
+`assistant-harness.v1` format. Each step does one thing and yields one
+document, which `expect` checks with JSON Pointers:
+
+```json
+{"note": "a used token is refused",
+ "call": {"operation": {"name": "commit", "token": "${first}"}},
+ "expect": {"error": "assistant.confirmation_invalid",
+            "message": "That confirmation is no longer valid. Ask again to make the change."}}
+```
+
+| Step | What it does |
+| --- | --- |
+| `call` | Sends `operation`, with `contract`, `assistant` and `device_unlocked` filled in unless given, or `raw` bytes. `malformed: true` marks a request the contract file must refuse; the bridge must answer it `assistant.invalid`. |
+| `world` | `sync`, `push_queue`, `begin_sign_out`, `sign_out`, `wipe`, `sign_in`, `storage_unavailable`, `device_settings`, `set_switch`, `set_policy`, `relabel`, `server_update`, `server_record`, `server_history`, `device_history`, `web` (a web-shell request), `set_offline_limit`, `advance_clock` and `check_lease`. |
+| `index` | `subscribe` to the index stream, `drain` what is ready (`{"updates": [...], "refreshes": n}`), or `sweep` for the workspaces an OS index holds. |
+
+`expect` takes `kind` (the result's), `error` and `message` (the code and
+the sentence spoken), `equals`, `matches` (objects need only the keys
+given), `includes` and `excludes` (an array element that matches),
+`length`, `present`, `absent`, `never_contains`, `kinds` (the index
+updates' kinds, in order) and `same_as` (a document an earlier step kept
+with `save_document`). `save` keeps a value as a variable, used as
+`${name}`: every script starts with `workspace`, `other_workspace`,
+`member`, `device`, `assistant`, `other_assistant`, `offline_limit` and
+the reference records `acme`, `hidden` (a colleague's the member cannot
+read) and `vault` (in an object the policy does not expose). The world's
+objects and fields are described at the top of
+`apps/assistant-harness/src/world.rs`.
+
+On every call the harness also checks the request and the answer against
+the contract file, and that an error's message is its code's sentence or
+one of its documented forms, with no id, hidden value or code in it. A run
+of the whole suite fails if the scripts together missed an operation, a
+condition test, a result kind, an error code or its sentence, a write kind
+prepared or committed, an index update kind or a world action.
+
+#### Replaying it in a native plugin's tests
+
+A Swift or Kotlin plugin's own tests replay the suite through their bridge
+binding, without re-implementing any of it:
+
+1. **Export.** `assistant-harness export --assistant both --out DIR`
+   writes `assistant.v1.schema.json`, the scripts, and
+   `transcripts/{script}.{assistant}.json` for each script and assistant:
+   the variables, and for each step the step with its variables resolved,
+   the exact `request` bytes and the `document` the bridge answered.
+2. **Decode.** Feed every `document` of a call step to the binding's
+   answer decoding and check that it maps the result kinds onto the
+   platform's types, passes `message` through unchanged and branches only
+   on `code`. Ids, tokens and times differ between runs, so compare the
+   shape and the fixed values, not the ids.
+3. **Encode.** For each intent or function the plugin declares, build the
+   request from the platform's parameters and check it against the
+   transcript's `request` and against the contract file.
+4. **Live.** Run `assistant-harness session`, which prints the
+   variables, then reads steps (the script format, one JSON object a line)
+   on standard input and answers each with
+   `{"ok": true, "document": ..., "request": ...}` or
+   `{"ok": false, "error": "..."}`. A test that routes its binding's
+   `call_json` through `{"call": {"raw": "<request>"}}` steps drives the
+   reference world from Swift or Kotlin, and can replay a script's world
+   and index steps in between.
 
 ## The route probe
 

@@ -1,0 +1,604 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "assistant.v1.schema.json",
+  "title": "assistant.v1",
+  "description": "The assistant bridge contract (ADR 0034): every request a native assistant plugin sends through call_json, every answer it gets back, and the index stream's updates and launch sweep. Kept in sync with the Rust types in platform_device::assistant by the reference harness's tests (apps/assistant-harness). Every answer is inert data.",
+  "oneOf": [
+    { "$ref": "#/$defs/AssistantRequest" },
+    { "$ref": "#/$defs/AssistantAnswer" }
+  ],
+  "$defs": {
+    "AssistantRequest": {
+      "description": "One call from a native assistant plugin.",
+      "type": "object",
+      "properties": {
+        "contract": { "const": "assistant.v1" },
+        "assistant": { "$ref": "#/$defs/Assistant" },
+        "device_unlocked": {
+          "type": "boolean",
+          "description": "Whether the device is unlocked, as the platform tells the plugin. false answers assistant.device_locked."
+        },
+        "operation": { "$ref": "#/$defs/Operation" }
+      },
+      "required": ["contract", "assistant", "device_unlocked", "operation"],
+      "additionalProperties": false
+    },
+    "Assistant": {
+      "description": "The closed list of assistants. The bridge accepts only the one the shell built the plugin for.",
+      "enum": ["siri", "gemini"]
+    },
+    "ObjectName": {
+      "description": "An object's API name, from describe.",
+      "type": "string"
+    },
+    "RecordId": {
+      "description": "A record's public id.",
+      "type": "string"
+    },
+    "Cursor": {
+      "description": "A page cursor from an earlier answer, or null for the first page.",
+      "type": ["string", "null"]
+    },
+    "Values": {
+      "description": "Field API names to values, raw and typed as describe gives each field.",
+      "type": "object"
+    },
+    "Operation": {
+      "description": "The operations (ADR 0034 §3). create, update and run_action prepare a change and answer with a confirmation; only commit, with its token, writes.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "name": { "const": "describe" } },
+          "required": ["name"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "search" },
+            "text": { "type": "string", "maxLength": 255 },
+            "object": { "type": ["string", "null"] }
+          },
+          "required": ["name", "text"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "get" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "record": { "$ref": "#/$defs/RecordId" }
+          },
+          "required": ["name", "object", "record"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "list" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "conditions": {
+              "type": "array",
+              "maxItems": 5,
+              "items": { "$ref": "#/$defs/Condition" }
+            },
+            "sort": {
+              "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Sort" }]
+            },
+            "cursor": { "$ref": "#/$defs/Cursor" }
+          },
+          "required": ["name", "object"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "timeline" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "record": { "$ref": "#/$defs/RecordId" },
+            "cursor": { "$ref": "#/$defs/Cursor" }
+          },
+          "required": ["name", "object", "record"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "actions" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "record": { "type": ["string", "null"] }
+          },
+          "required": ["name", "object"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "run_action" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "action": { "type": "string" },
+            "record": { "$ref": "#/$defs/RecordId" },
+            "values": { "$ref": "#/$defs/Values" }
+          },
+          "required": ["name", "object", "action", "record"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "create" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "values": { "$ref": "#/$defs/Values" }
+          },
+          "required": ["name", "object", "values"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "update" },
+            "object": { "$ref": "#/$defs/ObjectName" },
+            "record": { "$ref": "#/$defs/RecordId" },
+            "values": { "$ref": "#/$defs/Values" }
+          },
+          "required": ["name", "object", "record", "values"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": { "const": "commit" },
+            "token": { "type": "string" }
+          },
+          "required": ["name", "token"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": { "name": { "const": "on_screen" } },
+          "required": ["name"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Condition": {
+      "description": "A typed list condition on a readable, indexed field. The bridge compiles it into the query language; an assistant never sends query text.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "test": { "enum": ["equals", "not_equals", "before", "after"] },
+            "field": { "type": "string" },
+            "value": {}
+          },
+          "required": ["test", "field", "value"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "test": { "const": "contains" },
+            "field": { "type": "string" },
+            "value": { "type": "string" }
+          },
+          "required": ["test", "field", "value"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "test": { "const": "between" },
+            "field": { "type": "string" },
+            "from": {},
+            "to": {}
+          },
+          "required": ["test", "field", "from", "to"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "test": { "const": "is_empty" },
+            "field": { "type": "string" }
+          },
+          "required": ["test", "field"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Sort": {
+      "type": "object",
+      "properties": {
+        "field": { "type": "string" },
+        "descending": { "type": "boolean" }
+      },
+      "required": ["field"],
+      "additionalProperties": false
+    },
+    "AssistantAnswer": {
+      "description": "The answer to one request: a result or an error, always under the contract version.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "contract": { "const": "assistant.v1" },
+            "result": { "$ref": "#/$defs/AssistantResult" }
+          },
+          "required": ["contract", "result"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contract": { "const": "assistant.v1" },
+            "error": { "$ref": "#/$defs/AssistantError" }
+          },
+          "required": ["contract", "error"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "AssistantError": {
+      "description": "A stable code, a fixed sentence to speak or show as it is, and for assistant.invalid the failing fields. Never compose a message.",
+      "type": "object",
+      "properties": {
+        "code": { "$ref": "#/$defs/ErrorCode" },
+        "message": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/FieldProblem" }
+        }
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    },
+    "ErrorCode": {
+      "description": "Every code, with its fixed sentence (ADR 0034 §8 and §10). assistant.object_not_exposed and assistant.not_writable may instead name the object by its plural label: \"Assistants can't reach {plural label} in Limiara.\" and \"Assistants can't change {plural label} in Limiara.\". assistant.invalid may instead say \"Another record already has that value.\", \"Use at most 5 conditions.\" or \"Nothing would change.\", and names failing fields in fields, each with its own message.",
+      "oneOf": [
+        { "const": "assistant.signed_out", "description": "Sign in to Limiara on this device first." },
+        { "const": "assistant.locked", "description": "Open Limiara while online so it can check your access." },
+        { "const": "assistant.unavailable", "description": "Limiara can't open this workspace right now." },
+        { "const": "assistant.device_locked", "description": "Unlock your device first." },
+        { "const": "assistant.disabled", "description": "Assistant access is off for this workspace." },
+        { "const": "assistant.not_found", "description": "I couldn't find that record in Limiara." },
+        { "const": "assistant.object_not_exposed", "description": "Assistants can't reach those records in Limiara." },
+        { "const": "assistant.not_writable", "description": "Assistants can't change those records in Limiara." },
+        { "const": "assistant.action_not_offered", "description": "That action isn't available to assistants." },
+        { "const": "assistant.not_permitted", "description": "You don't have access to do that in Limiara." },
+        { "const": "assistant.invalid", "description": "Some details need to change before I can do that." },
+        { "const": "assistant.confirmation_invalid", "description": "That confirmation is no longer valid. Ask again to make the change." },
+        { "const": "assistant.confirmation_stale", "description": "Something changed since you confirmed. Ask again to make the change." },
+        { "const": "assistant.not_allowed", "description": "This workspace no longer lets assistants make that change." },
+        { "const": "assistant.failed", "description": "Limiara couldn't do that right now." }
+      ]
+    },
+    "FieldProblem": {
+      "type": "object",
+      "properties": {
+        "field": { "type": "string" },
+        "label": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["field", "label", "message"],
+      "additionalProperties": false
+    },
+    "FieldType": {
+      "enum": [
+        "text", "long_text", "email", "phone", "url", "number", "currency",
+        "percent", "boolean", "date", "date_time", "picklist", "multi_picklist",
+        "lookup", "formula", "master_detail", "rollup", "related_to"
+      ]
+    },
+    "QuickActionKind": { "enum": ["update", "create"] },
+    "Uuid": { "type": "string", "format": "uuid" },
+    "DateTime": { "type": "string", "format": "date-time" },
+    "AssistantResult": {
+      "oneOf": [
+        { "$ref": "#/$defs/Description" },
+        { "$ref": "#/$defs/SearchResults" },
+        { "$ref": "#/$defs/RecordView" },
+        { "$ref": "#/$defs/RecordPage" },
+        { "$ref": "#/$defs/TimelineView" },
+        { "$ref": "#/$defs/ActionList" },
+        { "$ref": "#/$defs/Confirmation" },
+        { "$ref": "#/$defs/Committed" },
+        { "$ref": "#/$defs/OnScreen" }
+      ]
+    },
+    "Description": {
+      "description": "What describe returns: the exposed objects the member reads.",
+      "type": "object",
+      "properties": {
+        "kind": { "const": "description" },
+        "metadata_version": { "type": "integer" },
+        "objects": { "type": "array", "items": { "$ref": "#/$defs/DescribedObject" } }
+      },
+      "required": ["kind", "metadata_version", "objects"],
+      "additionalProperties": false
+    },
+    "DescribedObject": {
+      "type": "object",
+      "properties": {
+        "api_name": { "type": "string" },
+        "label": { "type": "string" },
+        "plural_label": { "type": "string" },
+        "name_label": { "type": "string" },
+        "can_create": { "type": "boolean" },
+        "can_edit": { "type": "boolean" },
+        "writable": { "type": "boolean" },
+        "timeline": { "type": "boolean" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/DescribedField" } },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/DescribedAction" } },
+        "metadata_version": { "type": "integer" }
+      },
+      "required": [
+        "api_name", "label", "plural_label", "name_label", "can_create", "can_edit",
+        "writable", "timeline", "fields", "actions", "metadata_version"
+      ],
+      "additionalProperties": false
+    },
+    "DescribedField": {
+      "type": "object",
+      "properties": {
+        "api_name": { "type": "string" },
+        "label": { "type": "string" },
+        "field_type": { "$ref": "#/$defs/FieldType" },
+        "required": { "type": "boolean" },
+        "read_only": { "type": "boolean" },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "value": { "type": "string" },
+              "label": { "type": "string" }
+            },
+            "required": ["value", "label"],
+            "additionalProperties": false
+          }
+        },
+        "reference_object": { "type": "string" }
+      },
+      "required": ["api_name", "label", "field_type", "required", "read_only"],
+      "additionalProperties": false
+    },
+    "DescribedAction": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string" },
+        "kind": { "$ref": "#/$defs/QuickActionKind" },
+        "object": { "type": "string" },
+        "target_object": { "type": "string" },
+        "fields": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "label", "kind", "object", "target_object", "fields"],
+      "additionalProperties": false
+    },
+    "RecordRef": {
+      "type": "object",
+      "properties": {
+        "object": { "type": "string" },
+        "object_label": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["object", "object_label", "id", "name"],
+      "additionalProperties": false
+    },
+    "FieldValue": {
+      "description": "One field's value, raw and as it reads. Speak or show display; value is typed data.",
+      "type": "object",
+      "properties": {
+        "field": { "type": "string" },
+        "label": { "type": "string" },
+        "field_type": { "$ref": "#/$defs/FieldType" },
+        "value": {},
+        "display": { "type": "string" }
+      },
+      "required": ["field", "label", "field_type", "value", "display"],
+      "additionalProperties": false
+    },
+    "SearchResults": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "search_results" },
+        "results": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/RecordRef" } }
+      },
+      "required": ["kind", "results"],
+      "additionalProperties": false
+    },
+    "RecordView": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "record" },
+        "object": { "type": "string" },
+        "object_label": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "integer" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/FieldValue" } },
+        "metadata_version": { "type": "integer" }
+      },
+      "required": ["kind", "object", "object_label", "id", "name", "version", "fields", "metadata_version"],
+      "additionalProperties": false
+    },
+    "RecordPage": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "records" },
+        "object": { "type": "string" },
+        "records": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/RecordRef" } },
+        "next_cursor": { "$ref": "#/$defs/Cursor" }
+      },
+      "required": ["kind", "object", "records", "next_cursor"],
+      "additionalProperties": false
+    },
+    "TimelineEntry": {
+      "type": "object",
+      "properties": {
+        "object": { "type": "string" },
+        "object_label": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "date": { "type": ["string", "null"] },
+        "open": { "type": "boolean" }
+      },
+      "required": ["object", "object_label", "id", "name", "date", "open"],
+      "additionalProperties": false
+    },
+    "TimelineView": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "timeline" },
+        "open": { "type": "array", "items": { "$ref": "#/$defs/TimelineEntry" } },
+        "past": { "type": "array", "items": { "$ref": "#/$defs/TimelineEntry" } },
+        "next_cursor": { "$ref": "#/$defs/Cursor" }
+      },
+      "required": ["kind", "open", "past", "next_cursor"],
+      "additionalProperties": false
+    },
+    "ActionList": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "actions" },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/DescribedAction" } }
+      },
+      "required": ["kind", "actions"],
+      "additionalProperties": false
+    },
+    "Confirmation": {
+      "description": "What the member confirms with the platform's own confirmation, every time, before commit: the object's label, the record's name for an update or a quick action, and each field the request sets, with its new display value.",
+      "type": "object",
+      "properties": {
+        "kind": { "const": "confirmation" },
+        "token": { "type": "string", "minLength": 1 },
+        "expires_at": { "$ref": "#/$defs/DateTime" },
+        "write": { "enum": ["create", "update", "run_action"] },
+        "object": { "type": "string" },
+        "object_label": { "type": "string" },
+        "record_name": { "type": ["string", "null"] },
+        "action_label": { "type": ["string", "null"] },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/FieldValue" } }
+      },
+      "required": ["kind", "token", "expires_at", "write", "object", "object_label", "record_name", "action_label", "changes"],
+      "additionalProperties": false
+    },
+    "Committed": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "committed" },
+        "object": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "integer" }
+      },
+      "required": ["kind", "object", "id", "name", "version"],
+      "additionalProperties": false
+    },
+    "OnScreen": {
+      "description": "The record the app shows, by id, when its object is exposed and the member reads it.",
+      "type": "object",
+      "properties": {
+        "kind": { "const": "on_screen" },
+        "workspace": { "$ref": "#/$defs/Uuid" },
+        "object": { "type": ["string", "null"] },
+        "record": { "type": ["string", "null"] }
+      },
+      "required": ["kind", "workspace", "object", "record"],
+      "additionalProperties": false
+    },
+    "IndexUpdate": {
+      "description": "One update of the index stream (ADR 0034 §7): apply it to the OS index and nothing else.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "upsert" },
+            "entry": { "$ref": "#/$defs/IndexEntry" }
+          },
+          "required": ["kind", "entry"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "remove" },
+            "workspace": { "$ref": "#/$defs/Uuid" },
+            "object": { "type": "string" },
+            "record": { "type": "string" }
+          },
+          "required": ["kind", "workspace", "object", "record"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "remove_object" },
+            "workspace": { "$ref": "#/$defs/Uuid" },
+            "object": { "type": "string" }
+          },
+          "required": ["kind", "workspace", "object"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "enum": ["remove_workspace", "rebuild"] },
+            "workspace": { "$ref": "#/$defs/Uuid" }
+          },
+          "required": ["kind", "workspace"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "refresh" },
+            "workspace": { "$ref": "#/$defs/Uuid" },
+            "expires_at": { "$ref": "#/$defs/DateTime" }
+          },
+          "required": ["kind", "workspace", "expires_at"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "IndexEntry": {
+      "type": "object",
+      "properties": {
+        "workspace": { "$ref": "#/$defs/Uuid" },
+        "object": { "type": "string" },
+        "object_label": { "type": "string" },
+        "record": { "type": "string" },
+        "name": { "type": ["string", "null"] },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": { "type": "string" },
+              "label": { "type": "string" },
+              "display": { "type": "string" }
+            },
+            "required": ["field", "label", "display"],
+            "additionalProperties": false
+          }
+        },
+        "expires_at": { "$ref": "#/$defs/DateTime" }
+      },
+      "required": ["workspace", "object", "object_label", "record", "name", "fields", "expires_at"],
+      "additionalProperties": false
+    },
+    "IndexSweep": {
+      "description": "The launch-time sweep: remove every workspace listed, and every entry that expired before remove_expired_before.",
+      "type": "object",
+      "properties": {
+        "remove_workspaces": { "type": "array", "items": { "$ref": "#/$defs/Uuid" } },
+        "remove_expired_before": { "$ref": "#/$defs/DateTime" }
+      },
+      "required": ["remove_workspaces", "remove_expired_before"],
+      "additionalProperties": false
+    }
+  }
+}

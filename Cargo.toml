@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "apps/api", "apps/worker", "apps/plugin-runner",
+  "apps/api", "apps/worker", "apps/plugin-runner", "apps/assistant-harness",
   "crates/platform-config", "crates/platform-observability", "crates/platform-db", "crates/platform-id",
   "crates/platform-permissions", "crates/platform-audit", "crates/platform-events",
   "crates/platform-outbox", "crates/platform-inbox", "crates/platform-jobs", "crates/platform-notify", "crates/platform-entitlements", "crates/platform-extensions", "crates/platform-objects", "crates/platform-objects-http", "crates/platform-device", "crates/platform-storage", "crates/platform-sync", "crates/plugin-contract",
