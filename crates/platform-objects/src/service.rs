@@ -44,6 +44,10 @@ pub struct MutationContext {
     /// `None` when it did not say. Provenance only: it never changes what
     /// the caller may do.
     pub source: Option<crate::MutationSource>,
+    /// The verified device that pushed an assistant's change (ADR 0034
+    /// §6), when `source` is the assistant: the audit entry keeps it beside
+    /// the source, so the trail still names the device.
+    pub assistant_device: Option<crate::SourceDetail>,
 }
 
 impl MutationContext {
@@ -53,6 +57,7 @@ impl MutationContext {
             causation_id: None,
             automation_id: None,
             source: None,
+            assistant_device: None,
         }
     }
 
@@ -258,6 +263,7 @@ impl ObjectService {
             causation_id: context.causation_id,
             automation_id: context.automation_id,
             source: self.source(context),
+            assistant_device: context.assistant_device,
         }
     }
 
@@ -1423,9 +1429,22 @@ impl ObjectService {
         body: &Map<String, Value>,
         context: MutationContext,
     ) -> Result<Record, ObjectError> {
+        self.create_record_marked(api_name, body, context, None)
+            .await
+    }
+
+    /// A create, re-checked against the assistant policy when `marker` says
+    /// a device's assistant made it (ADR 0034 §6).
+    pub(crate) async fn create_record_marked(
+        &self,
+        api_name: &str,
+        body: &Map<String, Value>,
+        context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
+    ) -> Result<Record, ObjectError> {
         let mut run = Run::default();
         let result = self
-            .create_record_in(api_name, body, context, &mut run)
+            .create_record_in(api_name, body, context, marker, &mut run)
             .await;
         self.keep_failed_runs(run, result).await
     }
@@ -1435,6 +1454,7 @@ impl ObjectService {
         api_name: &str,
         body: &Map<String, Value>,
         context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
         run: &mut Run,
     ) -> Result<Record, ObjectError> {
         let mut tx = self.begin().await?;
@@ -1442,6 +1462,15 @@ impl ObjectService {
         let (object, record) = self
             .create_record_tx(tx.as_mut(), &access, api_name, body, context, run)
             .await?;
+        if let Some(marker) = marker {
+            self.check_assistant_write(
+                tx.as_mut(),
+                &object,
+                crate::assistant_policy::AssistantWrite::Create,
+                marker,
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.with_formula(&object, record).await
     }
@@ -1763,14 +1792,28 @@ impl ObjectService {
         body: &Map<String, Value>,
         context: MutationContext,
     ) -> Result<Record, ObjectError> {
+        self.update_record_marked(api_name, public_id, expected_version, body, context, None)
+            .await
+    }
+
+    /// An update, re-checked against the assistant policy when `marker`
+    /// says a device's assistant made it (ADR 0034 §6).
+    pub(crate) async fn update_record_marked(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        body: &Map<String, Value>,
+        context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
+    ) -> Result<Record, ObjectError> {
         let mut run = Run::default();
         let result = self
             .update_record_in(
-                api_name,
-                public_id,
-                expected_version,
+                (api_name, public_id, expected_version),
                 body,
                 context,
+                marker,
                 &mut run,
             )
             .await;
@@ -1779,11 +1822,10 @@ impl ObjectService {
 
     async fn update_record_in(
         &self,
-        api_name: &str,
-        public_id: &str,
-        expected_version: i64,
+        (api_name, public_id, expected_version): (&str, &str, i64),
         body: &Map<String, Value>,
         context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
         run: &mut Run,
     ) -> Result<Record, ObjectError> {
         let mut tx = self.begin().await?;
@@ -1800,6 +1842,15 @@ impl ObjectService {
                 run,
             )
             .await?;
+        if let Some(marker) = marker {
+            self.check_assistant_write(
+                tx.as_mut(),
+                &object,
+                crate::assistant_policy::AssistantWrite::Update,
+                marker,
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.with_formula(&object, Self::project(&object, record))
             .await

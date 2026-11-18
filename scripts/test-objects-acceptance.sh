@@ -685,7 +685,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources assistant_settings assistant_object_policies; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -1061,6 +1061,41 @@ expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline is back"
 [[ "$(app_sql --command="SELECT count(*) FROM timeline_sources;")" == 0 ]] || fail "timeline_sources leaks rows without tenant context"
 [[ "$(sql --command="SELECT count(*) FROM timeline_sources WHERE tenant_id = '$tenant';")" == 2 ]] || fail "Task and Event are kept as timeline sources"
 
+log "assistant policy (ADR 0034 §4 and §6): off until turned on, and pushed assistant writes re-checked"
+policy="$workspace/objects/assistant-policy"
+project_policy="$workspace/objects/custom:project/assistant-policy"
+expect 200 "$(call "$viewer_cookie" GET "$policy")" "members read the assistant policy"
+[[ "$(field '.enabled')" == false && "$(field '.version')" == 0 ]] || fail "assistant access starts off: $(cat "$body")"
+[[ "$(field '[.objects[] | select(.object == "custom:project") | .exposed] | first')" == false ]] || fail "objects start off: $(cat "$body")"
+expect 403 "$(call "$viewer_cookie" PATCH "$policy" '{"expected_version":0,"enabled":true}')" "changing assistant access needs objects.manage"
+expect 400 "$(call "$member_cookie" PATCH "$project_policy" '{"expected_version":0,"writable":true}')" "writable requires exposed"
+[[ "$(field '.errors[0].code')" == assistant_policy.requires_exposed ]] || fail "policy rule code: $(cat "$body")"
+grant_code code-assistant "$verifier"
+expect 200 "$(redeem code-assistant "$verifier" "Viewer's assistant phone")" "a device that pushes an assistant's write"
+assistant_bearer="Authorization: Bearer $(field '.access_token')"
+expect 200 "$(call "$assistant_bearer" GET "$workspace/objects/custom:project/records?limit=1")" "a project the device may edit"
+spoken=$(field '.data[0].id')
+spoken_version=$(field '.data[0].version')
+marked() {
+  printf '{"operations":[{"method":"update","reference":"r0","object":"custom:project","id":"%s","expected_version":%s,"values":{"name":"Spoken"},"assistant":{"assistant":"siri"}}]}' "$spoken" "$1"
+}
+expect 200 "$(call "$assistant_bearer" POST "$workspace/composite" "$(marked "$spoken_version")")" "an assistant's write while assistant access is off"
+[[ "$(field '.results[0].status')" == 403 && "$(field '.results[0].body.code')" == assistant.not_allowed ]] || fail "refused by the policy: $(cat "$body")"
+expect 200 "$(call "$member_cookie" POST "$workspace/composite" "$(marked "$spoken_version")")" "a marker on a browser's request"
+[[ "$(field '.results[0].body.errors[0].code')" == assistant.marker_not_accepted ]] || fail "only a device's push: $(cat "$body")"
+expect 200 "$(call "$member_cookie" PATCH "$policy" '{"expected_version":0,"enabled":true}')" "turn assistant access on"
+expect 200 "$(call "$member_cookie" PATCH "$project_policy" '{"expected_version":0,"exposed":true,"writable":true,"excluded_fields":["custom:code"]}')" "let assistants write projects"
+[[ "$(field '.version')" == 1 && "$(field '.excluded_fields | join(",")')" == custom:code ]] || fail "project policy: $(cat "$body")"
+expect 200 "$(call "$assistant_bearer" POST "$workspace/composite" "$(marked "$spoken_version")")" "an assistant's write the policy allows"
+[[ "$(field '.results[0].status')" == 200 ]] || fail "allowed by the policy: $(cat "$body")"
+recorded=$(sql --command="SELECT count(*) FROM record_history WHERE tenant_id = '$tenant' AND source_kind = 'assistant' AND source_detail = 'siri';")
+(( recorded >= 1 )) || fail "history names the assistant: $recorded"
+relayed=$(sql --command="SELECT count(*) FROM audit_log WHERE tenant_id = '$tenant' AND action = 'records.record.updated' AND metadata->'source'->>'kind' = 'assistant' AND metadata->>'device_id' IS NOT NULL;")
+(( relayed >= 1 )) || fail "the audit entry keeps the device: $relayed"
+published=$(sql --command="SELECT count(*) FROM outbox WHERE tenant_id = '$tenant' AND event_type = 'platform.objects.assistant-policy-updated.v1';")
+(( published == 2 )) || fail "policy changes published: $published"
+[[ "$(app_sql --command="SELECT count(*) FROM assistant_object_policies;")" == 0 ]] || fail "assistant_object_policies leaks rows without tenant context"
+
 log "device sync (ADR 0024): the sync loop against the real API with a device token"
 # Quick actions travel with the definitions (ADR 0032 §5, #236): one made
 # here and the Activities plugin's Log a call reach the device.
@@ -1122,4 +1157,4 @@ expect 200 "$(call "$member_cookie" DELETE "$regions/$south?expected_version=3")
 expect 409 "$(call "$member_cookie" POST "$regions/$south/archive?expected_version=4")" "archive a deleted record"
 [[ "$(field '.code')" == records.deleted ]] || fail "deleted code: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'

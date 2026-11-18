@@ -225,6 +225,15 @@ impl SyncTransport for LocalTransport {
         }
     }
 
+    async fn assistant_policy(&self) -> Result<Option<Value>, SyncError> {
+        self.check()?;
+        match self.server.assistant_policy().await {
+            Ok(policy) => Ok(Some(json!(policy))),
+            Err(ObjectError::PermissionDenied | ObjectError::NotFound) => Ok(None),
+            Err(error) => Err(server_error(error)),
+        }
+    }
+
     async fn quick_actions(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError> {
         self.check()?;
         match self.server.quick_actions(api_name).await {

@@ -259,6 +259,9 @@ Plugin objects are described with `"origin": "plugin"` and
 Role permissions on a plugin object start as for a new workspace object: no
 role has any access until an administrator grants it, and only members with
 `records.view_all` or `records.modify_all` see its records before then.
+Its [assistant policy](../api/objects.md#assistant-policy) (ADR 0034 §4)
+is the workspace's too: a manifest cannot declare one, so a plugin object
+starts with assistant access off, and only an administrator turns it on.
 
 Formulas, validation rules and queries name plugin fields by their API name,
 dots and all: `SELECT name, example.tracker:milestone.name FROM

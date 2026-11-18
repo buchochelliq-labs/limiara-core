@@ -44,6 +44,45 @@ pub struct RemoteObject {
     /// does not show them to the member, which leaves the replica's actions
     /// as they are.
     pub quick_actions: Option<Vec<RemoteQuickAction>>,
+    /// The object's assistant policy (ADR 0034 §4). `None` when the server
+    /// did not send one, which the replica takes as everything off: the
+    /// policy only narrows, so a missing one never widens what the
+    /// device's assistant bridge offers.
+    pub assistant: Option<RemoteAssistantPolicy>,
+}
+
+/// An object's assistant policy by API names, as the server lists it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoteAssistantPolicy {
+    pub exposed: bool,
+    pub writable: bool,
+    pub indexable: bool,
+    /// Fields whose values never enter the OS index; `name` is the record
+    /// name.
+    pub excluded_fields: Vec<String>,
+    /// Quick actions offered to assistants, by name.
+    pub offered_actions: Vec<String>,
+    pub version: i64,
+}
+
+impl From<&crate::AssistantPolicy> for RemoteAssistantPolicy {
+    fn from(policy: &crate::AssistantPolicy) -> Self {
+        Self {
+            exposed: policy.exposed,
+            writable: policy.writable,
+            indexable: policy.indexable,
+            excluded_fields: policy.excluded_fields.clone(),
+            offered_actions: policy.offered_actions.clone(),
+            version: policy.version,
+        }
+    }
+}
+
+/// The workspace's assistant switch, as the server sends it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoteAssistantSettings {
+    pub enabled: bool,
+    pub version: i64,
 }
 
 impl RemoteObject {
@@ -120,7 +159,15 @@ impl RemoteObject {
                     .collect()
             }),
             quick_actions: None,
+            assistant: None,
         }
+    }
+
+    /// The same description with the object's assistant policy, as the
+    /// server's `GET /objects/assistant-policy` lists it.
+    pub fn with_assistant_policy(mut self, policy: &crate::AssistantPolicy) -> Self {
+        self.assistant = Some(policy.into());
+        self
     }
 
     /// The same description with the object's quick actions, as the
@@ -231,6 +278,9 @@ pub struct DefinitionsApplied {
     /// the member cannot read or an object suspended with its plugin. They
     /// stay with the server, and come back when what they need does.
     pub deferred_quick_actions: Vec<String>,
+    /// Assistant policies that changed, by object API name, and
+    /// `workspace` when the switch did (ADR 0034 §4).
+    pub assistant_policy: Vec<String>,
 }
 
 impl DefinitionsApplied {
@@ -241,6 +291,7 @@ impl DefinitionsApplied {
             && self.fields.is_empty()
             && self.rules.is_empty()
             && self.quick_actions.is_empty()
+            && self.assistant_policy.is_empty()
     }
 }
 
@@ -261,6 +312,19 @@ impl ObjectService {
     pub async fn apply_remote_definitions(
         &self,
         objects: &[RemoteObject],
+    ) -> Result<DefinitionsApplied, ObjectError> {
+        self.apply_remote_definitions_with(objects, None).await
+    }
+
+    /// [`Self::apply_remote_definitions`] with the workspace's assistant
+    /// switch, which `None` leaves as it is. Each object's assistant policy
+    /// travels with it (ADR 0034 §4), resolved to the replica's own fields
+    /// and quick actions: excluded fields and offered actions the replica
+    /// does not hold are left out, which only ever narrows.
+    pub async fn apply_remote_definitions_with(
+        &self,
+        objects: &[RemoteObject],
+        assistant: Option<RemoteAssistantSettings>,
     ) -> Result<DefinitionsApplied, ObjectError> {
         if !self.is_replica() {
             return Err(ObjectError::PermissionDenied);
@@ -385,6 +449,24 @@ impl ObjectService {
         }
         for local in &undescribed {
             put_quick_actions(tx.as_mut(), local, &[], actor, &mut applied).await?;
+        }
+
+        // The assistant policy last: it names fields and quick actions,
+        // which are now as the server describes them.
+        if let Some(settings) = assistant {
+            put_assistant_settings(tx.as_mut(), settings, actor, &mut applied).await?;
+        }
+        for remote in objects {
+            let object_id = ids
+                .get(&remote.api_name)
+                .copied()
+                .ok_or(ObjectError::Invariant)?;
+            let local = tx
+                .object_by_id(object_id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            let policy = remote.assistant.clone().unwrap_or_default();
+            put_assistant_policy(tx.as_mut(), &local, &policy, actor, &mut applied).await?;
         }
 
         // Index rows, search terms and stored formula values follow the
@@ -857,4 +939,95 @@ fn same_shape(local: &QuickAction, remote: &QuickAction) -> bool {
     local.kind == remote.kind
         && local.target_object_id == remote.target_object_id
         && local.target_field == remote.target_field
+}
+
+async fn put_assistant_settings(
+    tx: &mut dyn ObjectTx,
+    remote: RemoteAssistantSettings,
+    actor: Uuid,
+    applied: &mut DefinitionsApplied,
+) -> Result<(), ObjectError> {
+    let local = tx.assistant_settings().await?.unwrap_or_default();
+    if local.enabled == remote.enabled && local.version == remote.version.max(1) {
+        return Ok(());
+    }
+    if !local.enabled && !remote.enabled && local.version == 0 {
+        return Ok(());
+    }
+    let settings = crate::AssistantSettings {
+        enabled: remote.enabled,
+        version: remote.version.max(1),
+        updated_at: Some(Utc::now()),
+        updated_by: Some(actor),
+    };
+    if !tx.put_assistant_settings(&settings, local.version).await? {
+        return Err(ObjectError::VersionConflict);
+    }
+    applied.assistant_policy.push("workspace".to_owned());
+    Ok(())
+}
+
+/// Makes an object's assistant policy on the replica the server's, by the
+/// replica's own field and quick action ids.
+async fn put_assistant_policy(
+    tx: &mut dyn ObjectTx,
+    object: &ObjectDefinition,
+    remote: &RemoteAssistantPolicy,
+    actor: Uuid,
+    applied: &mut DefinitionsApplied,
+) -> Result<(), ObjectError> {
+    let local = crate::assistant_policy::stored_policy(tx, object.id).await?;
+    let actions = tx.quick_actions(object.id).await?;
+    let exposed = remote.exposed;
+    let mut next = crate::StoredAssistantPolicy {
+        object_id: object.id,
+        exposed,
+        writable: exposed && remote.writable,
+        indexable: exposed && remote.indexable,
+        exclude_name: remote.excluded_fields.iter().any(|name| name == "name"),
+        excluded_field_ids: remote
+            .excluded_fields
+            .iter()
+            .filter_map(|name| object.field(name).map(|field| field.id))
+            .collect(),
+        offered_action_ids: if exposed {
+            remote
+                .offered_actions
+                .iter()
+                .filter_map(|name| actions.iter().find(|action| action.name == *name))
+                .map(|action| action.id)
+                .take(crate::assistant_policy::OFFERED_ACTIONS_MAX)
+                .collect()
+        } else {
+            Vec::new()
+        },
+        version: remote.version.max(1),
+        updated_at: local.updated_at,
+        updated_by: local.updated_by,
+    };
+    let unchanged = local.version > 0
+        && local.exposed == next.exposed
+        && local.writable == next.writable
+        && local.indexable == next.indexable
+        && local.exclude_name == next.exclude_name
+        && local.excluded_field_ids == next.excluded_field_ids
+        && local.offered_action_ids == next.offered_action_ids
+        && local.version == next.version;
+    let off = next
+        == crate::StoredAssistantPolicy {
+            version: next.version,
+            updated_at: next.updated_at,
+            updated_by: next.updated_by,
+            ..crate::StoredAssistantPolicy::off(object.id)
+        };
+    if unchanged || (local.version == 0 && off) {
+        return Ok(());
+    }
+    next.updated_at = Utc::now();
+    next.updated_by = Some(actor);
+    if !tx.put_assistant_policy(&next, local.version).await? {
+        return Err(ObjectError::VersionConflict);
+    }
+    applied.assistant_policy.push(object.api_name.clone());
+    Ok(())
 }

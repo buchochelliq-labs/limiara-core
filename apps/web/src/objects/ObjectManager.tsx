@@ -1,6 +1,6 @@
 import React, {useEffect, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../components/ui';
-import {fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
+import {type AssistantPolicy, type AssistantSettings, type QuickAction, fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule} from './api';
 import {failed, objectRoute, useObject, type Load} from './ObjectPages';
 import {Automations} from './Automations';
 import {QuickActions} from './QuickActions';
@@ -43,6 +43,7 @@ export function ObjectManager({client, onNavigate, headingRef}: {client: Objects
     {(load.status === 'unavailable' || load.status === 'missing') && <div className="object-page__state"><Alert variant="danger" title="Objects could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
     {creating && <NewObjectForm client={client} onCancel={() => setCreating(false)} onCreated={object => onNavigate(managerObjectRoute(object.apiName))} />}
     {load.status === 'ready' && !canManage && <Alert variant="info" title="Read-only">You can see the objects you have access to. Ask an administrator with “Manage objects” to change them.</Alert>}
+    {canManage && <AssistantSwitch client={client} />}
     {load.status === 'ready' && load.value.objects.length === 0 && !creating && <EmptyState title="No objects yet" description={canManage ? 'Create a custom object to start keeping records.' : 'Objects you can access will appear here.'} />}
     {load.status === 'ready' && load.value.objects.length > 0 && <div className="object-table-wrap"><table className="object-table">
       <caption className="sr-only">Objects</caption>
@@ -197,6 +198,9 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState('');
   const [canManage, setCanManage] = useState(false);
+  // Bumped when the quick-action editor changes this object's actions, so
+  // the assistant form reloads the actions it may offer.
+  const [actionsRevision, setActionsRevision] = useState(0);
   const [filtering, setFiltering] = useState<string | null>(null);
   const [allowing, setAllowing] = useState<string | null>(null);
   const object = load.status === 'ready' ? load.value : undefined;
@@ -264,8 +268,9 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
         {allowing && object.fields.some(field => field.apiName === allowing) && <AllowlistForm key={`${allowing}@${object.fields.find(field => field.apiName === allowing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === allowing) ?? object.fields[0]!} onDone={message => { setAllowing(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}
-      {canManage && <QuickActions client={client} object={object} onNotice={setNotice} />}
+      {canManage && <QuickActions client={client} object={object} onNotice={setNotice} onChanged={() => setActionsRevision(value => value + 1)} />}
       {canManage && <Automations client={client} object={object} onNotice={setNotice} />}
+      {canManage && <AssistantAccess client={client} object={object} onNotice={setNotice} actionsRevision={actionsRevision} />}
       {canManage && <RecordAccessSettings client={client} object={object} onSaved={message => { setNotice(message); retry(); }} />}
       {canManage && <ObjectPermissions client={client} object={object} />}
     </>}
@@ -626,5 +631,133 @@ function RecordAccessSettings({client, object, onSaved}: {client: ObjectsClient;
       : <RecordAccessFields sharingModel={sharingModel} grantHierarchy={grantHierarchy} onSharingModel={setSharingModel} onGrantHierarchy={setGrantHierarchy} />}
     <label className="object-checkbox"><input type="checkbox" checked={trackHistory} onChange={event => setTrackHistory(event.target.checked)} />Track field history: when records are created, deleted and restored, name and owner changes, and the fields marked below</label>
     <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!changed}>Save record settings</Button></div>
+  </form>;
+}
+
+type SectionLoad<T> = {status: 'loading'} | {status: 'ready'; value: T} | {status: 'denied'} | {status: 'failed'};
+
+/** A failed load as a section state: a refusal is shown as such, anything else can be tried again. */
+const sectionFailure = <T,>(reason: unknown): SectionLoad<T> => reason instanceof ObjectsApiError && reason.reason === 'denied' ? {status: 'denied'} : {status: 'failed'};
+
+/** Setup → Object Manager → Assistant access (ADR 0034 §4): the workspace switch, off until an administrator turns it on. */
+export function AssistantSwitch({client}: {client: Pick<ObjectsClient, 'assistantSettings' | 'updateAssistantSettings'>}) {
+  const [load, setLoad] = useState<SectionLoad<AssistantSettings>>({status: 'loading'});
+  const [attempt, setAttempt] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{variant: 'success' | 'danger' | 'warning'; text: string} | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoad({status: 'loading'});
+    client.assistantSettings(controller.signal)
+      .then(value => { if (!controller.signal.aborted) setLoad({status: 'ready', value}); })
+      .catch(reason => { if (!controller.signal.aborted) setLoad(sectionFailure(reason)); });
+    return () => controller.abort();
+  }, [client, attempt]);
+  const toggle = async (settings: AssistantSettings, enabled: boolean) => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const value = await client.updateAssistantSettings(settings.version, enabled);
+      setLoad({status: 'ready', value});
+      setMessage({variant: 'success', text: enabled ? 'Assistant access is on. Choose below, object by object, what assistants may reach.' : 'Assistant access is off. Devices stop offering records to assistants on their next sync.'});
+    } catch (reason) {
+      if (reason instanceof ObjectsApiError && reason.reason === 'denied') setMessage({variant: 'warning', text: 'You do not have permission to change assistant access.'});
+      else setMessage({variant: 'danger', text: issuesText(reason, 'Assistant access could not be changed.').message});
+      if (reason instanceof ObjectsApiError && reason.reason === 'conflict') setAttempt(value => value + 1);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <section className="object-section" aria-labelledby="assistant-switch-heading" aria-busy={load.status === 'loading' || saving}>
+    <h2 id="assistant-switch-heading">Assistant access</h2>
+    <p>Lets members use Siri or Gemini with Limiara on their phones. Assistants act as the member: they never reach a record or field the member cannot, and every change they make is confirmed by the member first. Each object stays off until you expose it.</p>
+    {message && <Alert variant={message.variant} title={message.text} />}
+    {load.status === 'loading' && <Skeleton label="Loading assistant access" lines={1} />}
+    {load.status === 'denied' && <Alert variant="warning" title="Permission needed">You do not have permission to see assistant access.</Alert>}
+    {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Assistant access could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
+    {load.status === 'ready' && <label className="object-checkbox"><input type="checkbox" checked={load.value.enabled} disabled={saving} onChange={event => void toggle(load.value, event.target.checked)} />Allow assistant access in this workspace</label>}
+  </section>;
+}
+
+type AssistantData = {policy: AssistantPolicy; actions: QuickAction[]; settings: AssistantSettings};
+
+/** The record name and every field, as the index can exclude them. */
+export function indexFields(object: ObjectDescription): {apiName: string; label: string}[] {
+  return [{apiName: 'name', label: object.nameLabel}, ...object.fields.map(field => ({apiName: field.apiName, label: field.label}))];
+}
+
+/** One object's assistant policy (ADR 0034 §4): exposed, writable, indexable with excluded fields, and the quick actions offered. */
+export function AssistantAccess({client, object, onNotice, actionsRevision = 0}: {client: Pick<ObjectsClient, 'assistantPolicy' | 'updateAssistantPolicy' | 'assistantSettings' | 'quickActions'>; object: ObjectDescription; onNotice: (message: string) => void; actionsRevision?: number}) {
+  const [load, setLoad] = useState<SectionLoad<AssistantData>>({status: 'loading'});
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoad({status: 'loading'});
+    Promise.all([client.assistantPolicy(object.apiName, controller.signal), client.quickActions(object.apiName, controller.signal), client.assistantSettings(controller.signal)])
+      .then(([policy, actions, settings]) => { if (!controller.signal.aborted) setLoad({status: 'ready', value: {policy, actions, settings}}); })
+      .catch(reason => { if (!controller.signal.aborted) setLoad(sectionFailure(reason)); });
+    return () => controller.abort();
+  }, [client, object.apiName, attempt, actionsRevision]);
+  return <section className="object-section" aria-labelledby="assistant-access-heading" aria-busy={load.status === 'loading'}>
+    <h2 id="assistant-access-heading">Assistant access</h2>
+    <p>What Siri and Gemini may reach on members' phones. It only narrows: assistants act as the member and never reach what the member cannot. Everything is off until you turn it on.</p>
+    {load.status === 'loading' && <Skeleton label="Loading assistant access" lines={3} />}
+    {load.status === 'denied' && <Alert variant="warning" title="Permission needed">You do not have permission to see assistant access for {object.label}.</Alert>}
+    {load.status === 'failed' && <div className="object-page__state"><Alert variant="danger" title="Assistant access could not be loaded">Try again in a moment.</Alert><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>}
+    {load.status === 'ready' && <AssistantPolicyForm key={`${load.value.policy.version}:${load.value.actions.map(action => action.name).join(',')}`} client={client} object={object} data={load.value} onSaved={message => { onNotice(message); setAttempt(value => value + 1); }} onStale={() => setAttempt(value => value + 1)} />}
+  </section>;
+}
+
+export function AssistantPolicyForm({client, object, data, onSaved, onStale}: {client: Pick<ObjectsClient, 'updateAssistantPolicy'>; object: ObjectDescription; data: AssistantData; onSaved: (message: string) => void; onStale: () => void}) {
+  const {policy, actions, settings} = data;
+  const [exposed, setExposed] = useState(policy.exposed);
+  const [writable, setWritable] = useState(policy.writable);
+  const [indexable, setIndexable] = useState(policy.indexable);
+  const [excluded, setExcluded] = useState<string[]>(policy.excludedFields);
+  const [offered, setOffered] = useState<string[]>(policy.offeredActions);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<{message: string; issues: ValidationIssue[]; denied: boolean} | null>(null);
+  const toggle = (list: string[], item: string, on: boolean) => on ? [...list.filter(value => value !== item), item] : list.filter(value => value !== item);
+  const expose = (on: boolean) => {
+    setExposed(on);
+    if (!on) { setWritable(false); setIndexable(false); setOffered([]); }
+  };
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await client.updateAssistantPolicy(object.apiName, policy.version, {exposed, writable, indexable, excluded_fields: excluded, offered_actions: offered});
+      onSaved(exposed ? `Assistant access for ${object.pluralLabel.toLowerCase()} saved. Devices take it on their next sync.` : `Assistants can no longer reach ${object.pluralLabel.toLowerCase()}. Devices remove them on their next sync.`);
+    } catch (reason) {
+      const denied = reason instanceof ObjectsApiError && reason.reason === 'denied';
+      setError({...issuesText(reason, 'Assistant access could not be saved.'), denied});
+      if (reason instanceof ObjectsApiError && reason.reason === 'conflict') onStale();
+    } finally {
+      setSaving(false);
+    }
+  };
+  const fieldLabel = (apiName: string) => indexFields(object).find(field => field.apiName === apiName)?.label ?? apiName;
+  const changed = exposed !== policy.exposed || writable !== policy.writable || indexable !== policy.indexable
+    || excluded.join('\n') !== policy.excludedFields.join('\n') || offered.join('\n') !== policy.offeredActions.join('\n');
+  return <form className="object-form" onSubmit={event => void save(event)} aria-label={`Assistant access for ${object.label}`}>
+    {!settings.enabled && <Alert variant="info" title="Assistant access is off for this workspace">These settings apply once it is turned on in Object Manager.</Alert>}
+    {error && <Alert variant={error.denied ? 'warning' : 'danger'} title={error.denied ? 'You do not have permission to change assistant access.' : error.message}><Issues issues={error.issues.map(issue => ({...issue, field: issue.field.replace(/^excluded_fields\./, '').replace(/^offered_actions\./, '')}))} /></Alert>}
+    <label className="object-checkbox"><input type="checkbox" checked={exposed} onChange={event => expose(event.target.checked)} />Assistants can find and read {object.pluralLabel.toLowerCase()}</label>
+    <label className="object-checkbox"><input type="checkbox" checked={writable} disabled={!exposed} onChange={event => setWritable(event.target.checked)} />Assistants can create and update {object.pluralLabel.toLowerCase()}, after the member confirms each change</label>
+    <label className="object-checkbox"><input type="checkbox" checked={indexable} disabled={!exposed} onChange={event => setIndexable(event.target.checked)} />Devices may add {object.pluralLabel.toLowerCase()} to the phone's search index</label>
+    {indexable && <fieldset className="object-fieldset">
+      <legend>Fields kept out of the index</legend>
+      <span className="ui-field__description">The phone's index is outside Limiara's encryption. Values of the fields you choose never enter it.</span>
+      {indexFields(object).map(field => <label key={field.apiName} className="object-checkbox"><input type="checkbox" checked={excluded.includes(field.apiName)} onChange={event => setExcluded(current => toggle(current, field.apiName, event.target.checked))} />{field.label}</label>)}
+    </fieldset>}
+    <fieldset className="object-fieldset" disabled={!exposed}>
+      <legend>Quick actions offered to assistants</legend>
+      {actions.length === 0 && <p className="object-value--empty">This object has no quick actions.</p>}
+      {actions.length > 0 && <span className="ui-field__description">An action can be offered only when the object it writes lets assistants create and update records.</span>}
+      {actions.map(action => <label key={action.name} className="object-checkbox"><input type="checkbox" checked={offered.includes(action.name)} onChange={event => setOffered(current => toggle(current, action.name, event.target.checked))} />{action.label}</label>)}
+    </fieldset>
+    {indexable && excluded.length > 0 && <p className="object-form__meta">Kept out of the index: {excluded.map(fieldLabel).join(', ')}.</p>}
+    <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!changed}>Save assistant access</Button></div>
   </form>;
 }

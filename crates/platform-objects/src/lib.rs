@@ -14,11 +14,14 @@
 //! - [`store`] is the storage port with PostgreSQL and SQLite adapters.
 //! - [`quick_actions`] holds administrator-defined record shortcuts
 //!   (ADR 0032).
+//! - [`assistant_policy`] decides what a device's assistant bridge may
+//!   reach (ADR 0034 §4).
 //! - [`service`] authorises, validates and records evidence for every change.
 //! - [`plugin_objects`] installs, upgrades, suspends and resumes the objects
 //!   a plugin declares (ADR 0033 §2).
 
 pub mod access;
+pub mod assistant_policy;
 pub mod automation;
 pub mod bulk;
 pub mod composite;
@@ -48,6 +51,10 @@ pub mod timeline;
 pub mod values;
 
 pub use access::{ObjectAccess, ObjectCaller};
+pub use assistant_policy::{
+    AssistantMarker, AssistantPolicy, AssistantSettings, MarkedQuickAction, StoredAssistantPolicy,
+    UpdateAssistantPolicy, UpdateAssistantSettings, WorkspaceAssistantPolicy,
+};
 pub use model::*;
 pub use plugin_objects::PluginObjectsInstalled;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};
@@ -58,7 +65,8 @@ pub use replica::{
     TrustedClock, TrustedInstant,
 };
 pub use replica_definitions::{
-    DefinitionsApplied, RemoteField, RemoteObject, RemoteQuickAction, RemoteRollup, RemoteRule,
+    DefinitionsApplied, RemoteAssistantPolicy, RemoteAssistantSettings, RemoteField, RemoteObject,
+    RemoteQuickAction, RemoteRollup, RemoteRule,
 };
 pub use replica_observer::{
     LocalChange, LocalChanges, ReplicaEvent, ReplicaObserver, RetiredObject,

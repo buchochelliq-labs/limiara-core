@@ -798,6 +798,41 @@ CREATE INDEX records_tenant_archived_idx ON records (tenant_id, object_id, archi
   WHERE archived_at IS NOT NULL AND deleted_at IS NULL;
 "#,
     },
+    // The assistant policy (ADR 0034 §4): the workspace switch and each
+    // object's settings, all off until an administrator turns them on.
+    // Fields and quick actions are kept by id.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0032_assistant_policy",
+        sql: r#"
+CREATE TABLE assistant_settings (
+  tenant_id TEXT NOT NULL PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+CREATE TABLE assistant_object_policies (
+  tenant_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  exposed INTEGER NOT NULL DEFAULT 0 CHECK (exposed IN (0, 1)),
+  writable INTEGER NOT NULL DEFAULT 0 CHECK (writable IN (0, 1)),
+  indexable INTEGER NOT NULL DEFAULT 0 CHECK (indexable IN (0, 1)),
+  exclude_name INTEGER NOT NULL DEFAULT 0 CHECK (exclude_name IN (0, 1)),
+  excluded_field_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(excluded_field_ids)
+    AND json_type(excluded_field_ids) = 'array'),
+  offered_action_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(offered_action_ids)
+    AND json_type(offered_action_ids) = 'array' AND json_array_length(offered_action_ids) <= 10),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  CHECK (exposed = 1 OR writable = 0),
+  CHECK (exposed = 1 OR indexable = 0),
+  CHECK (exposed = 1 OR json_array_length(offered_action_ids) = 0),
+  PRIMARY KEY (tenant_id, object_id)
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -2753,6 +2788,147 @@ impl ObjectTx for SqliteObjectTx {
         .bind(expected_version)
         .execute(&mut *self.tx)
         .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn assistant_settings(
+        &mut self,
+    ) -> Result<Option<crate::AssistantSettings>, ObjectError> {
+        let row = sqlx::query(
+            "SELECT enabled, version, updated_at, updated_by FROM assistant_settings \
+             WHERE tenant_id = ?1",
+        )
+        .bind(&self.tenant)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.map(|row| {
+            Ok(crate::AssistantSettings {
+                enabled: flag(&row, "enabled")?,
+                version: row.try_get("version")?,
+                updated_at: Some(time(&row, "updated_at")?),
+                updated_by: optional_uuid(&row, "updated_by")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn put_assistant_settings(
+        &mut self,
+        settings: &crate::AssistantSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let updated_at = timestamp(settings.updated_at.unwrap_or_else(Utc::now));
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO assistant_settings (tenant_id, enabled, version, updated_at, updated_by) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (tenant_id) DO NOTHING",
+            )
+            .bind(&self.tenant)
+            .bind(i64::from(settings.enabled))
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(text(settings.updated_by))
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE assistant_settings SET enabled = ?1, version = ?2, updated_at = ?3, \
+                 updated_by = ?4 WHERE tenant_id = ?5 AND version = ?6",
+            )
+            .bind(i64::from(settings.enabled))
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(text(settings.updated_by))
+            .bind(&self.tenant)
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn assistant_policies(
+        &mut self,
+    ) -> Result<Vec<crate::StoredAssistantPolicy>, ObjectError> {
+        let rows = sqlx::query(
+            "SELECT object_id, exposed, writable, indexable, exclude_name, excluded_field_ids, \
+             offered_action_ids, version, updated_at, updated_by \
+             FROM assistant_object_policies WHERE tenant_id = ?1 ORDER BY object_id",
+        )
+        .bind(&self.tenant)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let ids = |column: &str| -> Result<Vec<Uuid>, ObjectError> {
+                    serde_json::from_str(&row.try_get::<String, _>(column)?)
+                        .map_err(|_| ObjectError::Invariant)
+                };
+                Ok(crate::StoredAssistantPolicy {
+                    object_id: uuid(row, "object_id")?,
+                    exposed: flag(row, "exposed")?,
+                    writable: flag(row, "writable")?,
+                    indexable: flag(row, "indexable")?,
+                    exclude_name: flag(row, "exclude_name")?,
+                    excluded_field_ids: ids("excluded_field_ids")?,
+                    offered_action_ids: ids("offered_action_ids")?,
+                    version: row.try_get("version")?,
+                    updated_at: time(row, "updated_at")?,
+                    updated_by: optional_uuid(row, "updated_by")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn put_assistant_policy(
+        &mut self,
+        policy: &crate::StoredAssistantPolicy,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let excluded = encode(&policy.excluded_field_ids)?;
+        let offered = encode(&policy.offered_action_ids)?;
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO assistant_object_policies (tenant_id, object_id, exposed, writable, \
+                 indexable, exclude_name, excluded_field_ids, offered_action_ids, version, \
+                 updated_at, updated_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+                 ON CONFLICT (tenant_id, object_id) DO NOTHING",
+            )
+            .bind(&self.tenant)
+            .bind(policy.object_id.to_string())
+            .bind(i64::from(policy.exposed))
+            .bind(i64::from(policy.writable))
+            .bind(i64::from(policy.indexable))
+            .bind(i64::from(policy.exclude_name))
+            .bind(excluded)
+            .bind(offered)
+            .bind(policy.version)
+            .bind(timestamp(policy.updated_at))
+            .bind(text(policy.updated_by))
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE assistant_object_policies SET exposed = ?1, writable = ?2, indexable = ?3, \
+                 exclude_name = ?4, excluded_field_ids = ?5, offered_action_ids = ?6, version = ?7, \
+                 updated_at = ?8, updated_by = ?9 \
+                 WHERE tenant_id = ?10 AND object_id = ?11 AND version = ?12",
+            )
+            .bind(i64::from(policy.exposed))
+            .bind(i64::from(policy.writable))
+            .bind(i64::from(policy.indexable))
+            .bind(i64::from(policy.exclude_name))
+            .bind(excluded)
+            .bind(offered)
+            .bind(policy.version)
+            .bind(timestamp(policy.updated_at))
+            .bind(text(policy.updated_by))
+            .bind(&self.tenant)
+            .bind(policy.object_id.to_string())
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
         Ok(result.rows_affected() == 1)
     }
 
