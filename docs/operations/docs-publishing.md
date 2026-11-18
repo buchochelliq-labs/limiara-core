@@ -31,6 +31,21 @@ The workflow never uses `pull_request_target`, and the preview deploy job reject
 6. Merge through protected `main`, approve `docs-production`, and verify the generated Pages domain.
 7. Add `docs.limiara.org` only after DNS and brand approval. The canonical sitemap and social URL already target that domain, so do not announce it before DNS works.
 
+## The Zensical site
+
+The Zensical build of the same pages (`apps/docs-zensical`, under evaluation in [ADR 0008](../adr/0008-vitepress-documentation-platform.md)) deploys through its own workflow, `docs-zensical-deploy`, to its own Pages project. It follows the same model as the VitePress site: the `docs-zensical-publish-build` job holds no secrets, previews deploy only for pull requests from this repository, production deploys from `main`, and a manual run takes `deployment_environment` and `source_ref` for a preview or a rollback.
+
+It reuses the `docs-preview` and `docs-production` environments, their tokens and their protection; the Pages Edit token already reaches every project in the account. Each environment needs one more variable, `CLOUDFLARE_ZENSICAL_PAGES_PROJECT`, the Zensical project's name. The site is never indexed: `scripts/prepare_deployment.py` makes `robots.txt` disallow everything, sends `X-Robots-Tag: noindex, nofollow` on every response through `_headers`, drops the sitemap (it lists the canonical domain) and writes `deployment.json`. Give the project only its `pages.dev` domain; do not point `docs.limiara.org` or another public name at it while it is under evaluation.
+
+To activate it:
+
+1. Create a second Direct Upload Pages project and record its `pages.dev` domain.
+2. Add `CLOUDFLARE_ZENSICAL_PAGES_PROJECT` to both `docs-preview` and `docs-production`.
+3. Run `docs-zensical-deploy` manually with `deployment_environment=preview`, and check that `deployment.json` says `zensical` and `preview`, `robots.txt` disallows `/`, and responses carry `X-Robots-Tag: noindex, nofollow`.
+4. Set the repository variable `DOCS_ZENSICAL_DEPLOY_ENABLED=true`. It is separate from `DOCS_DEPLOY_ENABLED`, so either site can be switched on or off alone.
+
+Retire it by setting `DOCS_ZENSICAL_DEPLOY_ENABLED` to `false`, deleting the Pages project and removing the variable.
+
 ## Release verification
 
 For preview and production, verify the home page, a clean article URL, the custom 404, `/getting-started`, `/api`, `sitemap.xml`, `robots.txt`, `_headers` behavior, and `deployment.json`. Assets use immutable caching; HTML revalidates; the sitemap has a one-hour cache. A rollback must therefore replace HTML immediately while content-addressed assets remain safely cached.
