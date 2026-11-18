@@ -298,6 +298,49 @@ binding, without re-implementing any of it:
    reference world from Swift or Kotlin, and can replay a script's world
    and index steps in between.
 
+## Plugins an app adds
+
+The shell names its own plugins (`device-keystore`, `device-browser`,
+`device-push` and, in debug builds, `device-route-probe`). An app crate
+built on the shell can link more native plugins without the shell naming
+them. It depends on the `device-shell` library with its `entry-point`
+feature off (the shell's own `app::run`, its Tauri configuration and its
+web build), declares its own mobile entry point with its own Tauri
+configuration, and builds the app with `device_shell::app::AppBuilder`:
+
+```rust
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let built = PluginDeclaration::new("device-example", &["device.route_context"])
+        .map_err(|error| error.to_string())
+        .and_then(|declaration| {
+            AppPlugin::new(declaration, example::init(), |app, grant| {
+                let routes = grant.route_context().map_err(|error| error.to_string())?;
+                example::follow(app, routes);
+                Ok(())
+            })
+            .and_then(|plugin| AppBuilder::new().plugin(plugin))
+            .map_err(|error| error.to_string())
+        });
+    match built {
+        Ok(builder) => builder.run(tauri::generate_context!()),
+        Err(error) => eprintln!("the app could not start: {error}"),
+    }
+}
+```
+
+- **The plugin** is registered with Tauri before the app starts, after the
+  shell's own. Its declaration names it: a declaration for another plugin
+  is refused (`device.plugin_name_mismatch`), as is a name the shell uses
+  (`device.plugin_reserved`) or one added twice (`device.plugin_duplicate`).
+- **The start function** runs once, after the controller has reopened what
+  the device holds, with the grant the controller builds from the
+  declaration: exactly what it names, as for the shell's own plugins. A
+  plugin that cannot start is logged and left out; the app goes on.
+- **Nothing widens.** An extra plugin has the same local capabilities as
+  any other, and the same limits: the web view reaches none of them, and
+  records are read through the engine as the member.
+
 ## The route probe
 
 `apps/device-shell/src-tauri/route-probe` is the reference: a debug-build

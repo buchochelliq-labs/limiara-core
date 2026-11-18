@@ -2,6 +2,7 @@
 //! desktop binary and the mobile entry point (Tauri builds the iOS and
 //! Android apps from this library).
 
+use crate::extend::{ExtensionError, ExtraPlugin, ExtraPlugins};
 use crate::{start_url, Asset, Assets, Shell, SCHEME};
 use platform_device::app::{AppSettings, Browser, Controller, Redirects, Services};
 use std::sync::Arc;
@@ -221,21 +222,70 @@ fn device_name() -> String {
 }
 
 /// Builds and runs the app: the desktop binary's `main`, and the entry point
-/// the iOS and Android projects call.
+/// the iOS and Android projects call. An app crate that links native
+/// plugins of its own builds the app with [`AppBuilder`] and its own Tauri
+/// configuration instead, and turns this crate's `entry-point` feature off,
+/// so that its own entry point is the only one.
+#[cfg(feature = "entry-point")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    AppBuilder::new().run(tauri::generate_context!());
+}
+
+/// An extra native plugin for [`AppBuilder`]: its start function gets the
+/// Tauri app and the plugin's grant.
+pub type AppPlugin = ExtraPlugin<tauri::App<tauri::Wry>>;
+
+/// The app with native plugins beyond the shell's own (`crate::extend`).
+/// Each plugin is registered with Tauri before the app starts and started
+/// once the controller has reopened what the device holds, with the grant
+/// its declaration earns and nothing more.
+#[derive(Debug, Default)]
+pub struct AppBuilder {
+    plugins: ExtraPlugins<tauri::App<tauri::Wry>>,
+}
+
+impl AppBuilder {
+    /// The shell with its own plugins only.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a native plugin. A name the shell or an earlier plugin
+    /// already uses is refused.
+    pub fn plugin(mut self, plugin: AppPlugin) -> Result<Self, ExtensionError> {
+        self.plugins.add(plugin)?;
+        Ok(self)
+    }
+
+    /// The extra plugins' names, in the order they were added.
+    pub fn plugin_names(&self) -> Vec<&str> {
+        self.plugins.names()
+    }
+
+    /// Builds and runs the app with `context`, the app crate's
+    /// `tauri::generate_context!()`.
+    pub fn run(self, context: tauri::Context<tauri::Wry>) {
+        run_with(self.plugins, context);
+    }
+}
+
+fn run_with(plugins: ExtraPlugins<tauri::App<tauri::Wry>>, context: tauri::Context<tauri::Wry>) {
     let shell: Arc<std::sync::OnceLock<Shell>> = Arc::new(std::sync::OnceLock::new());
     let handler_shell = shell.clone();
-    let builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(device_keystore::init())
         .plugin(device_browser::init())
         .plugin(device_push::init());
     // The route probe is a test plugin (ADR 0034 §9): debug builds only.
-    let builder = if cfg!(debug_assertions) {
-        builder.plugin(device_route_probe::init())
-    } else {
-        builder
-    };
+    if cfg!(debug_assertions) {
+        builder = builder.plugin(device_route_probe::init());
+    }
+    let mut extra = Vec::new();
+    let pending = plugins.register(|plugin| extra.push(plugin));
+    for plugin in extra {
+        builder = builder.plugin_boxed(plugin);
+    }
     let result = builder
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let shell = handler_shell.clone();
@@ -293,6 +343,14 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 start_route_probe(app, opened.clone());
             }
+            // Extra plugins start once the controller has reopened what
+            // the device holds, each with its own grant.
+            let controller = opened.controller().clone();
+            for (name, outcome) in pending.start(app, |declaration| controller.grant(declaration)) {
+                if let Err(error) = outcome {
+                    eprintln!("the plugin {name} did not start: {error}");
+                }
+            }
             let _ = shell.set(opened);
             let url = start_url()
                 .parse()
@@ -303,7 +361,7 @@ pub fn run() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .run(context);
     if let Err(error) = result {
         eprintln!("Limiara could not start: {error}");
         std::process::exit(1);

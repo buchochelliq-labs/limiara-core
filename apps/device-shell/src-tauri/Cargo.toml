@@ -19,6 +19,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [[bin]]
 name = "device-shell"
 path = "src/main.rs"
+required-features = ["entry-point"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -57,8 +58,14 @@ tempfile = "3"
 
 [features]
 # Serve the embedded web build rather than a development server.
-default = ["custom-protocol"]
+default = ["custom-protocol", "entry-point"]
 custom-protocol = ["tauri/custom-protocol"]
+# The shell's own app: `app::run` with this crate's Tauri configuration and
+# web build, the desktop binary and the iOS and Android entry point. An app
+# crate that builds the app with `app::AppBuilder`, its own configuration
+# and native plugins of its own turns it off, so the mobile library has
+# exactly one entry point and this crate embeds no web build.
+entry-point = []
 
 [lints.rust]
 unsafe_code = "forbid"

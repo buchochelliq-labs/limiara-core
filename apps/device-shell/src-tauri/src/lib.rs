@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod app;
+pub mod extend;
 pub mod fixture;
 pub mod keychain;
 #[cfg(any(mobile, test))]
