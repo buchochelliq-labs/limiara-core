@@ -207,6 +207,14 @@ pub struct ObjectFieldDecl {
     /// A lookup's delete behaviour; `clear` when left out.
     #[serde(default)]
     pub delete_behaviour: Option<ObjectDeleteBehaviour>,
+    /// The permission a member needs to read the field's values (G5 of
+    /// ADR 0035); one this plugin declares.
+    #[serde(default)]
+    pub read_permission: Option<String>,
+    /// The permission a member needs, on top of reading, to change the
+    /// field's values; one this plugin declares.
+    #[serde(default)]
+    pub write_permission: Option<String>,
 }
 
 /// The engine field types a plugin may declare. Formula, master-detail and
@@ -356,16 +364,19 @@ fn printable(text: &str, max: usize) -> bool {
 }
 
 /// Validates a plugin's object declarations. `dependencies` are the plugin
-/// ids the manifest declares as dependencies.
+/// ids the manifest declares as dependencies, and `permissions` the
+/// permission ids it declares, which are the only ones its fields may name.
 pub fn validate_objects<'a>(
     plugin_id: &str,
     objects: &[ObjectDecl],
     dependencies: impl IntoIterator<Item = &'a str>,
+    permissions: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), ObjectDeclIssue> {
     if objects.is_empty() {
         return Ok(());
     }
     let dependencies: std::collections::BTreeSet<&str> = dependencies.into_iter().collect();
+    let permissions: std::collections::BTreeSet<&str> = permissions.into_iter().collect();
     let object_issue = |object: &ObjectDecl, reason| ObjectDeclIssue {
         object: object.name.clone(),
         field: None,
@@ -451,6 +462,16 @@ pub fn validate_objects<'a>(
                 return Err(issue("duplicate field name"));
             }
             validate_field(plugin_id, &names, &dependencies, field).map_err(issue)?;
+            for permission in [&field.read_permission, &field.write_permission]
+                .into_iter()
+                .flatten()
+            {
+                if !permissions.contains(permission.as_str()) {
+                    return Err(issue(
+                        "read and write permissions must be declared by this plugin",
+                    ));
+                }
+            }
         }
         if object.related_actions.len() > MAX_PLUGIN_RELATED_ACTIONS {
             return Err(object_issue(

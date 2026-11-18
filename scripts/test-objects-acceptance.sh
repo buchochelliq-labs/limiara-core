@@ -286,6 +286,46 @@ expect 200 "$(call "$viewer_cookie" PATCH "$workspace/objects/custom:project/rec
   "{\"expected_version\":$apollo_version,\"name\":\"Apollo Prime\"}")" "viewer edits once granted"
 [[ "$(field '.updated_by.id')" == "$viewer" ]] || fail "updated_by is the viewer"
 
+log "field permissions (G5 of ADR 0035): hidden from reads and queries, refused on writes"
+expect 200 "$(call "$member_cookie" GET "$workspace/field-permissions")" "the permission catalog"
+[[ "$(field '[.data[].id] | index("objects.manage") != null')" == true ]] || fail "catalog lists objects.manage: $(cat "$body")"
+expect 403 "$(call "$viewer_cookie" GET "$workspace/field-permissions")" "members do not list the catalog"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects" \
+  '{"name":"payroll","label":"Payroll","plural_label":"Payrolls","in_navigation":false,"searchable":false}')" "create payroll"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:payroll/fields" \
+  '{"name":"salary","label":"Salary","field_type":"number","indexed":true,"read_permission":"objects.manage"}')" "hidden salary field"
+[[ "$(field '.read_permission')" == objects.manage ]] || fail "read permission stored: $(cat "$body")"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:payroll/fields" \
+  '{"name":"grade","label":"Grade","field_type":"text","write_permission":"objects.manage"}')" "read-only grade field"
+expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:payroll/fields" \
+  '{"name":"bonus","label":"Bonus","field_type":"number","read_permission":"payroll.bonus.read"}')" "a permission outside the catalog"
+[[ "$(field '.errors[0].code')" == objects.field_permission_unknown ]] || fail "unknown permission code: $(cat "$body")"
+expect 200 "$(call "$member_cookie" PUT "$workspace/objects/custom:payroll/permissions/$viewer_role" '{"edit":true}')" "viewer edits payroll"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:payroll/records" \
+  '{"name":"Ada","custom:salary":5200,"custom:grade":"B"}')" "payroll record"
+payroll=$(field '.id')
+payroll_version=$(field '.version')
+expect 200 "$(call "$viewer_cookie" GET "$workspace/objects/custom:payroll")" "viewer describes payroll"
+[[ "$(field '[.fields[].api_name] | join(",")')" == "custom:grade" ]] || fail "viewer sees only readable fields: $(cat "$body")"
+[[ "$(field '.fields[0].access.edit')" == false ]] || fail "grade is read-only to the viewer"
+expect 200 "$(call "$viewer_cookie" GET "$workspace/objects/custom:payroll/records/$payroll")" "viewer reads payroll"
+[[ "$(field 'has("custom:salary")')" == false && "$(field '."custom:grade"')" == B ]] || fail "salary hidden from the viewer: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:payroll/records/$payroll")" "administrator reads payroll"
+[[ "$(field '."custom:salary" == 5200')" == true ]] || fail "salary for its permission holders: $(cat "$body")"
+expect 400 "$(call "$viewer_cookie" GET "$workspace/query?q=$(jq -rn --arg q 'SELECT custom:salary FROM custom:payroll' '$q | @uri')")" "query a hidden field"
+[[ "$(field '.errors[0].code')" == query.field_unknown ]] || fail "hidden field is unknown to queries: $(cat "$body")"
+expect 400 "$(call "$viewer_cookie" PATCH "$workspace/objects/custom:payroll/records/$payroll" \
+  "{\"expected_version\":$payroll_version,\"custom:salary\":1}")" "write a hidden field"
+[[ "$(field '.errors[0].code')" == records.field_unknown ]] || fail "hidden field is unknown to writes: $(cat "$body")"
+expect 403 "$(call "$viewer_cookie" PATCH "$workspace/objects/custom:payroll/records/$payroll" \
+  "{\"expected_version\":$payroll_version,\"custom:grade\":\"A\"}")" "write a read-only field"
+[[ "$(field '.code')" == records.field_not_writable && "$(field '.errors[0].field')" == custom:grade ]] || fail "read-only refusal: $(cat "$body")"
+expect 200 "$(call "$viewer_cookie" PATCH "$workspace/objects/custom:payroll/records/$payroll" \
+  "{\"expected_version\":$payroll_version,\"name\":\"Ada L.\",\"custom:grade\":\"B\"}")" "an unchanged read-only value"
+[[ "$(field 'has("custom:salary")')" == false ]] || fail "the answer hides salary: $(cat "$body")"
+stored=$(sql --command="SELECT (data->>'custom:salary')::numeric = 5200 FROM records WHERE public_id = '$payroll';")
+[[ "$stored" == t ]] || fail "the viewer's edit kept the hidden value: $stored"
+
 log "fields can be retired; values disappear from records"
 expect 200 "$(call "$member_cookie" DELETE "$workspace/objects/custom:project/fields/custom:budget?expected_version=1")" "delete budget field"
 expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:project/records/$apollo")" "read after field delete"

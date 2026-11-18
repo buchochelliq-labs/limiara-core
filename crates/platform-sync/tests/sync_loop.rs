@@ -670,6 +670,8 @@ fn field(name: &str, kind: FieldType) -> CreateField {
         formula_type: None,
         rollup: None,
         lookup_filter: None,
+        read_permission: None,
+        write_permission: None,
     }
 }
 

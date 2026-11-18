@@ -70,6 +70,17 @@ impl ObjectsHost for AppState {
             .unwrap_or_default()
     }
 
+    async fn permission_catalog(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<Option<BTreeMap<String, String>>, Response> {
+        let pool = self.pool.as_ref().ok_or_else(unavailable)?;
+        platform_db::permission_catalog(pool, tenant_id)
+            .await
+            .map(Some)
+            .map_err(|_| unavailable())
+    }
+
     async fn is_member(&self, tenant_id: Uuid, user_id: Uuid) -> Result<bool, Response> {
         let pool = self.pool.as_ref().ok_or_else(unavailable)?;
         platform_db::workspace_member(pool, tenant_id, user_id)

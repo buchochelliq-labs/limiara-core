@@ -12,6 +12,7 @@ pub mod client_ids;
 pub mod composite;
 pub mod conflicts;
 pub mod definitions;
+pub mod field_permissions;
 pub mod formulas;
 pub mod jobs;
 pub mod lease;
@@ -110,6 +111,8 @@ fn field(name: &str, kind: FieldType) -> CreateField {
         formula_type: None,
         rollup: None,
         lookup_filter: None,
+        read_permission: None,
+        write_permission: None,
     }
 }
 
@@ -504,6 +507,8 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
                 position: None,
                 formula: None,
                 lookup_filter: None,
+                read_permission: None,
+                write_permission: None,
                 reference_objects: None,
             },
             context(),

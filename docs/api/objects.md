@@ -58,6 +58,7 @@ can read returns `403 auth.permission_denied`.
 | `DELETE /objects/{api_name}/fields/{field}?expected_version=` | Retire a field; its values disappear from records |
 | `GET /objects/{api_name}/permissions` | Every workspace role with its access to the object |
 | `PUT /objects/{api_name}/permissions/{role_id}` | Set a role's access: `read`, `create`, `edit`, `delete`, `view_all`, `modify_all` |
+| `GET /field-permissions` | The permissions a field may name, with their descriptions, for the Object Manager's pickers; needs `objects.manage` |
 
 Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,
 `currency`, `percent`, `boolean`, `date`, `date_time`, `picklist`,
@@ -94,6 +95,65 @@ The result type is in `formula_type`. The summarised field is indexed if it
 was not, and turning its index off fails with `objects.rollup_needs_index`.
 Deleting the summarised field, the master-detail field or the detail object
 fails with `409 objects.field_in_use` or `objects.object_in_use`.
+
+### Field permissions
+
+A field may name a `read_permission` and a `write_permission` (G5 of
+ADR 0035): permission ids from the workspace's catalog, such as
+`contacts.people.custom-fields.read`. Administrators with `objects.manage`
+set them on workspace fields with `POST .../fields` and
+`PATCH .../fields/{field}` (`null` removes one); a plugin declares them on
+its own fields in its manifest, and administrators cannot change those
+(`409 objects.plugin_owned`). A malformed id fails with
+`objects.field_permission_invalid`, and one the catalog does not hold with
+`objects.field_permission_unknown`. Formula and roll-up summary fields take
+a read permission only. The settings are metadata: changing them moves the
+workspace metadata version, and device replicas take them with the rest of
+the definition.
+
+A member without a field's read permission never sees the field:
+
+- `GET /objects/{api_name}` leaves it out; administrators with
+  `objects.manage` see every field, each with the caller's `access`
+  (`{"read": …, "edit": …}`);
+- records, lists, composite results and device sync never carry its value;
+- the query language, list filters and reports treat it as a field the
+  object does not have (`query.field_unknown`, `records.field_unknown`):
+  it cannot be selected, filtered, sorted or grouped on, also across a
+  relationship, so a shared report that names one fails for that member;
+- search never matches a field with a read permission, for anyone, and
+  results show only fields the caller reads;
+- history entries for it are left out, and change log entries do not name
+  it (an entry whose changes were all to hidden fields stays, naming none,
+  because the record's version moved);
+- related lists through it and timeline sources that need it are left out;
+- quick actions that preset it, or a create action whose reference field
+  it is, are left out of `GET .../quick-actions` (and so of device
+  replicas) and of the timeline's actions, as are those that preset a
+  field the member reads but may not change: a member is offered only
+  actions they can complete. Administrators with `objects.manage` list
+  every action to maintain it; the save stays refused for anyone;
+- a formula field that reads it, on the record, through a lookup or through
+  another formula field, and a roll-up summary of it, are hidden too.
+  Formulas and roll-ups are computed with full access and hidden whenever
+  they depend on a field the member cannot read, so they never leak one.
+
+Writing needs reading: a write that names a field the caller cannot read
+fails with `records.field_unknown`, before its value is looked at. A
+member who reads a field but lacks its write permission gets
+`403 records.field_not_writable`, with an `errors` entry for each such
+field, when a create gives it a value or an update changes it; an update
+that sends its current value, and a create that leaves it to its default,
+succeed.
+
+The check is one engine function (`FieldSecurity::field`), applied to
+every request as the member, on the server and in a device's replica.
+System context bypasses it, as it bypasses sharing: the kernel, a plugin's
+installation, the migrator (G4, when it lands), automations, validation rules, lookup filters
+and roll-up summaries kept current read and write every field. Member permissions
+never bypass it: `records.view_all` and `records.modify_all` widen record
+access, not field access. Role-based field-level security (#316) is a
+follow-up that extends the same function.
 
 ### Plugin objects
 
@@ -1119,6 +1179,8 @@ follows the objects.
 Errors use the problem format with a stable `code`. Validation failures
 return `400 validation.failed` with an `errors` list of `{field, code,
 detail}`. Version mismatches return `409 records.version_conflict`.
+Changing a field the caller reads but may not change returns
+`403 records.field_not_writable`, with the fields in `errors`.
 A pushed assistant write the workspace's assistant policy does not allow
 returns `403 assistant.not_allowed`, and an assistant marker on anything but
 a device's push `400 assistant.marker_not_accepted` (see

@@ -1385,6 +1385,8 @@ mod tests {
             formula_type: None,
             rollup: None,
             lookup_filter: None,
+            read_permission: None,
+            write_permission: None,
             position: 0,
             status: DefinitionStatus::Active,
             version: 1,

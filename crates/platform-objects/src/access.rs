@@ -4,9 +4,10 @@
 //! per role in the engine's own tables, because objects are created at
 //! runtime. Record-level sharing narrows reads and writes further (ADR 0016).
 
+use crate::field_security::{FieldAccess, FieldSecurity};
 use crate::{
-    AccessFlags, ObjectError, OBJECTS_MANAGE_PERMISSION, RECORDS_MODIFY_ALL_PERMISSION,
-    RECORDS_VIEW_ALL_PERMISSION,
+    AccessFlags, FieldDefinition, ObjectError, OBJECTS_MANAGE_PERMISSION,
+    RECORDS_MODIFY_ALL_PERMISSION, RECORDS_VIEW_ALL_PERMISSION,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -95,6 +96,11 @@ impl ObjectCaller {
         self.system_permissions.contains(permission)
     }
 
+    /// The caller's system permissions in the workspace.
+    pub fn permissions(&self) -> &BTreeSet<String> {
+        &self.system_permissions
+    }
+
     pub fn can_manage(&self) -> bool {
         self.has(OBJECTS_MANAGE_PERMISSION)
     }
@@ -131,6 +137,8 @@ pub struct ObjectAccess {
     by_object: BTreeMap<Uuid, AccessFlags>,
     /// Each detail object's masters (ADR 0025).
     masters: BTreeMap<Uuid, Vec<Uuid>>,
+    /// What the caller may do with each field (G5).
+    fields: FieldSecurity,
 }
 
 impl ObjectAccess {
@@ -142,6 +150,28 @@ impl ObjectAccess {
                 .map(|(object, flags)| (object, flags.normalised()))
                 .collect(),
             masters: BTreeMap::new(),
+            fields: FieldSecurity::for_caller(caller),
+        }
+    }
+
+    /// Field-level security as this access applies it.
+    pub fn fields(&self) -> &FieldSecurity {
+        &self.fields
+    }
+
+    /// What the caller may do with one field (G5).
+    pub fn field(&self, field: &FieldDefinition) -> FieldAccess {
+        self.fields.field(field)
+    }
+
+    /// The same object access with every field readable and writable, for
+    /// conditions an administrator defined that the engine evaluates for the
+    /// caller, such as lookup filters: like validation rules, they read
+    /// every field, and only their outcome reaches the caller.
+    pub(crate) fn with_system_fields(&self) -> Self {
+        Self {
+            fields: FieldSecurity::system(),
+            ..self.clone()
         }
     }
 

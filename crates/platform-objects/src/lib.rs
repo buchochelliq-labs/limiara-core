@@ -26,6 +26,7 @@ pub mod automation;
 pub mod bulk;
 pub mod composite;
 pub mod events;
+pub mod field_security;
 pub mod formula;
 pub mod formula_fields;
 pub mod model;
@@ -55,6 +56,7 @@ pub use assistant_policy::{
     AssistantMarker, AssistantPolicy, AssistantSettings, MarkedQuickAction, StoredAssistantPolicy,
     UpdateAssistantPolicy, UpdateAssistantSettings, WorkspaceAssistantPolicy,
 };
+pub use field_security::{FieldAccess, FieldSecurity, FIELD_NOT_WRITABLE};
 pub use model::*;
 pub use plugin_objects::PluginObjectsInstalled;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};
@@ -130,6 +132,10 @@ pub enum ObjectError {
     /// `objects.duplicate_api_name` or `records.duplicate_value`.
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    /// The caller may not do this to the fields named, with a stable code
+    /// such as `records.field_not_writable` (G5).
+    #[error("refused: {0}")]
+    Refused(&'static str, Vec<ValidationIssue>),
     #[error("database error")]
     Database(#[from] sqlx::Error),
     #[error("internal invariant violated")]

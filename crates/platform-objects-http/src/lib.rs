@@ -55,6 +55,16 @@ pub trait ObjectsHost: Clone + Send + Sync + 'static {
 
     /// Whether the user is a member of the workspace.
     async fn is_member(&self, tenant_id: Uuid, user_id: Uuid) -> Result<bool, Response>;
+
+    /// The permissions roles in the workspace can be given, by id with
+    /// their descriptions, for field permissions (G5); `None` when the
+    /// host keeps no catalog, as a device's replica does.
+    async fn permission_catalog(
+        &self,
+        _tenant_id: Uuid,
+    ) -> Result<Option<BTreeMap<String, String>>, Response> {
+        Ok(None)
+    }
 }
 
 /// The caller's request id as an audit correlation id; a fresh id when it
@@ -158,6 +168,10 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
         .route(
             "/api/v1/workspaces/:workspace_id/objects/:object/fields",
             post(handlers::create_field::<H>),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/field-permissions",
+            get(handlers::field_permissions::<H>),
         )
         .route(
             "/api/v1/workspaces/:workspace_id/objects/:object/fields/:field",
