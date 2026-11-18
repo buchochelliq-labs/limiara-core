@@ -184,7 +184,8 @@ export default {
             { text: "Local identity", link: "/operations/local-identity" },
             { text: "Migrations", link: "/operations/migrations" },
             { text: "Backup and restore", link: "/operations/backup-restore" },
-            { text: "Documentation publishing", link: "/operations/docs-publishing" }
+            { text: "Documentation publishing", link: "/operations/docs-publishing" },
+            { text: "iOS builds for TestFlight", link: "/operations/testflight" }
           ]
         }
       ],
