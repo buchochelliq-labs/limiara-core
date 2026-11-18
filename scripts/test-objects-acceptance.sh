@@ -1157,7 +1157,10 @@ grant_code code-watch "$verifier"
 expect 200 "$(redeem code-watch "$verifier" "Viewer's watch")" "a device to revoke from the browser"
 watch_refresh=$(field '.refresh_token')
 pnpm --filter web build >"$work_root/web-build.log" 2>&1 || { cat "$work_root/web-build.log" >&2; fail "web build failed"; }
+# Drafts are opened with every decrypt held back, as on a slow runner or device, so input typed
+# while a form looks for its draft is proven to be kept (ADR 0036 §7).
 API_BASE="$api_base" SESSION_TOKEN="$member_token" SIGN_OUT_TOKEN="$signout_token" SCREENSHOT_DIR="$work_root/screenshots" \
+  BROWSER_SLOW_DECRYPT_MS="${BROWSER_SLOW_DECRYPT_MS:-300}" \
   node tests/objects-acceptance/browser.mjs || fail "the object pages did not complete the journey"
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"

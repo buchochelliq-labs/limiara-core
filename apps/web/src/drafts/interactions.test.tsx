@@ -139,6 +139,47 @@ describe('draft controls never submit the record form (review P1)', () => {
   });
 });
 
+async function type(element: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(element, value);
+    element.dispatchEvent(new Event('input', {bubbles: true}));
+  });
+}
+
+describe('input typed while the form looks for its draft (CI timing)', () => {
+  it('is autosaved once the lookup finishes, however slow it is', async () => {
+    await store.put('other', {...editDraft('AP-7'), key: {kind: 'edit', object: 'custom:project', record: '0000000000000002'}, record: {id: '0000000000000002', version: 1, name: 'Gemini'}}, 0);
+    let release = () => undefined as void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const real = store;
+    const slow = {list: async () => { await held; return real.list(); }, put: (...args: Parameters<DraftStore['put']>) => real.put(...args), delete: (id: string) => real.delete(id), get: (id: string) => real.get(id), takeNotices: () => real.takeNotices()} as unknown as DraftStore;
+    store = slow;
+    const client = createFixtureObjectsClient();
+    const {saves} = await renderEdit(client);
+    // The member types before the form knows whether a draft exists.
+    await type(input('Code'), 'AP-3');
+    release();
+    await until(() => /Draft saved at/.test(text()), 'the draft to be saved');
+    const drafts = await real.list();
+    expect(drafts.find(draft => draft.meta.key.includes(apollo))?.document.fields['custom:code']?.value).toBe('AP-3');
+    expect(saves.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps input typed during the restore prompt unwritten until the member chooses, then drafts it on Discard', async () => {
+    await store.put('draft-1', editDraft('AP-9'), 0);
+    const {saves} = await renderEdit(createFixtureObjectsClient());
+    await until(() => text().includes('You have an unsaved draft'), 'the restore prompt');
+    await type(input('Code'), 'AP-4');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1200)); });
+    expect((await store.get('draft-1'))?.document.fields['custom:code']?.value).toBe('AP-9');
+    await click(button('Discard'));
+    await until(() => /Draft saved at/.test(text()), 'the new draft');
+    const drafts = await store.list();
+    expect(drafts.map(draft => draft.document.fields['custom:code']?.value)).toEqual(['AP-4']);
+    expect(saves.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('a blocked draft keeps its identity (review P2)', () => {
   it('Discard after a conflict deletes the stored draft', async () => {
     const client = createFixtureObjectsClient();

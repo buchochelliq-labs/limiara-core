@@ -75,6 +75,15 @@ try {
   const context = await browser.newContext({viewport: {width: 1280, height: 900}});
   await context.addCookies([{name: 'platform_session', value: sessionToken, url: origin, httpOnly: true, sameSite: 'Lax'}]);
   page = await context.newPage();
+  // BROWSER_CPU_THROTTLE=4 slows the page like a busy CI runner, to shake out timing assumptions.
+  const throttle = Number(process.env.BROWSER_CPU_THROTTLE ?? '1');
+  if (throttle > 1) await (await context.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', {rate: throttle});
+  // BROWSER_SLOW_DECRYPT_MS holds back every WebCrypto decrypt, as a slow device does when it opens drafts.
+  const slowDecrypt = Number(process.env.BROWSER_SLOW_DECRYPT_MS ?? '0');
+  if (slowDecrypt > 0) await context.addInitScript(delay => {
+    const decrypt = SubtleCrypto.prototype.decrypt;
+    SubtleCrypto.prototype.decrypt = function (...args) { return new Promise(resolve => setTimeout(resolve, delay)).then(() => decrypt.apply(this, args)); };
+  }, slowDecrypt);
   const timeout = 15_000;
   page.setDefaultTimeout(timeout);
 
@@ -561,9 +570,21 @@ try {
   await dialog.getByText(/You have an unsaved draft from/).waitFor();
   if (await dialog.getByLabel('Code').inputValue() !== 'DR-1') throw new Error('until the member chooses, the form shows the saved record');
   const versionBefore = await dialog.getByText(/^Version \d+$/).textContent();
+  // Restore re-reads the object and the record before it applies anything (ADR 0036 §5). Holding
+  // those reads back, as a slow server or runner does, gives a stray form submit time to win: Restore
+  // must still never send the record.
+  const recordWrites = [];
+  const watchWrites = request => { if (['PATCH', 'POST', 'PUT'].includes(request.method()) && /\/objects\/custom(:|%3A)project\/records/i.test(new URL(request.url()).pathname)) recordWrites.push(request.url()); };
+  page.on('request', watchWrites);
+  const slowRestore = async route => { await new Promise(resolve => setTimeout(resolve, 1500)); await route.continue(); };
+  const restoreReads = url => /\/objects\/custom(:|%3A)project(\/records\/[^/]+)?$/i.test(url.pathname);
+  await page.route(restoreReads, slowRestore);
   await dialog.getByRole('button', {name: 'Restore'}).click();
   await dialog.getByText(/^Draft saved at /).waitFor();
-  // Restore is not Save: the record keeps its version until the member saves.
+  await page.unroute(restoreReads, slowRestore);
+  page.off('request', watchWrites);
+  // Restore is not Save: no record write, and the record keeps its version until the member saves.
+  if (recordWrites.length) throw new Error(`Restore must not save the record: ${recordWrites.join(', ')}`);
   if (await dialog.getByText(/^Version \d+$/).textContent() !== versionBefore) throw new Error('Restore must not save the record');
   if (await dialog.getByLabel('Code').inputValue() !== 'DR-2') throw new Error('Restore must put the draft back');
   await shot(page, '25-draft-restored');

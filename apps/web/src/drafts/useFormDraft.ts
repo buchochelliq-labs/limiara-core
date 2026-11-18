@@ -47,6 +47,11 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
   const [message, setMessage] = useState<{tone: 'info' | 'warning'; text: string} | null>(null);
   const [dropped, setDropped] = useState<string[]>([]);
   const controller = useRef<DraftAutosave | null>(null);
+  // Whether the controller is autosaving now, read at the moment of each change, not from a render.
+  const autosaving = useRef(false);
+  // A change made before autosaving began (the form opens while its draft is looked up, or while
+  // the key loads): written as soon as autosaving starts, so early input is never lost.
+  const unsaved = useRef(false);
   const buildRef = useRef(build);
   buildRef.current = build;
   const applyRef = useRef(apply);
@@ -57,12 +62,19 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
 
   const startAutosave = useCallback((id: string, revision: number) => {
     if (!store) return;
-    controller.current = new DraftAutosave(store, id, revision, () => buildRef.current(), setState, setPending);
+    const started = new DraftAutosave(store, id, revision, () => buildRef.current(), setState, setPending);
+    controller.current = started;
+    autosaving.current = true;
     setPhase({kind: 'active'});
+    if (unsaved.current) {
+      unsaved.current = false;
+      started.changed();
+    }
   }, [store]);
 
   const restore = useCallback(async (draft: StoredDraft) => {
     if (!store) return;
+    autosaving.current = false;
     setPhase({kind: 'restoring'});
     setMessage(null);
     let plan: RestorePlan;
@@ -111,7 +123,7 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
         const found = drafts.find(draft => draft.meta.key === keyText);
         if (!found) { startAutosave(newId(), 0); return; }
         const notices = await store.takeNotices();
-        if (!cancelled) setPhase({kind: 'prompt', draft: found, notices});
+        if (!cancelled) { autosaving.current = false; setPhase({kind: 'prompt', draft: found, notices}); }
       } catch {
         if (!cancelled) setPhase({kind: 'unavailable'});
       }
@@ -148,7 +160,11 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
     dropped,
     /** The draft is stored, so Cancel asks whether to keep it. */
     get saved() { return controller.current?.saved ?? false; },
-    changed: () => { if (phase.kind === 'active') controller.current?.changed(); },
+    /** A change to the form: autosaved now, or once autosaving starts. Until the member answers a restore prompt, nothing is written. */
+    changed: () => {
+      if (autosaving.current && controller.current) controller.current.changed();
+      else unsaved.current = true;
+    },
     flush: async () => { await controller.current?.flush(); },
     restore: async () => { if (phase.kind === 'prompt') await restore(phase.draft); },
     /** Discards the offered, blocked or current draft and starts afresh. */
@@ -165,9 +181,9 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
       startAutosave(newId(), 0);
     },
     /** A successful save: the draft goes. */
-    clear: async () => { await controller.current?.discard().catch(() => undefined); controller.current = null; },
+    clear: async () => { autosaving.current = false; await controller.current?.discard().catch(() => undefined); controller.current = null; },
     /** Leaves a blocked draft as it is and lets the form be used without drafting. */
-    keepBlocked: () => { setPhase({kind: 'off'}); },
+    keepBlocked: () => { autosaving.current = false; unsaved.current = false; setPhase({kind: 'off'}); },
     /** Another tab wrote a newer revision: load it here and carry on from it, only if it restores. */
     takeOver: async () => {
       const current = controller.current;
