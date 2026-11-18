@@ -120,3 +120,26 @@ signed with the Apple team. The simulator delivers pushes only to an app
 APNs has given a token, so the `ios` workflow has a debug simulator build
 deliver a simulated push through the delegate's callback instead
 (ADR 0030 §5). Android's FCM half is still to come.
+
+## Route probe
+
+The shell's local services (ADR 0034 §9) are reached only through
+local-only capabilities that each native plugin declares and the
+controller grants: `device.replica_changes` for the replica change feed and
+`device.route_context` for the route the web shell shows. The web shell
+sends its route, as a pattern name and ids, only because the bridge's UI
+contributions carry `route_context: true`; the server's never do. See
+[Device plugins](../../docs/plugins/device-plugins.md).
+
+The `device-route-probe` plugin (`route-probe/`) is a debug-build test
+plugin that declares `device.route_context` only and receives each route:
+`src/probe.rs` follows the grant and hands every change to it. On desktop
+it keeps what it received, and `tests/probe.rs` drives a route through the
+`limiara://` scheme to it. On iOS and Android its Swift and Kotlin halves
+write each route, as ids, to `device-route-probe.log` in the app's
+temporary directory (the cache directory on Android). A CI runner cannot
+tap through the web shell, so a debug build reports a record page of the
+demonstration workspace through the scheme when `simulate-route` appears
+there (`probe::simulate_if_asked`) and hands the outcome line to the native
+half, which is the trail's only writer; the `ios` and `android` workflows
+do that, wait for both the route and the outcome line, and check them.

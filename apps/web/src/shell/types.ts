@@ -25,4 +25,6 @@ export type ShellViewModel = {
   activationRevision: string;
   user: SessionUser;
   message?: string;
+  /** Whether the host takes route messages (ADR 0034 §9). */
+  routeContext?: boolean;
 };

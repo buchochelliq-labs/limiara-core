@@ -353,6 +353,7 @@ impl ObjectService {
         }
         let mut tx = self.begin().await?;
         let mut positions = tx.sync_positions().await?;
+        let followed = positions.metadata_version;
         positions.pulled = Some(positions.pulled.map_or(position, |at| at.max(position)));
         positions.metadata_version = Some(
             positions
@@ -361,6 +362,12 @@ impl ObjectService {
         );
         tx.set_sync_positions(positions).await?;
         tx.commit().await?;
+        if let Some(version) = positions
+            .metadata_version
+            .filter(|_| positions.metadata_version != followed)
+        {
+            self.observe(crate::ReplicaEvent::MetadataVersion(version));
+        }
         Ok(positions)
     }
 }
