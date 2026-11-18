@@ -14,7 +14,7 @@ The API key, the certificate and their passwords are credentials for the Apple D
 - **Signing:** by default the workflow uses automatic signing with the App Store Connect API key: Xcode creates or reuses the distribution certificate and the App Store profile itself, so no certificate or profile secret is needed. If that is not possible for the account, three optional secrets switch it to manual signing with a distribution certificate and profile (see [Manual signing](#manual-signing)).
 - **Versions:** the marketing version (`CFBundleShortVersionString`) is the `version` in `apps/device-shell/src-tauri/tauri.conf.json`. The build number (`CFBundleVersion`) is the workflow's run number, so each run uploads a new build; a re-run of the same run uses `<run number>.<attempt>`. A pushed tag must match the marketing version: `ios-v0.1.0` builds `0.1.0`.
 - **Release checks:** before uploading, the workflow checks that the web build and the app contain no debug-only code (the `/__ui` showcase, the forced-state probes, the Contacts fixture client and the debug simulator's push hook), that the app is signed for distribution with production push notifications, and that its versions and export compliance key are as expected. The script is `scripts/check-ios-release-build.sh`.
-- **Clean-up:** the key file, any certificate and the job's temporary keychain sit in the runner's temporary directory with owner-only permissions, and the last step deletes them even when the build fails.
+- **Clean-up:** the key file and any decoded certificate sit in the runner's temporary directory with owner-only permissions. With manual signing, the Tauri CLI imports the certificate into a temporary keychain and deletes it when it exits. The last step deletes the files, any keychain left behind and the installed provisioning profiles, even when the build fails.
 
 ## 1. Register the App ID
 
@@ -98,7 +98,7 @@ base64 -i distribution.p12 | pbcopy
 base64 -i Limiara_App_Store.mobileprovision | pbcopy
 ```
 
-The workflow imports the certificate into a temporary keychain that exists only for the job and deletes it in the clean-up step. A profile expires with its certificate, after a year; renew both and replace the secrets before then.
+Before building, the workflow checks that the certificate opens with its password, is an Apple Distribution certificate and belongs to `APPLE_TEAM_ID`; it logs only the certificate's expiry date. The Tauri CLI then imports it into a temporary keychain for the build and deletes it afterwards, and the workflow's clean-up step deletes any keychain that is left. A profile expires with its certificate, after a year; renew both and replace the secrets before then.
 
 ## 5. Run a build and find it in TestFlight
 

@@ -15,6 +15,13 @@
 #     debugger attachment) and no trace of the debug simulator's push hook,
 #     which `#if DEBUG && targetEnvironment(simulator)` keeps out of device
 #     builds.
+#
+#   check-ios-release-build.sh self-test
+#     Checks the marker scan itself, anywhere: a marker followed by a
+#     mebibyte of text must still be found. Piping `strings` into `grep -q`
+#     would miss it under `pipefail`, because `grep -q` exits at the first
+#     match and `strings` then dies of SIGPIPE (status 141), so the scan
+#     reads a file that holds the whole output instead.
 set -Eeuo pipefail
 
 bundle_identifier="app.limiara.shell"
@@ -30,9 +37,9 @@ web_markers=(
   "form-state|apps/web/src/contacts/client.ts (the ?form-state= probe)"
 )
 native_markers=(
-  "simulate-push|push/ios/Sources/PushPlugin.swift (the simulated push watcher)"
-  "delivering a simulated push|push/ios/Sources/PushPlugin.swift (the simulated push watcher)"
-  "keystore-probe-plaintext|src/keychain.rs (the Android Keystore probe)"
+  "simulate-push|apps/device-shell/src-tauri/push/ios/Sources/PushPlugin.swift (the simulated push watcher)"
+  "delivering a simulated push|apps/device-shell/src-tauri/push/ios/Sources/PushPlugin.swift (the simulated push watcher)"
+  "keystore-probe-plaintext|apps/device-shell/src-tauri/src/keychain.rs (the Android Keystore probe)"
 )
 
 check_web() {
@@ -47,6 +54,55 @@ check_web() {
     fi
   done
   if ((failures == before)); then pass "the web build has no debug-only showcase, probes or fixture client"; fi
+}
+
+# Reports each marker found in a text file. Reading a file, not a pipe,
+# keeps an early `grep -q` exit from turning a match into a miss.
+scan_markers() {
+  local file=$1 message=$2
+  shift 2
+  local entry marker source
+  for entry in "$@"; do
+    marker=${entry%%|*}
+    source=${entry#*|}
+    if grep -qF -e "$marker" "$file"; then
+      fail "$message $source"
+    fi
+  done
+}
+
+# Runs the scan on known input; its own expected failures are not counted.
+scan_count() {
+  local saved=$failures found
+  scan_markers "$@" 2>/dev/null
+  found=$((failures - saved))
+  failures=$saved
+  echo "$found"
+}
+
+self_test() {
+  local work
+  work=$(mktemp -d)
+  # shellcheck disable=SC2064 # expand now: the directory is local
+  trap "rm -rf '$work'" RETURN
+  {
+    echo "simulate-push"
+    head -c 1048576 /dev/zero | tr '\0' 'a' | fold -w 100
+  } >"$work/large.txt"
+  printf 'no markers here\n' >"$work/clean.txt"
+  local count
+  count=$(scan_count "$work/large.txt" "found" "${native_markers[@]}")
+  if [[ "$count" == 1 ]]; then
+    pass "self-test: a marker before a mebibyte of text is found"
+  else
+    fail "self-test: the scan found $count markers before a mebibyte of text, expected 1"
+  fi
+  count=$(scan_count "$work/clean.txt" "found" "${native_markers[@]}" "${web_markers[@]}")
+  if [[ "$count" == 0 ]]; then
+    pass "self-test: clean text has no markers"
+  else
+    fail "self-test: the scan found $count markers in clean text, expected 0"
+  fi
 }
 
 plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
@@ -74,8 +130,8 @@ check_ipa() {
   [[ "$value" == "$expected_short" ]] || fail "CFBundleShortVersionString is '$value', expected $expected_short"
   value=$(plist_value "$info" ITSAppUsesNonExemptEncryption)
   [[ "$value" == true ]] || fail "ITSAppUsesNonExemptEncryption is '$value', expected true (docs/operations/testflight.md)"
-  plist_value "$info" UIBackgroundModes | grep -q remote-notification ||
-    fail "UIBackgroundModes does not declare remote-notification"
+  value=$(plist_value "$info" UIBackgroundModes)
+  [[ "$value" == *remote-notification* ]] || fail "UIBackgroundModes does not declare remote-notification"
 
   local entitlements="$work/entitlements.plist"
   codesign -d --entitlements - --xml "$app" >"$entitlements" 2>/dev/null ||
@@ -89,22 +145,12 @@ check_ipa() {
   local executable
   executable="$app/$(plist_value "$info" CFBundleExecutable)"
   [[ -f "$executable" ]] || { fail "the app's executable is missing"; return; }
-  local entry marker source
-  for entry in "${native_markers[@]}"; do
-    marker=${entry%%|*}
-    source=${entry#*|}
-    if strings -a "$executable" | grep -qF -e "$marker"; then
-      fail "the executable contains debug-only code from apps/device-shell/src-tauri/$source"
-    fi
-  done
+  # All of `strings`' output goes to a file before it is searched.
+  local text="$work/strings.txt"
+  strings -a "$executable" >"$text"
+  scan_markers "$text" "the executable contains debug-only code from" "${native_markers[@]}"
   # The web build is embedded in the executable too.
-  for entry in "${web_markers[@]}"; do
-    marker=${entry%%|*}
-    source=${entry#*|}
-    if strings -a "$executable" | grep -qF -e "$marker"; then
-      fail "the executable embeds debug-only web code from $source"
-    fi
-  done
+  scan_markers "$text" "the executable embeds debug-only web code from" "${web_markers[@]}"
   if ((failures == before)); then
     pass "$(basename "$ipa"): $bundle_identifier $expected_short ($expected_build), distribution-signed, no debug-only code"
   fi
@@ -115,12 +161,15 @@ case "${1:-}" in
     [[ $# -eq 2 ]] || { echo "usage: $0 web <dist>" >&2; exit 2; }
     check_web "$2"
     ;;
+  self-test)
+    self_test
+    ;;
   ipa)
     [[ $# -eq 4 ]] || { echo "usage: $0 ipa <app.ipa> <bundle-version> <short-version>" >&2; exit 2; }
     check_ipa "$2" "$3" "$4"
     ;;
   *)
-    echo "usage: $0 web <dist> | ipa <app.ipa> <bundle-version> <short-version>" >&2
+    echo "usage: $0 web <dist> | ipa <app.ipa> <bundle-version> <short-version> | self-test" >&2
     exit 2
     ;;
 esac
