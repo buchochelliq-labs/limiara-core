@@ -694,6 +694,11 @@ Also:
 - **Native assistant plugins are separate plugins** built against this
   bridge, one per platform. The Swift and Kotlin integrations themselves,
   and any on-device model features, are outside this ADR.
+  An app crate links them through the shell's extension point for native
+  plugins (`device_shell::app::AppBuilder`, see
+  [Device plugins](../plugins/device-plugins.md#plugins-an-app-adds)),
+  which grants each one exactly what its declaration names, so the shell
+  never names a plugin it does not ship (added 2026-11-18).
 - **Nothing changes for the web.** The web shell sends route messages
   only to a host that asks for them, and the server records no
   `assistant` source except from a device's push.

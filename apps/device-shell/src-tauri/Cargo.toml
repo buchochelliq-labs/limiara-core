@@ -57,8 +57,12 @@ tempfile = "3"
 
 [features]
 # Serve the embedded web build rather than a development server.
-default = ["custom-protocol"]
+default = ["custom-protocol", "mobile-entry-point"]
 custom-protocol = ["tauri/custom-protocol"]
+# The iOS and Android entry point (`app::run`). An app crate that builds the
+# app with `app::AppBuilder` and native plugins of its own turns it off and
+# declares its own entry point, so the mobile library has exactly one.
+mobile-entry-point = []
 
 [lints.rust]
 unsafe_code = "forbid"
