@@ -244,9 +244,27 @@ pub(crate) async fn callback(
     response
 }
 
-pub(crate) async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Debug, Deserialize)]
+pub(crate) struct LogoutQuery {
+    /// The browser's draft browser id (ADR 0036 §11): its draft key is
+    /// deleted with the session, so drafts left behind cannot be decrypted.
+    browser: Option<String>,
+}
+
+pub(crate) async fn logout(
+    State(state): State<AppState>,
+    Query(query): Query<LogoutQuery>,
+    headers: HeaderMap,
+) -> Response {
+    // An unreadable browser id still signs out; it only names no key.
+    let browser = query
+        .browser
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok());
     if let (Some(pool), Some(raw)) = (state.pool.as_ref(), session_token(&state, &headers)) {
-        if let Err(error) = platform_db::revoke_session(pool, &secret_hash(raw)).await {
+        if let Err(error) =
+            platform_db::revoke_session_and_draft_key(pool, &secret_hash(raw), browser).await
+        {
             tracing::error!(error_type = %std::any::type_name_of_val(&error), "failed to revoke session");
             return unavailable();
         }

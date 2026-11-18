@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tower_http::request_id::RequestId;
 use uuid::Uuid;
 
-pub use handlers::ui_contributions;
+pub use handlers::{draft_expiry_days, ui_contributions};
 
 /// The verified member a request runs as, which the host inserts as a request
 /// extension once it has authenticated the request and checked membership.
@@ -158,6 +158,12 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
         .route(
             "/api/v1/workspaces/:workspace_id/objects",
             get(handlers::list_objects::<H>).post(handlers::create_object::<H>),
+        )
+        // Record draft settings (ADR 0036 §9). API names always contain a
+        // colon, so no object is called `draft-settings`.
+        .route(
+            "/api/v1/workspaces/:workspace_id/objects/draft-settings",
+            get(handlers::get_draft_settings::<H>).put(handlers::update_draft_settings::<H>),
         )
         .route(
             "/api/v1/workspaces/:workspace_id/objects/:object",

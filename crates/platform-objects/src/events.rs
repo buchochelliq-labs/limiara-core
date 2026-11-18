@@ -56,8 +56,11 @@ pub const QUICK_ACTION_DELETED_V1: &str = "platform.objects.quick-action-deleted
 /// The assistant policy (ADR 0034 §4): the workspace switch or one
 /// object's settings, by API names.
 pub const ASSISTANT_POLICY_UPDATED_V1: &str = "platform.objects.assistant-policy-updated.v1";
+/// The workspace's record draft expiry changed (ADR 0036 §9). Drafts
+/// themselves never leave the member's browser and have no events.
+pub const DRAFT_SETTINGS_UPDATED_V1: &str = "platform.objects.draft-settings-updated.v1";
 
-pub const ENGINE_EVENT_TYPES: [&str; 34] = [
+pub const ENGINE_EVENT_TYPES: [&str; 35] = [
     OBJECT_CREATED_V1,
     OBJECT_UPDATED_V1,
     OBJECT_DELETED_V1,
@@ -92,6 +95,7 @@ pub const ENGINE_EVENT_TYPES: [&str; 34] = [
     QUICK_ACTION_UPDATED_V1,
     QUICK_ACTION_DELETED_V1,
     ASSISTANT_POLICY_UPDATED_V1,
+    DRAFT_SETTINGS_UPDATED_V1,
 ];
 
 /// The standard field an archive change names in the change log.
@@ -182,6 +186,9 @@ pub enum Change<'a> {
         &'a ObjectDefinition,
         &'a crate::assistant_policy::AssistantPolicy,
     ),
+    /// The record draft expiry changed from the first settings to the
+    /// second (ADR 0036 §9).
+    DraftSettingsUpdated(&'a crate::DraftSettings, &'a crate::DraftSettings),
 }
 
 impl Change<'_> {
@@ -420,6 +427,17 @@ impl Change<'_> {
                     "version": policy.version,
                 }),
             ),
+            Self::DraftSettingsUpdated(previous, settings) => (
+                DRAFT_SETTINGS_UPDATED_V1,
+                "objects.draft_settings.updated",
+                "draft_settings".to_owned(),
+                // Configuration, not personal data: old and new days.
+                json!({
+                    "expiry_days": settings.expiry_days,
+                    "previous_expiry_days": previous.expiry_days,
+                    "version": settings.version,
+                }),
+            ),
             Self::SharingChanged(object, record, kind, grantee, access) => (
                 RECORD_SHARING_CHANGED_V1,
                 if access.is_some() {
@@ -441,9 +459,9 @@ impl Change<'_> {
 
     /// Whether this change alters definitions a synced device validates and
     /// reads with (ADR 0024 §3): objects, fields, object permissions,
-    /// validation rules, automations, quick actions (ADR 0032 §5) and the
-    /// assistant policy (ADR 0034 §4). It moves the workspace metadata
-    /// version.
+    /// validation rules, automations, quick actions (ADR 0032 §5), the
+    /// assistant policy (ADR 0034 §4) and the record draft expiry (ADR 0036
+    /// §9). It moves the workspace metadata version.
     pub fn is_metadata(&self) -> bool {
         matches!(
             self,
@@ -466,6 +484,7 @@ impl Change<'_> {
                 | Self::QuickActionDeleted(..)
                 | Self::AssistantSettingsUpdated(..)
                 | Self::AssistantPolicyUpdated(..)
+                | Self::DraftSettingsUpdated(..)
         )
     }
 

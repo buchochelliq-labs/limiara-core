@@ -7,6 +7,7 @@ import type {ShellStatus, ShellViewModel} from './shell/types';
 import {ExternalHostApp, ExternalUnavailableApp, isExternalRoutePath, parseExternalRoute} from './external-host/ExternalHostApp';
 import {DeviceGate} from './device/DeviceGate';
 import {inDeviceShell} from './device/session';
+import {prepareBrowserDrafts, signOut} from './drafts/runtime';
 import {RouteReporter} from './shell/route-context';
 import './styles/global.css';
 
@@ -32,10 +33,10 @@ function LimiaraApp() {
     const sequence = requestSequence.current.begin();
     commitModel({status: 'loading', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation: [], permissions: [], activationRevision: '', user: baseModel.user});
     try {
-      const {navigation, permissions, revision, routeContext} = await loadWorkspaceNavigation(workspaceId);
+      const {navigation, permissions, revision, routeContext, drafts} = await loadWorkspaceNavigation(workspaceId);
       if (!requestSequence.current.isCurrent(sequence)) return;
       const workspace = baseModel.workspaces.find(item => item.id === workspaceId);
-      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: baseModel.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext});
+      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: baseModel.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext, drafts});
       if (announce) setAnnouncement(`${workspace?.name ?? 'Workspace'} loaded. ${navigation.length ? `${navigation.length === 1 ? '1 feature' : `${navigation.length} features`} available.` : 'No features are enabled.'}`);
     } catch (reason) {
       if (!requestSequence.current.isCurrent(sequence)) return;
@@ -51,12 +52,12 @@ function LimiaraApp() {
     const sequence = requestSequence.current.begin();
     revalidationInFlight.current = true;
     try {
-      const {navigation, permissions, revision, routeContext} = await loadWorkspaceNavigation(workspaceId);
+      const {navigation, permissions, revision, routeContext, drafts} = await loadWorkspaceNavigation(workspaceId);
       if (!requestSequence.current.isCurrent(sequence)) return;
       const latest = modelRef.current;
       if (latest.activeWorkspaceId !== workspaceId || latest.activationRevision === revision) return;
       const workspace = latest.workspaces.find(item => item.id === workspaceId);
-      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: latest.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: latest.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext});
+      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: latest.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: latest.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext, drafts});
       setAnnouncement(`${workspace?.name ?? 'Workspace'} permissions and features refreshed.`);
     } catch (reason) {
       if (!requestSequence.current.isCurrent(sequence)) return;
@@ -73,7 +74,11 @@ function LimiaraApp() {
     if (debugStatus) return;
     const controller = new AbortController();
     commitModel(shellFixture('loading'));
-    loadShellContext(controller.signal).then(context => {
+    loadShellContext(controller.signal).then(async context => {
+      if (controller.signal.aborted) return;
+      // Another member's drafts, and drafts of workspaces this member left, go before anything renders (ADR 0036 §11).
+      // The device app keeps drafts in its replica, never in the web view's storage.
+      if (!inDeviceShell()) await prepareBrowserDrafts(context.user.id, context.workspaces.map(workspace => workspace.id));
       if (controller.signal.aborted) return;
       const activeWorkspaceId = context.workspaces[0]?.id ?? '';
       if (!activeWorkspaceId) {
@@ -141,7 +146,10 @@ function LimiaraApp() {
     void loadNavigation(workspaceId, model, true);
   };
 
-  return <AppShell model={model} route={route} search={search} announcement={announcement} onNavigate={navigate} onWorkspaceChange={changeWorkspace} onRetry={() => setReloadKey(value => value + 1)} />;
+  // Sign-out clears this member's drafts, then revokes the session and the browser's draft key (ADR 0036 §11).
+  // The device app signs out through its own gate.
+  const onSignOut = inDeviceShell() || debugStatus ? undefined : () => { void signOut(model.user.id); };
+  return <AppShell model={model} route={route} search={search} announcement={announcement} onNavigate={navigate} onWorkspaceChange={changeWorkspace} onRetry={() => setReloadKey(value => value + 1)} onSignOut={onSignOut} />;
 }
 
 const showDevelopmentShowcase = import.meta.env.DEV && window.location.pathname === '/__ui';

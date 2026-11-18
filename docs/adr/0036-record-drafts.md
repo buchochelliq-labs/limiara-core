@@ -2,15 +2,30 @@
 
 ## Status
 
-Proposed (2026-11-17). Builds on ADR 0011 (UX: the record form and its
+Accepted (2026-11-18); slice 1 delivered. Builds on ADR 0011 (UX: the record form and its
 states), ADR 0015 (metadata-driven objects), ADR 0016 (sharing), ADR 0017
 (field history), ADR 0021 (validation rules), ADR 0024 (the device
 replica, §5 the local command bridge, "Encryption at rest" and "Continual
 sync"), ADR 0029 (device sign-in, the offline lease and wipe), ADR 0032
 (quick actions and global New), ADR 0034 §9 (the replica change feed) and
-ADR 0035 G5 (field read and write permissions). This is a design only;
-nothing in it is implemented yet. Delivery slices are under Consequences
-and in `docs/roadmap/README.md`.
+ADR 0035 G5 (field read and write permissions). Delivery slices are under
+Consequences and in `docs/roadmap/README.md`.
+
+**Slice 1 delivered (2026-11-18):** web drafts in IndexedDB behind the
+`DraftStore` interface, encrypted with the per-browser key of §4
+(`GET /api/v1/me/draft-key`, the `draft_keys` table and its 90-day
+cleanup); autosave, status, restore prompt, Cancel choices, the Drafts
+list, the leave-page guard and expiry notices; the re-checks of §5; the
+`record_draft_settings` table in both stores with its route, audit, event
+and metadata version move, and Settings → Record drafts; the `drafts`
+block of the server's UI contributions; and Sign out in the user menu.
+Edit drafts whose record changed restore only without conflicting fields,
+as Consequences describes. Field read and write permissions (ADR 0035 G5)
+are not on describe yet; the restore checks read them through one hook
+that honours a field's `access` once describe carries it. The engine has
+no user deactivation yet, so the deletion of a deactivated user's keys
+waits for it (`platform_db::delete_user_draft_keys` is ready; deleting a
+user deletes their keys). Slices 2 to 4 remain.
 
 Decided by the product owner before design (2026-11-17):
 
@@ -21,6 +36,18 @@ Decided by the product owner before design (2026-11-17):
   per workspace (§9). Sign-out, wipe and discarding also clear them.
 - Conflicts are compared field by field, with the starting, draft and
   current values, and the member chooses per field (§6).
+
+Decided by the product owner on review (2026-11-18), accepting this ADR's
+recommendations as the answers to its open questions:
+
+- Web drafts are encrypted from the start (§4).
+- Cancel defaults to keeping the draft (§8).
+- The limits are 50 drafts per member per workspace, 1 MiB per draft, and
+  an expiry of 7 days by default within bounds of 1 to 90 (§7, §9).
+- Global New offers new-record drafts (§8).
+- Drafts cannot be turned off per workspace in this slice; a short expiry
+  is the control.
+- The shell does not ask for persistent storage in this slice (§7).
 
 ## Context
 
@@ -631,22 +658,26 @@ Also:
 
 ## Open questions
 
+All decided on 2026-11-18 (see Status); kept here with their answers.
+
 - **Global New.** Should global New's menu also offer new-record drafts
   ("Continue: New Opportunity, 2 drafts"), or should they appear only in
-  the Drafts list and on the object's New?
+  the Drafts list and on the object's New? **Decided: global New offers
+  them.**
 - **Encrypting web drafts.** Is the server-held per-browser key (§4) worth
   its table and route, or should slice 1 start with plain IndexedDB and
   add encryption later? This ADR recommends encrypting from the start,
   because unencrypted drafts written before encryption exists would stay
-  readable until they expire.
+  readable until they expire. **Decided: encrypted from the start.**
 - **Default limits.** Are 50 drafts per member per workspace and 1 MiB per
   draft right, and are the expiry bounds of 1 to 90 days with a default of
-  7 right?
+  7 right? **Decided: yes, as proposed.**
 - **Turning drafts off.** Should administrators be able to turn drafts off
   for a workspace, for example where policy forbids record data on
-  unmanaged computers, beyond setting a short expiry?
+  unmanaged computers, beyond setting a short expiry? **Decided: not in
+  this slice.**
 - **Cancel.** Should Cancel default to keeping the draft (as proposed) or
-  to discarding it?
+  to discarding it? **Decided: keeping.**
 - **Persistent storage.** Should the shell ask the browser for persistent
   storage, accepting a permission prompt in some browsers, so drafts are
-  not evicted under storage pressure?
+  not evicted under storage pressure? **Decided: not in this slice.**

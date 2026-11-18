@@ -33,5 +33,6 @@ cargo test -p worker --locked --test plugin_runtime_postgres --test contacts_wor
 cargo test -p platform-db --locked --test identity_postgres -- --ignored --test-threads=1 --nocapture
 cargo test -p contacts-plugin --locked --test extensions_postgres -- --ignored --test-threads=1 --nocapture
 cargo test -p platform-objects --locked --test store_postgres -- --ignored --test-threads=1 --nocapture
+cargo test -p api --locked drafts::tests -- --ignored --test-threads=1 --nocapture
 
 printf 'plugin runtime acceptance passed for enable, disable, drain, re-enable, restart, lease, broker, outage, extension-host, extension-retention, automation-job and object-engine behaviour\n'

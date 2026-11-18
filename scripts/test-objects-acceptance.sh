@@ -34,6 +34,7 @@ manager="018f0000-0000-7000-8000-000000000172"
 sales_role="018f0000-0000-7000-8000-000000000203"
 rep_token="objects-acceptance-rep"
 manager_token="objects-acceptance-manager"
+signout_token="objects-acceptance-signout"
 api_pid=""
 nats_started=false
 postgres_started=false
@@ -94,7 +95,9 @@ sql --command="
   INSERT INTO user_roles (tenant_id, user_id, role_id) VALUES ('$tenant', '$rep', '$sales_role'), ('$tenant', '$manager', '$sales_role');
   INSERT INTO sessions (id, token_hash, user_id, expires_at) VALUES
     ('018f0000-0000-7000-8000-000000000613', '$(hash_token "$rep_token")', '$rep', now() + interval '2 hours'),
-    ('018f0000-0000-7000-8000-000000000614', '$(hash_token "$manager_token")', '$manager', now() + interval '2 hours');"
+    ('018f0000-0000-7000-8000-000000000614', '$(hash_token "$manager_token")', '$manager', now() + interval '2 hours');
+  INSERT INTO sessions (id, token_hash, user_id, expires_at) VALUES
+    ('018f0000-0000-7000-8000-000000000615', '$(hash_token "$signout_token")', '$member', now() + interval '2 hours');"
 
 cat >"$work_root/config.yml" <<EOF
 platform:
@@ -725,7 +728,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources assistant_settings assistant_object_policies; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources assistant_settings assistant_object_policies record_draft_settings; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -1148,16 +1151,64 @@ PLATFORM_SYNC_API="$api_base" PLATFORM_SYNC_WORKSPACE="$tenant" PLATFORM_SYNC_TO
   || fail "the device did not sync with the API"
 expect 200 "$(call "$member_cookie" DELETE "$workspace/objects/custom:project/quick-actions/phone_tag?expected_version=1")" "the device's quick action is removed again"
 
+log "record drafts (ADR 0036): the expiry setting, the drafts contribution and the browser draft key"
+expect 200 "$(call "$viewer_cookie" GET "$workspace/ui/contributions")" "contributions name where drafts live"
+[[ "$(field '.drafts | "\(.store) \(.expiry_days) \(.max_drafts) \(.max_bytes)"')" == "browser 7 50 1048576" ]] || fail "drafts block: $(cat "$body")"
+revision_before=$(field '.revision')
+expect 200 "$(call "$viewer_cookie" GET "$workspace/objects/draft-settings")" "any member reads the draft settings"
+[[ "$(field '"\(.expiry_days) \(.version) \(.min_expiry_days) \(.max_expiry_days)"')" == "7 0 1 90" ]] || fail "default draft settings: $(cat "$body")"
+expect 403 "$(call "$viewer_cookie" PUT "$workspace/objects/draft-settings" '{"expiry_days":14,"expected_version":0}')" "changing them needs objects.manage"
+expect 400 "$(call "$member_cookie" PUT "$workspace/objects/draft-settings" '{"expiry_days":91,"expected_version":0}')" "more than 90 days"
+[[ "$(field '.errors[0].code')" == drafts.expiry_invalid ]] || fail "expiry code: $(cat "$body")"
+expect 400 "$(call "$member_cookie" PUT "$workspace/objects/draft-settings" '{"expiry_days":0,"expected_version":0}')" "no days"
+expect 409 "$(call "$member_cookie" PUT "$workspace/objects/draft-settings" '{"expiry_days":14,"expected_version":4}')" "a stale version"
+[[ "$(field '.code')" == records.version_conflict ]] || fail "stale draft settings code: $(cat "$body")"
+metadata_before=$(sql --command="SELECT coalesce(max(metadata_version), 0) FROM change_counters WHERE tenant_id = '$tenant';")
+changes_before=$(sql --command="SELECT count(*) FROM record_changes WHERE tenant_id = '$tenant';")
+expect 200 "$(call "$member_cookie" PUT "$workspace/objects/draft-settings" '{"expiry_days":14,"expected_version":0}')" "an administrator sets 14 days"
+[[ "$(field '"\(.expiry_days) \(.version)"')" == "14 1" && "$(field '.updated_by.id')" == "$member" ]] || fail "changed draft settings: $(cat "$body")"
+[[ "$(sql --command="SELECT count(*) FROM outbox WHERE tenant_id = '$tenant' AND event_type = 'platform.objects.draft-settings-updated.v1' AND envelope->'payload'->>'expiry_days' = '14' AND envelope->'payload'->>'previous_expiry_days' = '7';")" == 1 ]] || fail "the draft settings event"
+[[ "$(sql --command="SELECT count(*) FROM audit_log WHERE tenant_id = '$tenant' AND action = 'objects.draft_settings.updated' AND target = 'draft_settings' AND metadata->>'expiry_days' = '14';")" == 1 ]] || fail "the draft settings audit entry"
+(( $(sql --command="SELECT metadata_version FROM change_counters WHERE tenant_id = '$tenant';") > metadata_before )) || fail "the setting moves the metadata version"
+[[ "$(sql --command="SELECT count(*) FROM record_changes WHERE tenant_id = '$tenant';")" == "$changes_before" ]] || fail "a draft setting is not a record change"
+[[ "$(app_sql --command="SELECT count(*) FROM record_draft_settings;")" == 0 ]] || fail "record_draft_settings without app.tenant_id"
+expect 200 "$(call "$viewer_cookie" GET "$workspace/ui/contributions")" "contributions after the change"
+[[ "$(field '.drafts.expiry_days')" == 14 && "$(field '.revision')" != "$revision_before" ]] || fail "the contribution carries the new expiry: $(cat "$body")"
+draft_browser=018f0000-0000-4000-8000-00000000d001
+expect 200 "$(call "$member_cookie" GET "$api_base/api/v1/me/draft-key?browser=$draft_browser")" "a browser's draft key"
+draft_key=$(field '.key')
+[[ "${#draft_key}" == 43 ]] || fail "a 256-bit base64url key: $(cat "$body")"
+[[ "$(curl --silent --output /dev/null --dump-header - --header "$member_cookie" "$api_base/api/v1/me/draft-key?browser=$draft_browser" | tr -d '\r' | grep -i '^cache-control:' | awk '{print $2}')" == no-store ]] || fail "draft keys are never cached"
+expect 200 "$(call "$member_cookie" GET "$api_base/api/v1/me/draft-key?browser=$draft_browser")" "the same browser again"
+[[ "$(field '.key')" == "$draft_key" ]] || fail "one key per browser"
+expect 200 "$(call "$viewer_cookie" GET "$api_base/api/v1/me/draft-key?browser=$draft_browser")" "another user, same browser"
+[[ "$(field '.key')" != "$draft_key" ]] || fail "keys are per user"
+expect 403 "$(call "Authorization: Bearer not-a-browser" GET "$api_base/api/v1/me/draft-key?browser=$draft_browser")" "bearer tokens get no draft key"
+[[ "$(field '.code')" == drafts.browser_only ]] || fail "browser-only code: $(cat "$body")"
+expect 401 "$(call "Accept: application/json" GET "$api_base/api/v1/me/draft-key?browser=$draft_browser")" "no session, no key"
+expect 400 "$(call "$member_cookie" GET "$api_base/api/v1/me/draft-key")" "a key names its browser"
+[[ "$(field '.code')" == drafts.browser_invalid ]] || fail "browser code: $(cat "$body")"
+[[ "$(sql --command="SELECT count(*) FROM audit_log WHERE action LIKE '%draft_key%' OR metadata::text LIKE '%$draft_key%';")" == 0 ]] || fail "draft keys are never audited or logged"
+! grep -q -- "$draft_key" "$work_root/api.log" || fail "the API log must not hold a draft key"
+
 log "the browser: object pages and the Object Manager against the real API"
 # A device the administrator revokes from Settings → Devices (#390).
 grant_code code-watch "$verifier"
 expect 200 "$(redeem code-watch "$verifier" "Viewer's watch")" "a device to revoke from the browser"
 watch_refresh=$(field '.refresh_token')
 pnpm --filter web build >"$work_root/web-build.log" 2>&1 || { cat "$work_root/web-build.log" >&2; fail "web build failed"; }
-API_BASE="$api_base" SESSION_TOKEN="$member_token" SCREENSHOT_DIR="$work_root/screenshots" \
+# Drafts are opened with every decrypt held back, as on a slow runner or device, so input typed
+# while a form looks for its draft is proven to be kept (ADR 0036 §7).
+API_BASE="$api_base" SESSION_TOKEN="$member_token" SIGN_OUT_TOKEN="$signout_token" SCREENSHOT_DIR="$work_root/screenshots" \
+  BROWSER_SLOW_DECRYPT_MS="${BROWSER_SLOW_DECRYPT_MS:-300}" \
   node tests/objects-acceptance/browser.mjs || fail "the object pages did not complete the journey"
 expect 400 "$(token_form --data-urlencode grant_type=refresh_token --data-urlencode "refresh_token=$watch_refresh")" "the device revoked in the browser"
 [[ "$(field '.wipe')" == true ]] || fail "the device revoked from the page is told to wipe: $(cat "$body")"
+# Sign-out in the browser revoked that session and deleted its browser's key with it (ADR 0036 §11).
+[[ "$(sql --command="SELECT count(*) FROM sessions WHERE token_hash = '$(hash_token "$signout_token")' AND revoked_at IS NOT NULL;")" == 1 ]] || fail "sign-out revokes the session"
+[[ "$(sql --command="SELECT count(*) FROM draft_keys WHERE user_id = '$member';")" == 2 ]] || fail "sign-out deletes only its browser's draft key: $(sql --command="SELECT browser_id FROM draft_keys WHERE user_id = '$member';")"
+[[ "$(sql --command="SELECT expiry_days FROM record_draft_settings WHERE tenant_id = '$tenant';")" == 30 ]] || fail "the browser set the draft expiry"
+[[ "$(sql --command="SELECT count(*) FROM outbox WHERE tenant_id = '$tenant' AND event_type LIKE 'platform.objects.record-%' AND envelope->'payload'->>'object' = 'custom:project' AND envelope::text LIKE '%Left on a shared computer%';")" == 0 ]] || fail "a draft never becomes a record change"
 
 log "archiving (ADR 0035 G1): an edit that leaves lists, queries and search"
 regions="$workspace/objects/custom:region/records"
@@ -1197,4 +1248,4 @@ expect 200 "$(call "$member_cookie" DELETE "$regions/$south?expected_version=3")
 expect 409 "$(call "$member_cookie" POST "$regions/$south/archive?expected_version=4")" "archive a deleted record"
 [[ "$(field '.code')" == records.deleted ]] || fail "deleted code: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, record drafts, RLS, evidence and the browser pages\n'

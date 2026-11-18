@@ -31,7 +31,8 @@ the plugin lookup `example.tracker:milestone`.
 
 | Operations | Required access |
 | --- | --- |
-| Create, change and delete objects and fields; read and set object permissions | `objects.manage` |
+| Create, change and delete objects and fields; read and set object permissions; change the record draft expiry | `objects.manage` |
+| Read the record draft settings | any member |
 | See an object and read its records | object `read` |
 | Create records | object `create` |
 | Change, archive and unarchive records | object `edit`, and edit access to the record |
@@ -786,6 +787,104 @@ synced device's push sends for a change its assistant bridge made:
   history and audit, and the audit entry keeps the verified device id as
   `device_id` beside it. Events carry only the kind.
 
+## Record drafts
+
+Record forms keep the member's unfinished input as a draft (ADR 0036). A
+draft lives on the member's device, never on the server: in the browser,
+IndexedDB encrypted with a per-browser key the server holds. A draft is not
+a record change: writing one creates no record version, history entry,
+event, change-log entry, audit entry or sync push, and saving one is the
+ordinary create or update with every check. The server keeps only the
+workspace's expiry and each browser's key.
+
+### Draft settings
+
+`GET /objects/draft-settings` returns the workspace's draft expiry to any
+member; `PUT /objects/draft-settings` with `{"expiry_days": 14,
+"expected_version": 0}` changes it and needs `objects.manage`.
+
+```json
+{
+  "expiry_days": 14,
+  "default_expiry_days": 7,
+  "min_expiry_days": 1,
+  "max_expiry_days": 90,
+  "version": 1,
+  "updated_at": "2026-11-18T09:30:00Z",
+  "updated_by": {"id": "…", "name": "Hannah Okafor"}
+}
+```
+
+- A draft expires `expiry_days` after its last change. Without a change the
+  workspace has the default of 7 days, at `version` 0 with `updated_at` and
+  `updated_by` null. Browsers compute expiry from the current setting, so
+  shortening it removes older drafts at their next sweep.
+- `expected_version` is the version read (0 for the default); a stale one
+  returns `409 records.version_conflict`. Values outside 1 to 90 return
+  `400 validation.failed` with `drafts.expiry_invalid` on `expiry_days`;
+  unknown fields are refused.
+- A change writes an audit record (`objects.draft_settings.updated`, target
+  `draft_settings`, with the old and new number of days) and
+  `platform.objects.draft-settings-updated.v1` in the same transaction, and
+  moves the workspace `metadata_version`. It writes no change-log entry.
+- The setting is engine metadata in both stores (`record_draft_settings`,
+  keyed by `tenant_id`, forced row-level security on PostgreSQL). A synced
+  device answers the `GET` from its replica and refuses the `PUT` with
+  `403 sync.server_only`.
+- The web shell offers the setting as Settings → Record drafts to holders of
+  `objects.manage`.
+
+### Where drafts live
+
+The workspace's UI contributions (`GET /ui/contributions`) carry a `drafts`
+block naming where the shell keeps drafts, with the expiry and the limits:
+
+```json
+"drafts": {"store": "browser", "expiry_days": 14, "max_drafts": 50, "max_bytes": 1048576}
+```
+
+The server always says `browser`. A host that sends no block (or `null`)
+keeps no drafts, and forms behave as before; the device bridge sends none
+until device drafts exist (ADR 0036 slice 3). The block is part of the
+contribution `revision`, so a changed expiry reaches open shells on their
+next revalidation. Limits: 50 drafts per member per workspace in one browser
+(new forms then stop autosaving; nothing is evicted), and 1 MiB per draft
+document before encryption.
+
+### The browser draft key
+
+`GET /api/v1/me/draft-key?browser={browser id}` returns the signed-in
+user's key for that browser, creating it on first use:
+
+```json
+{"browser": "6f1c…", "key": "base64url, 32 bytes"}
+```
+
+- Browser sessions only: a request with an `Authorization` header (an API
+  client's or a device's token) is refused with `403 drafts.browser_only`
+  before the session is looked at; no session is `401 auth.unauthenticated`.
+  `browser` must be a UUID (`400 drafts.browser_invalid`).
+- The response is `Cache-Control: no-store`. Keys are random, never logged
+  and never audited, and never returned to another user.
+- Keys are user-scoped (`draft_keys`, next to sessions): one per user and
+  browser, at most 20 per user (creating a 21st deletes the least recently
+  used), deleted by the worker after 90 days unused, and deleted with the
+  user.
+- The shell derives a per-workspace AES-256-GCM key with HKDF-SHA-256
+  (salt: the workspace id; info: `limiara.record-drafts.v1`), keeps it in
+  memory only as a non-extractable key, and encrypts each draft with a fresh
+  96-bit nonce and associated data naming the format version, member,
+  workspace and draft id. Without a key the form says "Drafts are
+  unavailable" and writes nothing.
+
+### Sign-out
+
+`POST /auth/logout?browser={browser id}` revokes the session and, in the
+same transaction, deletes that browser's draft key, so drafts left in the
+browser can no longer be decrypted. The web shell's Sign out deletes the
+member's drafts in the browser first, then posts. Without `browser` (or with
+one that is not a UUID) sign-out revokes the session only.
+
 ## Formula fields
 
 A field with `"field_type": "formula"` takes a `formula` and a
@@ -1196,7 +1295,9 @@ the same transaction: object, field and object-permission changes, record
 created, updated, deleted, undeleted, archived and unarchived
 (`record-archived`, `record-unarchived`, with the record payload), and reports created, updated and
 deleted (`report-created`, `report-updated`, `report-deleted`, naming the
-report, chart and visibility but not the query), and quick actions created,
+report, chart and visibility but not the query), the record draft expiry
+(`platform.objects.draft-settings-updated.v1`, naming the old and new number
+of days), and quick actions created,
 updated and deleted (`platform.objects.quick-action-created.v1`,
 `-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
 target, its fields and the fields it presets, never the preset values), and

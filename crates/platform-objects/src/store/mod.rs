@@ -283,6 +283,16 @@ pub trait ObjectTx: Send {
         action: &crate::QuickAction,
         expected_version: i64,
     ) -> Result<bool, ObjectError>;
+    /// The workspace's record draft settings (ADR 0036 §9); `None` until an
+    /// administrator first changes them.
+    async fn draft_settings(&mut self) -> Result<Option<crate::DraftSettings>, ObjectError>;
+    /// Writes the draft settings if they are still at `expected_version`,
+    /// where 0 means no row exists yet.
+    async fn put_draft_settings(
+        &mut self,
+        settings: &crate::DraftSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError>;
     /// Removes an action if it is still at `expected_version`.
     async fn delete_quick_action(
         &mut self,

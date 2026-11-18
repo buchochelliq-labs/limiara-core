@@ -846,6 +846,22 @@ ALTER TABLE field_definitions ADD COLUMN write_permission TEXT
     AND field_type NOT IN ('formula', 'rollup')));
 "#,
     },
+    // Record draft settings (ADR 0036 §9): the workspace's draft expiry.
+    // Drafts themselves live in the member's browser or, on a device, in
+    // a table of their own (slice 3); none of them is engine data.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0034_record_draft_settings",
+        sql: r#"
+CREATE TABLE record_draft_settings (
+  tenant_id TEXT NOT NULL PRIMARY KEY,
+  expiry_days INTEGER NOT NULL CHECK (expiry_days BETWEEN 1 AND 90),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -2793,6 +2809,60 @@ impl ObjectTx for SqliteObjectTx {
         .bind(expected_version)
         .execute(&mut *self.tx)
         .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn draft_settings(&mut self) -> Result<Option<crate::DraftSettings>, ObjectError> {
+        let row = sqlx::query(
+            "SELECT expiry_days, version, updated_at, updated_by FROM record_draft_settings \
+             WHERE tenant_id = ?1",
+        )
+        .bind(&self.tenant)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.map(|row| {
+            Ok(crate::DraftSettings {
+                expiry_days: row.try_get("expiry_days")?,
+                version: row.try_get("version")?,
+                updated_at: Some(time(&row, "updated_at")?),
+                updated_by: optional_uuid(&row, "updated_by")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn put_draft_settings(
+        &mut self,
+        settings: &crate::DraftSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let updated_at = settings.updated_at.ok_or(ObjectError::Invariant)?;
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO record_draft_settings (tenant_id, expiry_days, version, updated_at, updated_by) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (tenant_id) DO NOTHING",
+            )
+            .bind(&self.tenant)
+            .bind(settings.expiry_days)
+            .bind(settings.version)
+            .bind(timestamp(updated_at))
+            .bind(text(settings.updated_by))
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE record_draft_settings SET expiry_days = ?1, version = ?2, updated_at = ?3, \
+                 updated_by = ?4 WHERE tenant_id = ?5 AND version = ?6",
+            )
+            .bind(settings.expiry_days)
+            .bind(settings.version)
+            .bind(timestamp(updated_at))
+            .bind(text(settings.updated_by))
+            .bind(&self.tenant)
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
         Ok(result.rows_affected() == 1)
     }
 

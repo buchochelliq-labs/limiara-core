@@ -1,3 +1,4 @@
+import {draftsContributionFromApi, type DraftsContribution} from '../drafts/types';
 import type {NavigationContribution, SessionUser, ShellViewModel, Workspace} from './types';
 
 type ApiProblem = {detail?: string; status?: number};
@@ -58,9 +59,9 @@ export async function loadShellContext(signal?: AbortSignal): Promise<{workspace
  * when the host takes the shell's route messages (ADR 0034 §9); the
  * server's contributions never say so, so it is left out there.
  */
-export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string; routeContext?: true};
+export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string; routeContext?: true; drafts: DraftsContribution | null};
 
-type ContributionResponse = {navigation: NavigationContribution[]; permissions: string[]; revision: string; route_context?: unknown};
+type ContributionResponse = {navigation: NavigationContribution[]; permissions: string[]; revision: string; route_context?: unknown; drafts?: unknown};
 
 export async function loadWorkspaceNavigation(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceActivation> {
   const result = await api<ContributionResponse>(`/workspaces/${workspaceId}/ui/contributions`, signal);
@@ -68,6 +69,7 @@ export async function loadWorkspaceNavigation(workspaceId: string, signal?: Abor
     navigation: result.navigation.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     permissions: [...result.permissions].sort(),
     revision: result.revision,
+    drafts: draftsContributionFromApi(result.drafts),
     ...(result.route_context === true ? {routeContext: true as const} : {}),
   };
 }

@@ -75,6 +75,12 @@ async fn main() -> anyhow::Result<()> {
         publisher.clone(),
     ));
 
+    // Browser draft keys unused past the longest draft expiry (ADR 0036 §4).
+    // Hourly is ample for a 90-day window; a pass is cheap when nothing is due.
+    tokio::spawn(worker::draft_keys::run(
+        pool.clone(),
+        Duration::from_secs(60 * 60),
+    ));
     let plugin_runtime = start_plugin_runtime(&settings, &pool, worker::linked_worker_plugins()?)?;
     start_automation_jobs(&settings, &pool)?;
 

@@ -12,10 +12,12 @@ use ui_metadata::{
 use uuid::Uuid;
 
 mod devices;
+mod draft_keys;
 pub use devices::*;
+pub use draft_keys::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0043_field_permissions.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0044_record_drafts.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]
