@@ -1,0 +1,86 @@
+name: docs-zensical-publish
+
+# Deploys the Zensical build of docs/ (apps/docs-zensical) to this
+# repository's GitHub Pages site, next to the VitePress site that
+# docs-deploy.yml publishes to Cloudflare Pages. Pull requests build it
+# (no secrets, nothing deployed); pushes to main and manual runs deploy
+# it through the github-pages environment. GitHub Pages has no per-pull-
+# request previews. Every page is marked noindex: the site is under
+# evaluation (ADR 0008). Pages must be turned on once, with "GitHub
+# Actions" as its source (Settings > Pages).
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "apps/docs-zensical/**"
+      - ".github/workflows/docs-zensical-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "apps/docs-zensical/**"
+      - ".github/workflows/docs-zensical-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Reviewed branch, tag, or commit to build and deploy (use a retained SHA for rollback)
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: docs-zensical-publish-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docs-zensical-publish-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+          persist-credentials: false
+      # The commit actually built, not the ref asked for: a manual run's
+      # source_ref can be a branch or tag, and a rollback needs the SHA.
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/docs-zensical/requirements.txt
+      - run: pip install -r apps/docs-zensical/requirements.txt
+      # The Pages address, so links on the 404 page and canonical links
+      # carry the /<repository>/ prefix Pages serves the site under.
+      - run: apps/docs-zensical/build.sh
+        env:
+          ZENSICAL_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      - run: python3 apps/docs-zensical/scripts/prepare_deployment.py production "${{ steps.revision.outputs.sha }}"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/docs-zensical/build/site
+          retention-days: 90
+
+  deploy:
+    name: docs-zensical-deploy
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

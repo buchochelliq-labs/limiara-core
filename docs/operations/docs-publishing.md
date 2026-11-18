@@ -31,6 +31,20 @@ The workflow never uses `pull_request_target`, and the preview deploy job reject
 6. Merge through protected `main`, approve `docs-production`, and verify the generated Pages domain.
 7. Add `docs.limiara.org` only after DNS and brand approval. The canonical sitemap and social URL already target that domain, so do not announce it before DNS works.
 
+## The Zensical site
+
+The Zensical build of the same pages (`apps/docs-zensical`, under evaluation in [ADR 0008](../adr/0008-vitepress-documentation-platform.md)) is published to this repository's GitHub Pages site, `https://buchochelliq-labs.github.io/limiara-core/`, by its own workflow, `docs-zensical-deploy`. It needs no Cloudflare project, token or secret.
+
+- **Pull requests** run `docs-zensical-publish-build`: the strict build, the link check and the deployment preparation, with read-only permissions and nothing deployed. GitHub Pages has no per-pull-request previews; download the `github-pages` artifact from the run to look at a pull request's site.
+- **Pushes to `main`** that touch `docs/` or `apps/docs-zensical/` build and deploy through the `github-pages` environment, with `pages: write` and `id-token: write` given to the deploy job only.
+- **A manual run** builds and deploys `source_ref`, which is how to roll back: run it with a known-good commit SHA. `deployment.json` and the artifact always record the commit that was built.
+
+The site is never indexed. GitHub Pages sends no custom headers and serves the site under `/limiara-core/`, where `robots.txt` is not read, so `scripts/prepare_deployment.py` adds `<meta name="robots" content="noindex, nofollow">` to every page's `<head>`, removes `robots.txt`, and writes `deployment.json`; the sitemap stays because the theme's instant navigation loads it, and it lists only the Pages URLs. The build sets `ZENSICAL_SITE_URL` to the Pages address, so the 404 page and the canonical links carry the `/limiara-core/` prefix. Do not give the Pages site a custom domain while it is under evaluation.
+
+To activate it, once: in **Settings → Pages**, set **Source** to **GitHub Actions**. Until then a deploy fails at its first step and nothing is published. Then run `docs-zensical-deploy` manually with `source_ref=main`, open the Pages address, and check that `deployment.json` says `zensical`, `github-pages` and the commit, and that a page's source carries the `noindex` tag.
+
+To take it down, turn GitHub Pages off in **Settings → Pages**; to stop deploying without taking it down, disable the `docs-zensical-publish` workflow under **Actions**.
+
 ## Release verification
 
 For preview and production, verify the home page, a clean article URL, the custom 404, `/getting-started`, `/api`, `sitemap.xml`, `robots.txt`, `_headers` behavior, and `deployment.json`. Assets use immutable caching; HTML revalidates; the sitemap has a one-hour cache. A rollback must therefore replace HTML immediately while content-addressed assets remain safely cached.
@@ -44,7 +58,7 @@ node apps/docs/scripts/verify-portable-artifact.mjs
 node apps/docs/scripts/verify-portable-artifact.mjs --serve
 ```
 
-The third command performs an independent HTTP smoke test; the fourth exposes the artifact on `127.0.0.1:4175`. CI retains each successful publish artifact for 90 days. Download and extract `docs-static-site-<sha>` to serve the same directory with any conventional static host.
+The third command performs an independent HTTP smoke test; the fourth exposes the artifact on `127.0.0.1:4175`. CI retains each successful publish artifact for 90 days. Download and extract `docs-static-site-<sha>` to serve the same directory with any conventional static host. The `<sha>` in an artifact's name and `sourceRevision` in its `deployment.json` are always the commit that was built, even when a manual run named a branch or tag as `source_ref`; both deploy workflows resolve it after checkout.
 
 ## Rollback and clean rebuild
 
