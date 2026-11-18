@@ -560,8 +560,11 @@ try {
   dialog = page.getByRole('dialog', {name: 'Edit Drafted project'});
   await dialog.getByText(/You have an unsaved draft from/).waitFor();
   if (await dialog.getByLabel('Code').inputValue() !== 'DR-1') throw new Error('until the member chooses, the form shows the saved record');
+  const versionBefore = await dialog.getByText(/^Version \d+$/).textContent();
   await dialog.getByRole('button', {name: 'Restore'}).click();
   await dialog.getByText(/^Draft saved at /).waitFor();
+  // Restore is not Save: the record keeps its version until the member saves.
+  if (await dialog.getByText(/^Version \d+$/).textContent() !== versionBefore) throw new Error('Restore must not save the record');
   if (await dialog.getByLabel('Code').inputValue() !== 'DR-2') throw new Error('Restore must put the draft back');
   await shot(page, '25-draft-restored');
   await dialog.getByRole('button', {name: 'Save', exact: true}).click();

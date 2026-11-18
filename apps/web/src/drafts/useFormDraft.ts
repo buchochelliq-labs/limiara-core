@@ -3,7 +3,7 @@ import type {ObjectsClient} from '../objects/api';
 import {DraftAutosave, type DraftState} from './autosave';
 import {planRestore, type RestorePlan} from './model';
 import {useDrafts} from './runtime';
-import {serialiseKey, type DraftDocument, type DraftKey, type DraftNotices, type StoredDraft} from './types';
+import {serialiseKey, type DraftDocument, type DraftKey, type DraftNotices, type DraftStore, type StoredDraft} from './types';
 
 /** Where the form is with its draft. */
 export type FormDraftPhase =
@@ -16,8 +16,8 @@ export type FormDraftPhase =
   /** A draft exists; until the member chooses, nothing is restored or overwritten. */
   | {kind: 'prompt'; draft: StoredDraft; notices: DraftNotices}
   | {kind: 'restoring'}
-  /** The draft cannot be restored now; it is kept, and may only be discarded or left. */
-  | {kind: 'blocked'; reason: 'unavailable' | 'conflicts' | 'failed'}
+  /** The draft cannot be restored now; it is kept, and may only be discarded or left. It keeps its identity so Discard deletes it. */
+  | {kind: 'blocked'; reason: 'unavailable' | 'conflicts' | 'failed'; draft: StoredDraft}
   /** Autosaving. */
   | {kind: 'active'};
 
@@ -69,17 +69,17 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
     try {
       plan = await planRestore(client, draft.document, {only});
     } catch {
-      setPhase({kind: 'blocked', reason: 'failed'});
+      setPhase({kind: 'blocked', reason: 'failed', draft});
       setMessage({tone: 'warning', text: 'The draft could not be checked against the record. Try again in a moment.'});
       return;
     }
     if (plan.status === 'unavailable') {
-      setPhase({kind: 'blocked', reason: 'unavailable'});
+      setPhase({kind: 'blocked', reason: 'unavailable', draft});
       setMessage({tone: 'warning', text: 'Not available right now. This draft is kept until it expires, and can only be discarded.'});
       return;
     }
     if (plan.status === 'conflicts') {
-      setPhase({kind: 'blocked', reason: 'conflicts'});
+      setPhase({kind: 'blocked', reason: 'conflicts', draft});
       setMessage({tone: 'warning', text: 'This record changed since you started; reviewing changes is coming soon. Keep the draft for later or discard it.'});
       return;
     }
@@ -151,11 +151,15 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
     changed: () => { if (phase.kind === 'active') controller.current?.changed(); },
     flush: async () => { await controller.current?.flush(); },
     restore: async () => { if (phase.kind === 'prompt') await restore(phase.draft); },
-    /** Discards the offered or current draft and starts afresh. */
+    /** Discards the offered, blocked or current draft and starts afresh. */
     discard: async () => {
-      const id = phase.kind === 'prompt' ? phase.draft.meta.id : controller.current?.id;
-      if (controller.current) await controller.current.discard().catch(() => undefined);
-      else if (id && store) await store.delete(id).catch(() => undefined);
+      if (!store) return;
+      const outcome = await discardDraft(store, phase, controller.current);
+      if (!outcome.ok) {
+        setMessage({tone: 'warning', text: 'The draft could not be discarded. Try again in a moment.'});
+        return;
+      }
+      controller.current = null;
       setMessage(null);
       setDropped([]);
       startAutosave(newId(), 0);
@@ -164,17 +168,86 @@ export function useFormDraft({client, draftKey, resume, build, apply, only}: {
     clear: async () => { await controller.current?.discard().catch(() => undefined); controller.current = null; },
     /** Leaves a blocked draft as it is and lets the form be used without drafting. */
     keepBlocked: () => { setPhase({kind: 'off'}); },
-    /** Another tab wrote a newer revision: load it here and carry on from it. */
+    /** Another tab wrote a newer revision: load it here and carry on from it, only if it restores. */
     takeOver: async () => {
       const current = controller.current;
       if (!store || !current) return;
-      const latest = await store.get(current.id);
-      if (!latest) { current.adopt(0); return; }
-      const plan = await planRestore(client, latest.document, {only}).catch(() => null);
-      if (plan?.status === 'ready') applyRef.current(plan);
-      current.adopt(latest.meta.revision);
+      const outcome = await takeOverDraft(store, current, client, only, plan => applyRef.current(plan));
+      setMessage(takeOverMessages[outcome]);
     },
     maxDrafts: runtime?.contribution.maxDrafts ?? 50,
     expiryDays: runtime?.contribution.expiryDays ?? 7,
   };
 }
+
+/**
+ * Deletes the draft the form is showing: the one offered or blocked (whose
+ * controller, if any, belongs to another id) and the one being autosaved.
+ */
+export async function discardDraft(store: DraftStore, phase: FormDraftPhase, current: DraftAutosave | null): Promise<{ok: boolean}> {
+  try {
+    if (phase.kind === 'prompt' || phase.kind === 'blocked') await store.delete(phase.draft.meta.id);
+    if (current) await current.discard();
+    return {ok: true};
+  } catch {
+    return {ok: false};
+  }
+}
+
+export type TakeOverOutcome = 'taken' | 'gone' | 'already_saved' | 'unavailable' | 'conflicts' | 'failed';
+
+const takeOverMessages: Record<TakeOverOutcome, {tone: 'info' | 'warning'; text: string} | null> = {
+  taken: null,
+  gone: {tone: 'info', text: 'The other tab saved or discarded this draft. Your changes here are kept as a new draft.'},
+  already_saved: {tone: 'info', text: 'The other tab’s changes are already saved. Your changes here are kept as a new draft.'},
+  unavailable: {tone: 'warning', text: 'The newer draft is not available right now. Nothing was changed here.'},
+  conflicts: {tone: 'warning', text: 'The record changed since the other tab’s draft started; reviewing changes is coming soon. Nothing was changed here.'},
+  failed: {tone: 'warning', text: 'The newer draft could not be loaded. Nothing was changed here; try again in a moment.'},
+};
+
+/**
+ * Takes over a draft another tab wrote (ADR 0036 §7). The newer revision is
+ * adopted only once its values were restored into this form; otherwise the
+ * controller keeps its revision, so this tab can never overwrite the newer
+ * draft with its older values.
+ */
+export async function takeOverDraft(store: DraftStore, current: DraftAutosave, client: ObjectsClient, only: readonly string[] | undefined, apply: (plan: Restored) => void): Promise<TakeOverOutcome> {
+  let latest: StoredDraft | null;
+  try {
+    latest = await store.get(current.id);
+  } catch {
+    return 'failed';
+  }
+  if (!latest) {
+    // Saved or discarded elsewhere: this tab's values become a new draft.
+    current.reset(0);
+    current.changed();
+    return 'gone';
+  }
+  let plan: RestorePlan;
+  try {
+    plan = await planRestore(client, latest.document, {only});
+  } catch {
+    return 'failed';
+  }
+  switch (plan.status) {
+    case 'ready':
+      apply(plan);
+      current.adopt(latest.meta.revision);
+      return 'taken';
+    case 'already_saved':
+      try {
+        await store.delete(latest.meta.id);
+      } catch {
+        return 'failed';
+      }
+      current.reset(0);
+      current.changed();
+      return 'already_saved';
+    case 'unavailable':
+      return 'unavailable';
+    case 'conflicts':
+      return 'conflicts';
+  }
+}
+

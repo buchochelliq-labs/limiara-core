@@ -49,8 +49,8 @@ export function RestorePrompt({draft, notices, expiryDays, busy = false, onResto
     <p id={`draft-prompt-${draft.meta.id}`}><strong>You have an unsaved draft from {formatDraftTime(draft.meta.changedAt)}.</strong>{soon && <> Expires tomorrow.</>}</p>
     {noticeLines(notices).map(line => <p key={line} className="draft-prompt__notice">{line}</p>)}
     <div className="draft-actions">
-      <Button ref={restoreRef} size="small" loading={busy} onClick={onRestore}>Restore</Button>
-      <Button size="small" variant="secondary" disabled={busy} onClick={onDiscard}>Discard</Button>
+      <Button type="button" ref={restoreRef} size="small" loading={busy} onClick={onRestore}>Restore</Button>
+      <Button type="button" size="small" variant="secondary" disabled={busy} onClick={onDiscard}>Discard</Button>
     </div>
   </section>;
 }
@@ -62,9 +62,9 @@ export function CancelChoice({onKeep, onDiscard, onBack}: {onKeep: () => void; o
   return <div className="draft-cancel" role="group" aria-labelledby="draft-cancel-title">
     <p id="draft-cancel-title"><strong>You have an unsaved draft.</strong> Keep it to finish later?</p>
     <div className="draft-actions">
-      <Button ref={keepRef} size="small" onClick={onKeep}>Keep draft</Button>
-      <Button size="small" variant="danger" onClick={onDiscard}>Discard draft</Button>
-      <Button size="small" variant="quiet" onClick={onBack}>Back to form</Button>
+      <Button type="button" ref={keepRef} size="small" onClick={onKeep}>Keep draft</Button>
+      <Button type="button" size="small" variant="danger" onClick={onDiscard}>Discard draft</Button>
+      <Button type="button" size="small" variant="quiet" onClick={onBack}>Back to form</Button>
     </div>
   </div>;
 }
@@ -77,10 +77,10 @@ export function CreateDraftChooser({drafts, expiryDays, onContinue, onStartNew}:
     <ul>
       {drafts.map(draft => <li key={draft.meta.id}>
         <span>{draftTitle(draft.document)}, {formatDraftTime(draft.meta.changedAt)}{expiresSoon(draft.meta.changedAt, expiryDays) && <>, expires tomorrow</>}</span>
-        <Button size="small" variant="secondary" onClick={() => onContinue(draft)} aria-label={`Continue ${draftTitle(draft.document)}`}>Continue</Button>
+        <Button type="button" size="small" variant="secondary" onClick={() => onContinue(draft)} aria-label={`Continue ${draftTitle(draft.document)}`}>Continue</Button>
       </li>)}
     </ul>
-    <Button size="small" onClick={onStartNew}>Start new</Button>
+    <Button type="button" size="small" onClick={onStartNew}>Start new</Button>
   </section>;
 }
 
@@ -98,7 +98,7 @@ export function DraftMessages({message, dropped}: {message: {tone: 'info' | 'war
 export function BlockedDraft({onKeep, onDiscard}: {onKeep: () => void; onDiscard: () => void}) {
   const [busy, setBusy] = useState(false);
   return <div className="draft-actions">
-    <Button size="small" variant="secondary" onClick={onKeep} disabled={busy}>Keep draft</Button>
-    <Button size="small" variant="danger" loading={busy} onClick={() => { setBusy(true); onDiscard(); }}>Discard draft</Button>
+    <Button type="button" size="small" variant="secondary" onClick={onKeep} disabled={busy}>Keep draft</Button>
+    <Button type="button" size="small" variant="danger" loading={busy} onClick={() => { setBusy(true); onDiscard(); }}>Discard draft</Button>
   </div>;
 }

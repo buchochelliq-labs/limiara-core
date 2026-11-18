@@ -263,7 +263,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
     <div className="sr-only" aria-live="polite">{notice}</div>
     {error && <Alert variant="danger" title={error} />}
     <ArchivedNotice record={record} />
-    {editDraft && !editing && canEdit && <p className="draft-notice">Unsaved draft from {formatDraftTime(editDraft.meta.changedAt)} <Button size="small" variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setEditing(true); }}>Continue editing</Button></p>}
+    {editDraft && !editing && canEdit && <p className="draft-notice">Unsaved draft from {formatDraftTime(editDraft.meta.changedAt)} <Button type="button" size="small" variant="secondary" aria-haspopup="dialog" onClick={() => { setError(''); setEditing(true); }}>Continue editing</Button></p>}
     {confirmDelete && <div className="object-confirm" role="alertdialog" aria-labelledby="object-confirm-title">
       <p id="object-confirm-title"><strong>Delete {record.name}?</strong> It moves to the recycle bin, where it can be restored.</p>
       <div className="object-page__actions"><Button variant="danger" onClick={() => void remove()} autoFocus>Delete</Button><Button variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button></div>

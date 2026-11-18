@@ -114,7 +114,7 @@ export function DraftsPage({client, onNavigate, headingRef}: {client: ObjectsCli
   const header = <header className="page-header"><div><p className="page-header__breadcrumb">Account</p><h1 ref={headingRef} tabIndex={-1}>Drafts</h1><p>Unsaved changes to records, kept in this browser until you save or discard them.</p></div></header>;
   if (!runtime) return <div className="content-canvas">{header}<Alert variant="info" title="Drafts are not kept here">This workspace does not keep drafts on this device.</Alert></div>;
   if (runtime.status === 'unavailable') return <div className="content-canvas">{header}<Alert variant="warning" title="Drafts are unavailable">Drafts could not be unlocked for this page. Reload the page to try again.</Alert></div>;
-  if (failed) return <div className="content-canvas">{header}<Alert variant="danger" title="Your drafts could not be read. Try again in a moment." /><Button variant="secondary" onClick={() => { setFailed(false); setRefresh(value => value + 1); }}>Try again</Button></div>;
+  if (failed) return <div className="content-canvas">{header}<Alert variant="danger" title="Your drafts could not be read. Try again in a moment." /><Button type="button" variant="secondary" onClick={() => { setFailed(false); setRefresh(value => value + 1); }}>Try again</Button></div>;
   if (!rows) return <div className="content-canvas">{header}<Skeleton label="Loading drafts" lines={3} /></div>;
 
   const discard = async (draft: StoredDraft) => {
@@ -151,16 +151,16 @@ export function DraftsPage({client, onNavigate, headingRef}: {client: ObjectsCli
                 <td>{expiresSoon(draft.meta.changedAt, expiryDays) ? 'Expires tomorrow' : formatDraftTime(expiresAt(draft.meta.changedAt, expiryDays))}</td>
                 <td>{stateLabels[state]}</td>
                 <td><div className="draft-actions">
-                  {state !== 'unavailable' && <Button size="small" variant="secondary" aria-label={`Open ${title}`} onClick={() => onNavigate(draftRoute(draft))}>Open</Button>}
-                  <Button size="small" variant="quiet" aria-label={`Discard ${title}`} onClick={() => void discard(draft)}>Discard</Button>
+                  {state !== 'unavailable' && <Button type="button" size="small" variant="secondary" aria-label={`Open ${title}`} onClick={() => onNavigate(draftRoute(draft))}>Open</Button>}
+                  <Button type="button" size="small" variant="quiet" aria-label={`Discard ${title}`} onClick={() => void discard(draft)}>Discard</Button>
                 </div></td>
               </tr>;
             })}</tbody>
           </table>
         </div>
         {confirmAll
-          ? <div className="object-confirm" role="alertdialog" aria-labelledby="drafts-discard-all"><p id="drafts-discard-all"><strong>Discard all {rows.length} drafts?</strong> This cannot be undone.</p><div className="draft-actions"><Button variant="danger" autoFocus onClick={() => void discardAll()}>Discard all</Button><Button variant="secondary" onClick={() => setConfirmAll(false)}>Cancel</Button></div></div>
-          : <Button variant="secondary" onClick={() => setConfirmAll(true)}>Discard all</Button>}
+          ? <div className="object-confirm" role="alertdialog" aria-labelledby="drafts-discard-all"><p id="drafts-discard-all"><strong>Discard all {rows.length} drafts?</strong> This cannot be undone.</p><div className="draft-actions"><Button type="button" variant="danger" autoFocus onClick={() => void discardAll()}>Discard all</Button><Button type="button" variant="secondary" onClick={() => setConfirmAll(false)}>Cancel</Button></div></div>
+          : <Button type="button" variant="secondary" onClick={() => setConfirmAll(true)}>Discard all</Button>}
       </>}
   </div>;
 }

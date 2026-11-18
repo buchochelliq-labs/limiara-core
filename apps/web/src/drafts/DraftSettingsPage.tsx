@@ -33,7 +33,7 @@ export function DraftSettingsPage({workspaceId, canManage, client: given, headin
   const header = <header className="page-header"><div><p className="page-header__breadcrumb">Settings</p><h1 ref={headingRef} tabIndex={-1}>Record drafts</h1><p>Members’ unsaved changes to records are kept on their own device, encrypted, until they save them, discard them or sign out.</p></div></header>;
   if (!canManage) return <div className="content-canvas">{header}<Alert variant="warning" title="Permission needed">Changing how long drafts are kept needs the permission to manage objects.</Alert></div>;
   if (load === 'loading') return <div className="content-canvas">{header}<Skeleton label="Loading draft settings" lines={2} /></div>;
-  if (load === 'failed' || !settings) return <div className="content-canvas">{header}<Alert variant="danger" title="The draft settings could not be loaded. Try again in a moment." /><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>;
+  if (load === 'failed' || !settings) return <div className="content-canvas">{header}<Alert variant="danger" title="The draft settings could not be loaded. Try again in a moment." /><Button type="button" variant="secondary" onClick={() => setAttempt(value => value + 1)}>Try again</Button></div>;
 
   const value = Number(days);
   const valid = Number.isInteger(value) && value >= settings.minExpiryDays && value <= settings.maxExpiryDays;

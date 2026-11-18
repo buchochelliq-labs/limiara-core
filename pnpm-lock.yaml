@@ -16,7 +16,7 @@ importers:
         version: 5.6.3
       vitest:
         specifier: 2.1.4
-        version: 2.1.4(lightningcss@1.32.0)
+        version: 2.1.4(happy-dom@15.11.7)(lightningcss@1.32.0)
       vue:
         specifier: 3.5.40
         version: 3.5.40(typescript@5.6.3)
@@ -66,6 +66,9 @@ importers:
       fake-indexeddb:
         specifier: 6.2.5
         version: 6.2.5
+      happy-dom:
+        specifier: 15.11.7
+        version: 15.11.7
       typescript:
         specifier: 5.6.3
         version: 5.6.3
@@ -74,7 +77,7 @@ importers:
         version: 8.1.4(yaml@2.9.0)
       vitest:
         specifier: 2.1.4
-        version: 2.1.4(lightningcss@1.32.0)
+        version: 2.1.4(happy-dom@15.11.7)(lightningcss@1.32.0)
 
 packages:
 
@@ -1190,6 +1193,10 @@ packages:
   emoji-regex-xs@1.0.0:
     resolution: {integrity: sha512-LRlerrMYoIDrT6jgpeZ2YYl/L8EulRTt5hQcYjy5AInh7HWXKimpqx68aknBFpGL2+/IcogTcaydJEgaTmOpDg==}
 
+  entities@4.5.0:
+    resolution: {integrity: sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==}
+    engines: {node: '>=0.12'}
+
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
@@ -1261,6 +1268,10 @@ packages:
   global-directory@5.0.0:
     resolution: {integrity: sha512-1pgFdhK3J2LeM+dVf2Pd424yHx2ou338lC0ErNP2hPx4j8eW1Sp0XqSjNxtk6Tc4Kr5wlWtSvz8cn2yb7/SG/w==}
     engines: {node: '>=20'}
+
+  happy-dom@15.11.7:
+    resolution: {integrity: sha512-KyrFvnl+J9US63TEzwoiJOQzZBJY7KgBushJA8X61DMbNsH+2ONkDuLDnCnwUiPTF42tLoEmrPyoqbenVA5zrg==}
+    engines: {node: '>=18.0.0'}
 
   hast-util-to-html@9.0.5:
     resolution: {integrity: sha512-OguPdidb+fbHQSU4Q4ZiLKnzWo8Wwsf5bZfbvu7//a9oTYoqD/fWpe96NuHkoS9h0ccGOTe0C4NGXdtS0iObOw==}
@@ -1734,6 +1745,14 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  webidl-conversions@7.0.0:
+    resolution: {integrity: sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==}
+    engines: {node: '>=12'}
+
+  whatwg-mimetype@3.0.0:
+    resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
+    engines: {node: '>=12'}
 
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
@@ -2800,6 +2819,8 @@ snapshots:
 
   emoji-regex-xs@1.0.0: {}
 
+  entities@4.5.0: {}
+
   entities@7.0.1: {}
 
   env-paths@4.0.0:
@@ -2869,6 +2890,12 @@ snapshots:
   global-directory@5.0.0:
     dependencies:
       ini: 6.0.0
+
+  happy-dom@15.11.7:
+    dependencies:
+      entities: 4.5.0
+      webidl-conversions: 7.0.0
+      whatwg-mimetype: 3.0.0
 
   hast-util-to-html@9.0.5:
     dependencies:
@@ -3299,7 +3326,7 @@ snapshots:
       - typescript
       - universal-cookie
 
-  vitest@2.1.4(lightningcss@1.32.0):
+  vitest@2.1.4(happy-dom@15.11.7)(lightningcss@1.32.0):
     dependencies:
       '@vitest/expect': 2.1.4
       '@vitest/mocker': 2.1.4(vite@5.4.21(lightningcss@1.32.0))
@@ -3321,6 +3348,8 @@ snapshots:
       vite: 5.4.21(lightningcss@1.32.0)
       vite-node: 2.1.4(lightningcss@1.32.0)
       why-is-node-running: 2.3.0
+    optionalDependencies:
+      happy-dom: 15.11.7
     transitivePeerDependencies:
       - less
       - lightningcss
@@ -3345,6 +3374,10 @@ snapshots:
       '@vue/shared': 3.5.40
     optionalDependencies:
       typescript: 5.6.3
+
+  webidl-conversions@7.0.0: {}
+
+  whatwg-mimetype@3.0.0: {}
 
   why-is-node-running@2.3.0:
     dependencies:

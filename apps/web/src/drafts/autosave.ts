@@ -60,6 +60,12 @@ export class DraftAutosave {
     this.setState({kind: 'saved', at: Date.now()});
   }
 
+  /** Starts again from `revision` without claiming a save, as when the stored draft went elsewhere. */
+  reset(revision: number) {
+    this.revision = revision;
+    this.setState({kind: 'idle'});
+  }
+
   /** A change: write after 1 s of quiet, and no later than 5 s after the first unsaved change. */
   changed() {
     if (this.stopped) return;
