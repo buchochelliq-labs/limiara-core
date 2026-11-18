@@ -1940,3 +1940,90 @@ async fn supplied_action_values_override_editable_presets() {
         Value::Null
     );
 }
+
+#[tokio::test]
+async fn a_record_back_at_its_prepared_version_with_other_content_is_stale() {
+    let world = World::new().await;
+    // The member's own edit, not pushed yet: the device numbers it.
+    let version = world.device_record(&world.acme).await["version"].clone();
+    let (status, _) = world
+        .web(
+            "PATCH",
+            &format!("/objects/{ACCOUNT}/records/{}", world.acme),
+            Some(json!({"expected_version": version, "custom:notes": "Mine"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let confirmation = world
+        .prepare(Operation::Update {
+            object: ACCOUNT.into(),
+            record: world.acme.clone(),
+            values: values(json!({"custom:notes": "Assistant"})),
+        })
+        .await;
+    // The push answer and a colleague's change bring the record back to
+    // the version number it had on the device, with other content.
+    world.sync().await;
+    let on_server = world
+        .admin
+        .get_record(ACCOUNT, &world.acme, false)
+        .await
+        .expect("acme");
+    world
+        .admin
+        .update_record(
+            ACCOUNT,
+            &world.acme,
+            on_server.version,
+            &values(json!({"custom:amount": 1500})),
+            context(),
+        )
+        .await
+        .expect("colleague");
+    world.sync().await;
+    assert_eq!(
+        world.commit(&confirmation.token).await.map_err(|e| e.code),
+        Err(AssistantCode::ConfirmationStale)
+    );
+}
+
+#[tokio::test]
+async fn values_computed_when_read_do_not_make_a_confirmation_stale() {
+    let world = World::new().await;
+    // A formula the engine computes again at every read, from the time.
+    for definition in [
+        json!({"name": "seen_at", "label": "Seen at", "field_type": "formula",
+               "formula": "NOW()", "formula_type": "date_time"}),
+        json!({"name": "seen_on", "label": "Seen on", "field_type": "formula",
+               "formula": "TODAY()", "formula_type": "date"}),
+    ] {
+        world
+            .admin
+            .create_field(ACCOUNT, field(definition), context())
+            .await
+            .expect("formula");
+    }
+    world.sync().await;
+    let first = world.device_record(&world.acme).await["custom:seen_at"].clone();
+    assert!(first.is_string(), "{first}");
+    let confirmation = world
+        .prepare(Operation::Update {
+            object: ACCOUNT.into(),
+            record: world.acme.clone(),
+            values: values(json!({"custom:notes": "Still fresh"})),
+        })
+        .await;
+    // Time moves on: the token's clock, and the formula's value.
+    world.clock.1.store(1, Ordering::SeqCst);
+    let mut later = world.device_record(&world.acme).await["custom:seen_at"].clone();
+    while later == first {
+        tokio::task::yield_now().await;
+        later = world.device_record(&world.acme).await["custom:seen_at"].clone();
+    }
+    let committed = world.commit(&confirmation.token).await.expect("not stale");
+    assert_eq!(committed.id, world.acme);
+    assert_eq!(
+        world.device_record(&world.acme).await["custom:notes"],
+        "Still fresh"
+    );
+}

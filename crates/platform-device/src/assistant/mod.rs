@@ -61,8 +61,8 @@ use uuid::Uuid;
 ///
 /// - `assistant_access` turns every assistant operation off on this device
 ///   (`assistant.disabled`). It is on by default, so assistants work once
-///   the workspace's administrator allows them; this default is a decision
-///   recorded for the owner to confirm (ADR 0034, open question 2).
+///   the workspace's administrator allows them, as the product owner
+///   decided (ADR 0034, Status).
 /// - `indexing` lets the device put records into the OS's index. It is off
 ///   until the member turns it on, as §7 requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +358,44 @@ fn name_field(object: &ObjectMeta) -> FieldMeta {
         scale: None,
         formula_type: None,
     }
+}
+
+/// What a confirmation binds of the record it is about: the content the
+/// engine stores and the member reads (name, owner, version, archive and
+/// delete state, and each readable stored field), not what is worked out
+/// at read time.
+///
+/// - **Formulas** are computed at every read and may follow the clock
+///   (`NOW()`, `TODAY()`), so they would make every token stale; they
+///   follow from the stored values, which are bound.
+/// - **Roll-ups** summarise other records (the details of this one). They
+///   are left out too: the confirmation lists only the fields the request
+///   sets, so a member never confirms a roll-up's value; the write never
+///   sets one; and a detail added or changed by sync or another member is
+///   a change to that record, not to the one confirmed, which the server's
+///   save path checks again on push. Where a roll-up's recalculation moves
+///   the record's version, the version binding still catches it.
+/// - **Timestamps and related names** (`updated_at`, `touched_at`, the
+///   lookups' names) are left out: a change of content moves the version,
+///   which is bound, and a looked-up record's new name is not a change to
+///   this one.
+fn stored_content(meta: &ObjectMeta, record: &Map<String, Value>) -> Map<String, Value> {
+    let mut content = Map::new();
+    let stored = ["name", "owner", "version", "archived_at", "is_deleted"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(
+            meta.fields
+                .iter()
+                .filter(|field| !field.computed())
+                .map(|field| field.api_name.clone()),
+        );
+    for key in stored {
+        if let Some(value) = record.get(&key) {
+            content.insert(key, value.clone());
+        }
+    }
+    content
 }
 
 /// Escapes text for a query-language string literal (ADR 0019 §1); with
@@ -1076,7 +1114,7 @@ impl Session<'_> {
         &self,
         write: PreparedWrite,
         meta: &ObjectMeta,
-        record: Option<(String, i64)>,
+        record: Option<(String, i64, Map<String, Value>)>,
         record_name: Option<String>,
         action_label: Option<String>,
         values: Map<String, Value>,
@@ -1098,8 +1136,9 @@ impl Session<'_> {
                 assistant: self.assistant,
                 write,
                 object: meta.api_name.clone(),
-                record: record.as_ref().map(|(id, _)| id.clone()),
-                record_version: record.as_ref().map(|(_, version)| *version),
+                record: record.as_ref().map(|(id, _, _)| id.clone()),
+                record_version: record.as_ref().map(|(_, version, _)| *version),
+                record_read: record.map(|(_, _, read)| read),
                 metadata_version,
                 values,
             })
@@ -1185,7 +1224,7 @@ impl Session<'_> {
         self.confirmation(
             PreparedWrite::Update,
             &meta,
-            Some((id, version)),
+            Some((id, version, stored_content(&meta, &found))),
             Some(text_of(&Value::Object(found), "name")),
             None,
             values,
@@ -1273,7 +1312,7 @@ impl Session<'_> {
                 creates: action.kind == QuickActionKind::Create,
             },
             &target,
-            Some((id, version)),
+            Some((id, version, stored_content(&meta, &found))),
             Some(text_of(&Value::Object(found), "name")),
             Some(action.label.clone()),
             values,
@@ -1320,7 +1359,19 @@ impl Session<'_> {
         };
         if let (Some(record), Some(version)) = (&prepared.record, prepared.record_version) {
             let found = self.reader.record(&action_object, record).await?;
-            if found.and_then(|found| found.get("version").and_then(Value::as_i64)) != Some(version)
+            let record_meta = self
+                .reader
+                .object(&action_object)
+                .await?
+                .ok_or_else(stale)?;
+            let content = found
+                .as_ref()
+                .map(|found| stored_content(&record_meta, found));
+            if found
+                .as_ref()
+                .and_then(|found| found.get("version").and_then(Value::as_i64))
+                != Some(version)
+                || content.as_ref() != prepared.record_read.as_ref()
             {
                 return Err(stale());
             }

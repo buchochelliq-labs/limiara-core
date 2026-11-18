@@ -15,6 +15,12 @@ use uuid::Uuid;
 
 /// The contract version every request names and every answer carries.
 pub const CONTRACT: &str = "assistant.v1";
+/// The machine-readable contract: a JSON Schema of every request, answer,
+/// index update and launch sweep, which native plugins code against. The
+/// reference harness (`apps/assistant-harness`) validates every request
+/// and answer it exchanges against it, and its tests keep it in step with
+/// these types.
+pub const SCHEMA: &str = include_str!("../../contract/assistant.v1.schema.json");
 /// Search results at most.
 pub const SEARCH_MAX: usize = 20;
 /// Records a `list` page holds at most.
