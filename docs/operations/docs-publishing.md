@@ -59,7 +59,7 @@ node apps/docs/scripts/verify-portable-artifact.mjs
 node apps/docs/scripts/verify-portable-artifact.mjs --serve
 ```
 
-The third command performs an independent HTTP smoke test; the fourth exposes the artifact on `127.0.0.1:4175`. CI retains each successful publish artifact for 90 days. Download and extract `docs-static-site-<sha>` to serve the same directory with any conventional static host.
+The third command performs an independent HTTP smoke test; the fourth exposes the artifact on `127.0.0.1:4175`. CI retains each successful publish artifact for 90 days. Download and extract `docs-static-site-<sha>` to serve the same directory with any conventional static host. The `<sha>` in an artifact's name and `sourceRevision` in its `deployment.json` are always the commit that was built, even when a manual run named a branch or tag as `source_ref`; both deploy workflows resolve it after checkout.
 
 ## Rollback and clean rebuild
 
