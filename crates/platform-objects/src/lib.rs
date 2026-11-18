@@ -14,6 +14,8 @@
 //! - [`store`] is the storage port with PostgreSQL and SQLite adapters.
 //! - [`quick_actions`] holds administrator-defined record shortcuts
 //!   (ADR 0032).
+//! - [`drafts`] holds the workspace's record draft expiry (ADR 0036);
+//!   drafts themselves never reach the engine.
 //! - [`service`] authorises, validates and records evidence for every change.
 //! - [`plugin_objects`] installs, upgrades, suspends and resumes the objects
 //!   a plugin declares (ADR 0033 §2).
@@ -22,6 +24,7 @@ pub mod access;
 pub mod automation;
 pub mod bulk;
 pub mod composite;
+pub mod drafts;
 pub mod events;
 pub mod formula;
 pub mod formula_fields;
@@ -47,6 +50,10 @@ pub mod timeline;
 pub mod values;
 
 pub use access::{ObjectAccess, ObjectCaller};
+pub use drafts::{
+    DraftSettings, UpdateDraftSettings, DRAFT_EXPIRY_DAYS_DEFAULT, DRAFT_EXPIRY_DAYS_MAX,
+    DRAFT_EXPIRY_DAYS_MIN,
+};
 pub use model::*;
 pub use plugin_objects::PluginObjectsInstalled;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};

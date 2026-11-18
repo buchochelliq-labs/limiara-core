@@ -19,6 +19,7 @@ mod api_clients;
 mod auth;
 mod contacts;
 mod devices;
+mod drafts;
 mod extensions;
 mod external_hosts;
 mod health;
@@ -159,7 +160,8 @@ async fn main() -> anyhow::Result<()> {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::session_boundary,
-        ));
+        ))
+        .merge(draft_key_routes(state.clone()));
     let workspace_routes = Router::new()
         .route("/api/v1/workspaces/:workspace_id/ui/contributions", get(ui))
         .route(
@@ -401,6 +403,17 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+/// The browser draft key (ADR 0036 §4): browser sessions only, so bearer
+/// tokens are refused before the session boundary runs.
+fn draft_key_routes(state: AppState) -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/me/draft-key", get(drafts::draft_key))
+        .route_layer(middleware::from_fn_with_state(
+            state,
+            auth::session_boundary,
+        ))
+        .route_layer(middleware::from_fn(drafts::browser_only))
+}
 async fn normalize_request_id(
     mut request: axum::extract::Request,
     next: middleware::Next,
@@ -435,6 +448,11 @@ async fn ui(
         .collect();
     let (objects, mut object_permissions) =
         platform_objects_http::ui_contributions(&state, &caller).await;
+    // Where record drafts are kept and for how long (ADR 0036 §3): in this
+    // browser, with the workspace's expiry. Without the setting the block
+    // is left out and the shell keeps no drafts.
+    let drafts =
+        drafts::contribution(platform_objects_http::draft_expiry_days(&state, &caller).await);
     if caller
         .permissions
         .contains(users::MEMBERS_MANAGE_PERMISSION)
@@ -443,13 +461,13 @@ async fn ui(
     }
     // Object metadata changes navigation without changing plugin
     // activation, so it is part of the revision the shell revalidates.
-    let revision = if objects.is_empty() && object_permissions.is_empty() {
+    let revision = if objects.is_empty() && object_permissions.is_empty() && drafts.is_none() {
         principal.activation.revision().to_owned()
     } else {
         format!(
             "{}.{:016x}",
             principal.activation.revision(),
-            stable_hash(&json!([objects, object_permissions]).to_string())
+            stable_hash(&json!([objects, object_permissions, drafts]).to_string())
         )
     };
     navigation.extend(objects);
@@ -463,6 +481,7 @@ async fn ui(
             "navigation": navigation,
             "permissions": permissions,
             "revision": revision,
+            "drafts": drafts,
         })),
     )
 }

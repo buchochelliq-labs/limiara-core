@@ -3,6 +3,7 @@
 pub mod automation_jobs;
 pub mod bulk_jobs;
 pub mod device_notifications;
+pub mod draft_keys;
 pub mod extension_retention;
 pub mod outbox_publisher;
 pub mod plugin_runtime;

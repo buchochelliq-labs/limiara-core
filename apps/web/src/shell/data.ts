@@ -1,3 +1,4 @@
+import {draftsContributionFromApi, type DraftsContribution} from '../drafts/types';
 import type {NavigationContribution, SessionUser, ShellViewModel, Workspace} from './types';
 
 type ApiProblem = {detail?: string; status?: number};
@@ -53,14 +54,15 @@ export async function loadShellContext(signal?: AbortSignal): Promise<{workspace
   }
 }
 
-export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string};
+export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string; drafts: DraftsContribution | null};
 
 export async function loadWorkspaceNavigation(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceActivation> {
-  const result = await api<WorkspaceActivation>(`/workspaces/${workspaceId}/ui/contributions`, signal);
+  const result = await api<Omit<WorkspaceActivation, 'drafts'> & {drafts?: unknown}>(`/workspaces/${workspaceId}/ui/contributions`, signal);
   return {
     navigation: result.navigation.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     permissions: [...result.permissions].sort(),
     revision: result.revision,
+    drafts: draftsContributionFromApi(result.drafts),
   };
 }
 

@@ -2,6 +2,8 @@ import {useEffect, useRef, useState} from 'react';
 import {Plus} from '@phosphor-icons/react';
 import type {ObjectDescription, ObjectsClient, ObjectSummary} from './api';
 import {failed, recordRoute, RecordModal, type Load} from './ObjectPages';
+import {parseKey, useDraftList} from '../drafts/lists';
+import type {StoredDraft} from '../drafts/types';
 
 type Navigate = (route: string) => void;
 
@@ -13,6 +15,21 @@ type Navigate = (route: string) => void;
 export function creatable(objects: readonly ObjectSummary[]): ObjectSummary[] {
   return objects.filter(object => object.inNavigation && object.access.create && object.origin !== 'plugin')
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * New-record drafts global New offers to continue (ADR 0036 §8): drafts
+ * started from New on an object, without a parent or action, for objects
+ * the menu offers, by object label.
+ */
+export function continuable(objects: readonly ObjectSummary[], drafts: readonly StoredDraft[]): {object: ObjectSummary; count: number}[] {
+  const counts = new Map<string, number>();
+  for (const draft of drafts) {
+    const key = parseKey(draft.meta.key);
+    if (key?.kind !== 'create' || key.parent || key.action) continue;
+    counts.set(key.object, (counts.get(key.object) ?? 0) + 1);
+  }
+  return objects.flatMap(object => counts.has(object.apiName) ? [{object, count: counts.get(object.apiName) ?? 0}] : []);
 }
 
 /**
@@ -28,6 +45,9 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
   // Only the latest choice may open a form; a slower, older one is dropped.
   const request = useRef(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Read when the menu opens, so drafts saved since are offered too.
+  const [opened, setOpened] = useState(0);
+  const drafts = useDraftList(opened);
 
   useEffect(() => {
     if (!open || objects) return;
@@ -74,6 +94,7 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
       // Reopening after a failed load tries again.
       if (!open && objects && objects.status !== 'ready' && objects.status !== 'loading') setObjects(null);
       if (chosen?.status !== 'ready') { request.current += 1; setChosen(null); }
+      if (!open) setOpened(value => value + 1);
       setOpen(value => !value);
     }}>
       <span><Plus aria-hidden="true" weight="bold" />New</span>
@@ -83,6 +104,12 @@ export function GlobalNew({client, onNavigate}: {client: ObjectsClient; onNaviga
       {objects?.status === 'ready' && objects.value.length > 0 && <ul className="global-new__list">
         {objects.value.map(object => <li key={object.apiName}><button type="button" className="global-new__item" onClick={() => choose(object.apiName)}>{object.label}</button></li>)}
       </ul>}
+      {objects?.status === 'ready' && continuable(objects.value, drafts.drafts).length > 0 && <>
+        <p className="global-new__heading" id="global-new-drafts-heading">Unsaved drafts</p>
+        <ul className="global-new__list" aria-labelledby="global-new-drafts-heading">
+          {continuable(objects.value, drafts.drafts).map(({object, count}) => <li key={object.apiName}><button type="button" className="global-new__item" onClick={() => choose(object.apiName)}>Continue: New {object.label}, {count === 1 ? '1 draft' : `${count} drafts`}</button></li>)}
+        </ul>
+      </>}
       {objects?.status === 'ready' && objects.value.length === 0 && <p className="global-new__note" role="status" tabIndex={-1}>There is nothing you can create here yet.</p>}
       {(!objects || objects.status === 'loading') && <p className="global-new__note" role="status" tabIndex={-1}>Loading objects…</p>}
       {objects && objects.status !== 'ready' && objects.status !== 'loading' && <p className="global-new__note" role="status" tabIndex={-1}>The objects could not be loaded. Close the menu and try again.</p>}

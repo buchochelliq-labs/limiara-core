@@ -8,7 +8,9 @@
 // UI contribution endpoint, the object home, create, edit, delete and restore
 // from the recycle bin, quick actions defined in the Object Manager and run
 // from record pages, then the Object Manager creating an object and a
-// field, and logging a call from the Activity timeline. Nothing here stubs
+// field, logging a call from the Activity timeline, and record drafts:
+// autosave, restore after a reload, Cancel, the Drafts list, the expiry
+// setting and sign-out (ADR 0036). Nothing here stubs
 // the API. Screenshots go to SCREENSHOT_DIR.
 import {createServer, request as httpRequest} from 'node:http';
 import {mkdir, readFile, stat} from 'node:fs/promises';
@@ -18,6 +20,8 @@ import {chromium} from '@playwright/test';
 
 const apiBase = new URL(process.env.API_BASE ?? 'http://127.0.0.1:18091');
 const sessionToken = process.env.SESSION_TOKEN;
+// A second session of the member, signed out at the end (ADR 0036 §11).
+const signOutToken = process.env.SIGN_OUT_TOKEN ?? '';
 const screenshots = process.env.SCREENSHOT_DIR ?? '';
 if (!sessionToken) {
   console.error('SESSION_TOKEN is required');
@@ -162,7 +166,10 @@ try {
   await page.getByLabel('Code').fill('br-1');
   await page.getByRole('button', {name: 'Save', exact: true}).click();
   await page.getByText('Another record already uses one of these unique values.').waitFor();
+  // A failed save keeps the draft (ADR 0036 §7), so Cancel asks what to do with it.
   await page.getByRole('button', {name: 'Cancel'}).click();
+  await page.getByRole('group', {name: /You have an unsaved draft/}).getByRole('button', {name: 'Discard draft'}).click();
+  await page.getByRole('heading', {level: 1, name: 'Projects'}).waitFor();
 
   step('edit sends only the changed values');
   await page.getByRole('link', {name: 'Browser project'}).click();
@@ -494,6 +501,116 @@ try {
   await dialog.waitFor({state: 'detached'});
   await activity.getByRole('region', {name: 'Past'}).getByRole('link', {name: 'Browser call'}).waitFor();
   await shot(page, '21-activity-timeline');
+
+  step('record drafts: typing autosaves, a reload restores, Cancel keeps (ADR 0036)');
+  const saved = scope => scope.getByText(/^Draft saved at /).waitFor();
+  await page.goto(`${origin}/o/custom:project`);
+  await page.getByRole('button', {name: 'New project'}).click();
+  dialog = page.getByRole('dialog', {name: 'New project'});
+  await dialog.getByLabel('Project name').fill('Drafted project');
+  await dialog.getByLabel('Code').fill('DR-1');
+  await saved(dialog);
+  await shot(page, '23-draft-saved');
+  // A crash or closed tab: the page goes without saving the record.
+  await page.reload();
+  await page.getByRole('button', {name: 'New project'}).click();
+  dialog = page.getByRole('dialog', {name: 'New project'});
+  // Earlier steps left a draft too: the validation rule's refused save keeps what was typed.
+  await dialog.getByText(/^\d+ unsaved drafts?$/).waitFor();
+  await dialog.getByRole('button', {name: 'Continue Drafted project'}).click();
+  // Restoring re-reads the object first (ADR 0036 §5), then carries on saving the same draft.
+  await saved(dialog);
+  if (await dialog.getByLabel('Project name').inputValue() !== 'Drafted project') throw new Error('the draft must restore its name');
+  if (await dialog.getByLabel('Code').inputValue() !== 'DR-1') throw new Error('the draft must restore its values');
+  await page.keyboard.press('Escape');
+  const cancelChoice = dialog.getByRole('group', {name: /You have an unsaved draft/});
+  await cancelChoice.waitFor();
+  if (!(await cancelChoice.getByRole('button', {name: 'Keep draft'}).evaluate(element => element === document.activeElement))) throw new Error('Keep draft must be the default');
+  await cancelChoice.getByRole('button', {name: 'Keep draft'}).click();
+  await dialog.waitFor({state: 'detached'});
+  if (await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => { const request = indexedDB.open('limiara-drafts'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const entries = await new Promise((resolve, reject) => { const request = db.transaction('drafts').objectStore('drafts').getAll(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    db.close();
+    return JSON.stringify(entries.map(({payload: _, ...meta}) => meta)).includes('Drafted project') || entries.length < 1;
+  })) throw new Error('IndexedDB must hold the drafts, with their values only in the encrypted payload');
+
+  step('record drafts: the Drafts list in the user menu opens and discards drafts');
+  await page.locator('.user-menu__trigger').click();
+  await page.getByRole('button', {name: /^Drafts \(\d+\)$/}).click();
+  await page.getByRole('heading', {level: 1, name: 'Drafts'}).waitFor();
+  const draftRow = page.getByRole('row', {name: /Drafted project/});
+  await draftRow.getByText('Available').waitFor();
+  await shot(page, '24-drafts-list');
+  await draftRow.getByRole('button', {name: 'Open Drafted project'}).click();
+  await page.getByRole('heading', {level: 1, name: 'New project'}).waitFor();
+  await saved(page);
+  if (await page.getByLabel('Project name').inputValue() !== 'Drafted project') throw new Error('Open must continue the draft');
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
+  await page.getByRole('heading', {level: 1, name: 'Drafted project'}).waitFor();
+
+  step('record drafts: an edit draft is offered when Edit opens, and restores onto the record');
+  await page.getByRole('button', {name: 'Edit'}).click();
+  dialog = page.getByRole('dialog', {name: 'Edit Drafted project'});
+  await dialog.getByLabel('Code').fill('DR-2');
+  await saved(dialog);
+  await page.reload();
+  await page.getByText(/^Unsaved draft from /).waitFor();
+  await page.getByRole('button', {name: 'Continue editing'}).click();
+  dialog = page.getByRole('dialog', {name: 'Edit Drafted project'});
+  await dialog.getByText(/You have an unsaved draft from/).waitFor();
+  if (await dialog.getByLabel('Code').inputValue() !== 'DR-1') throw new Error('until the member chooses, the form shows the saved record');
+  await dialog.getByRole('button', {name: 'Restore'}).click();
+  await dialog.getByText(/^Draft saved at /).waitFor();
+  if (await dialog.getByLabel('Code').inputValue() !== 'DR-2') throw new Error('Restore must put the draft back');
+  await shot(page, '25-draft-restored');
+  await dialog.getByRole('button', {name: 'Save', exact: true}).click();
+  await dialog.waitFor({state: 'detached'});
+  await page.getByText('DR-2', {exact: true}).waitFor();
+  await page.goto(`${origin}/drafts`);
+  await page.getByRole('row', {name: /Rule check/}).waitFor();
+  if (await page.getByRole('row', {name: /Drafted project/}).count() !== 0) throw new Error('saving must delete the draft');
+
+  step('record drafts: an administrator sets how long drafts are kept (ADR 0036 §9)');
+  await page.goto(`${origin}/settings`);
+  await page.getByRole('link', {name: /Record drafts/}).click();
+  await page.getByRole('heading', {level: 1, name: 'Record drafts'}).waitFor();
+  await page.getByLabel('Keep drafts for (days)').fill('91');
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
+  await page.getByText('Enter a whole number of days from 1 to 90.').waitFor();
+  await page.getByLabel('Keep drafts for (days)').fill('30');
+  await page.getByRole('button', {name: 'Save', exact: true}).click();
+  await page.getByText('Drafts are now kept for 30 days after their last change.').waitFor();
+  await shot(page, '26-draft-settings');
+
+  if (signOutToken) {
+    step('record drafts: Sign out deletes the drafts first, then the session and the browser key');
+    const context = await browser.newContext({viewport: {width: 1280, height: 900}});
+    await context.addCookies([{name: 'platform_session', value: signOutToken, url: origin, httpOnly: true, sameSite: 'Lax'}]);
+    const other = await context.newPage();
+    other.setDefaultTimeout(timeout);
+    await other.goto(`${origin}/o/custom:project`);
+    await other.getByRole('button', {name: 'New project'}).click();
+    const form = other.getByRole('dialog', {name: 'New project'});
+    await form.getByLabel('Project name').fill('Left on a shared computer');
+    await saved(form);
+    await form.getByRole('button', {name: 'Cancel'}).click();
+    await form.getByRole('button', {name: 'Keep draft'}).click();
+    await other.locator('.user-menu__trigger').click();
+    const logout = other.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/auth/logout');
+    await other.getByRole('button', {name: 'Sign out'}).click();
+    const sent = await logout;
+    if (!/^[0-9a-f-]{36}$/.test(new URL(sent.url()).searchParams.get('browser') ?? '')) throw new Error('sign-out must name the browser');
+    await other.goto(`${origin}/health/live`);
+    const left = await other.evaluate(async () => {
+      const db = await new Promise((resolve, reject) => { const request = indexedDB.open('limiara-drafts'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      const count = await new Promise((resolve, reject) => { const request = db.transaction('drafts').objectStore('drafts').count(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+      db.close();
+      return count;
+    });
+    if (left !== 0) throw new Error(`sign-out must delete the member's drafts first (${left} left)`);
+    await context.close();
+  }
 } catch (error) {
   failed = true;
   console.error(`browser journey failed: ${error instanceof Error ? error.message : String(error)}`);

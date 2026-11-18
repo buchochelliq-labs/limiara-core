@@ -354,6 +354,17 @@ async fn the_shell_reaches_the_replica_through_the_bridge() {
     );
 
     // Definitions came down with the first sync.
+    // Reading it answers from the replica; the bridge offers no drafts yet,
+    // so its contributions carry no drafts block (ADR 0036 §3).
+    let (status, settings) = world
+        .call("GET", &world.path("/objects/draft-settings"), None)
+        .await;
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["expiry_days"], 7);
+    let (_, contributions) = world
+        .call("GET", &world.path("/ui/contributions"), None)
+        .await;
+    assert!(contributions.get("drafts").is_none(), "{contributions}");
     let (status, objects) = world.call("GET", &world.path("/objects"), None).await;
     assert_eq!(status, 200, "{objects}");
     assert!(objects["data"]
@@ -473,6 +484,12 @@ async fn the_shell_reaches_the_replica_through_the_bridge() {
                 Uuid::now_v7()
             ),
             json!({"access": "read"}),
+        ),
+        // The record draft expiry is the server's to set (ADR 0036 §9).
+        (
+            "PUT",
+            "/objects/draft-settings",
+            json!({"expiry_days": 30, "expected_version": 0}),
         ),
     ] {
         let (status, refused) = world.call(method, &world.path(path), Some(body)).await;

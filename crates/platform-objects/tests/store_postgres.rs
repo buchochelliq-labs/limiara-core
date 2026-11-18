@@ -20,6 +20,111 @@ async fn pool(variable: &str) -> sqlx::PgPool {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_draft_settings_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (id, name) in [(tenant, "Draft settings"), (other, "Draft settings, other")] {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let changes = conformance::draft_settings::run(store, tenant).await;
+
+    // Each change left one event and one audit entry, in its transaction.
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outbox WHERE tenant_id = $1 \
+         AND event_type = 'platform.objects.draft-settings-updated.v1' \
+         AND envelope->'payload' ? 'expiry_days' AND envelope->'payload' ? 'previous_expiry_days'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("events");
+    assert_eq!(events, changes);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 \
+         AND action = 'objects.draft_settings.updated' AND target = 'draft_settings'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(audited, changes);
+
+    // Forced RLS with both policies: no rows without a workspace context,
+    // only its own inside one, and no writes into another workspace.
+    let forced: (bool, bool) = sqlx::query_as(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'record_draft_settings'",
+    )
+    .fetch_one(&migrator)
+    .await
+    .expect("rls flags");
+    assert_eq!(forced, (true, true));
+    let policies: Vec<String> = sqlx::query_scalar(
+        "SELECT policyname::text FROM pg_policies WHERE tablename = 'record_draft_settings' ORDER BY 1",
+    )
+    .fetch_all(&migrator)
+    .await
+    .expect("policies");
+    assert_eq!(
+        policies,
+        [
+            "record_draft_settings_migrator_management",
+            "record_draft_settings_tenant_isolation"
+        ]
+    );
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM record_draft_settings")
+        .fetch_one(&app)
+        .await
+        .expect("no context");
+    assert_eq!(visible, 0, "record_draft_settings without app.tenant_id");
+    let mut tx = platform_db::begin_tenant_tx(&app, other)
+        .await
+        .expect("other");
+    let foreign: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM record_draft_settings WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("foreign");
+    assert_eq!(foreign, 0, "another workspace cannot read the setting");
+    let smuggled =
+        sqlx::query("INSERT INTO record_draft_settings (tenant_id, expiry_days) VALUES ($1, 2)")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await;
+    assert!(
+        smuggled.is_err(),
+        "another workspace cannot write the setting"
+    );
+    drop(tx);
+    let mut tx = platform_db::begin_tenant_tx(&app, tenant)
+        .await
+        .expect("own");
+    let own: i64 = sqlx::query_scalar("SELECT count(*) FROM record_draft_settings")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("own");
+    assert_eq!(own, 1);
+    drop(tx);
+
+    // Out-of-range values are refused by the table too.
+    let refused =
+        sqlx::query("UPDATE record_draft_settings SET expiry_days = 91 WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&migrator)
+            .await;
+    assert!(refused.is_err(), "the check constraint holds 1 to 90");
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_passes_the_formula_field_conformance_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
@@ -296,6 +401,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         "bulk_jobs",
         "bulk_job_rows",
         "formula_index_marks",
+        "record_draft_settings",
     ] {
         let visible: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
             .fetch_one(&app)

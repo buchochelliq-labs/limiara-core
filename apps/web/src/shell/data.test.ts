@@ -34,7 +34,18 @@ describe('workspace activation navigation', () => {
         {id: 'first', label: 'First', route: '/first', order: 10},
         {id: 'later', label: 'Later', route: '/later', order: 200},
       ],
+      drafts: null,
     });
+  });
+
+  it('reads the drafts block and refuses a malformed one (ADR 0036 §3)', async () => {
+    const respond = (drafts: unknown) => vi.fn().mockResolvedValue({ok: true, status: 200, json: async () => ({revision: 'r', permissions: [], navigation: [], drafts})});
+    vi.stubGlobal('fetch', respond({store: 'browser', expiry_days: 7, max_drafts: 50, max_bytes: 1048576}));
+    await expect(loadWorkspaceNavigation('workspace-a')).resolves.toMatchObject({drafts: {store: 'browser', expiryDays: 7, maxDrafts: 50, maxBytes: 1048576}});
+    for (const bad of [null, {store: 'disk', expiry_days: 7, max_drafts: 50, max_bytes: 1}, {store: 'browser', expiry_days: 0, max_drafts: 50, max_bytes: 1}, {store: 'browser', expiry_days: 91, max_drafts: 50, max_bytes: 1}]) {
+      vi.stubGlobal('fetch', respond(bad));
+      await expect(loadWorkspaceNavigation('workspace-a')).resolves.toMatchObject({drafts: null});
+    }
   });
 
   it('fails closed instead of restoring fixture navigation on an API error', async () => {

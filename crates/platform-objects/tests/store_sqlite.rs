@@ -76,6 +76,38 @@ async fn sqlite_store_passes_the_validation_rule_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_draft_settings_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let changes = conformance::draft_settings::run(store, tenant).await;
+
+    // Each change left one event and one audit entry naming the days.
+    let pool = databases.pool(tenant).await.expect("pool");
+    let events: Vec<String> = sqlx::query_scalar(
+        "SELECT envelope FROM outbox WHERE event_type = 'platform.objects.draft-settings-updated.v1'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("events");
+    assert_eq!(i64::try_from(events.len()).expect("count"), changes);
+    assert!(events
+        .iter()
+        .all(|envelope| envelope.contains("\"expiry_days\"")));
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.draft_settings.updated'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(audited, changes);
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_quick_action_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

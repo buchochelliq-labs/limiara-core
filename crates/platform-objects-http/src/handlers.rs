@@ -793,6 +793,85 @@ pub async fn delete_quick_action<H: ObjectsHost>(
     }
 }
 
+// --- Record draft settings (ADR 0036 §9) ------------------------------------
+
+fn draft_settings_json(settings: &platform_objects::DraftSettings) -> Value {
+    json!({
+        "expiry_days": settings.expiry_days,
+        "default_expiry_days": platform_objects::DRAFT_EXPIRY_DAYS_DEFAULT,
+        "min_expiry_days": platform_objects::DRAFT_EXPIRY_DAYS_MIN,
+        "max_expiry_days": platform_objects::DRAFT_EXPIRY_DAYS_MAX,
+        "version": settings.version,
+        "updated_at": settings.updated_at,
+        "updated_by": crate::user_reference(settings.updated_by),
+    })
+}
+
+/// The workspace's draft expiry in days, for the `drafts` block of a
+/// host's UI contributions; `None` when the engine cannot answer, so the
+/// shell keeps no drafts rather than guessing an expiry.
+pub async fn draft_expiry_days<H: ObjectsHost>(state: &H, caller: &Caller) -> Option<i32> {
+    let service = service(state, caller).await.ok()?;
+    match service.draft_settings().await {
+        Ok(settings) => Some(settings.expiry_days),
+        Err(_) => {
+            tracing::warn!("record draft settings unavailable");
+            None
+        }
+    }
+}
+
+/// `GET .../objects/draft-settings`: any member reads them.
+pub async fn get_draft_settings<H: ObjectsHost>(
+    State(state): State<H>,
+    Path(_workspace): Path<Uuid>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service.draft_settings().await {
+        Ok(settings) => {
+            let mut value = draft_settings_json(&settings);
+            state.name_users(caller.tenant_id, &mut value).await;
+            Json(value).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
+/// `PUT .../objects/draft-settings`: needs `objects.manage`.
+pub async fn update_draft_settings<H: ObjectsHost>(
+    State(state): State<H>,
+    Path(_workspace): Path<Uuid>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<
+        Json<platform_objects::UpdateDraftSettings>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return invalid_body();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .update_draft_settings(input, context(&request_id, &caller))
+        .await
+    {
+        Ok(settings) => {
+            let mut value = draft_settings_json(&settings);
+            state.name_users(caller.tenant_id, &mut value).await;
+            Json(value).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
 // --- Reports (ADR 0027) ------------------------------------------------------
 
 fn report_json(report: &platform_objects::Report, can_edit: bool) -> Value {

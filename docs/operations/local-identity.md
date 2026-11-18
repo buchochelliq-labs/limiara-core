@@ -37,6 +37,8 @@ The seeded `member` identity is linked to the local workspace and administrator
 role. `nonmember` is created or linked on first login but intentionally has no
 workspace membership. Log out with `POST http://localhost:8080/auth/logout`;
 this revokes the durable application session and expires the HTTP-only cookie.
+The web shell's Sign out adds `?browser={id}`, which also deletes that
+browser's record draft key (ADR 0036).
 
 Realm import occurs only when the named Keycloak data volume is empty. Reset the
 fixture, including any changes made through the admin console, with:

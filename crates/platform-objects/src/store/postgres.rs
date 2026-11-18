@@ -1872,6 +1872,59 @@ impl ObjectTx for PostgresObjectTx {
         Ok(result.rows_affected() == 1)
     }
 
+    async fn draft_settings(&mut self) -> Result<Option<crate::DraftSettings>, ObjectError> {
+        let row: Option<(i32, i64, DateTime<Utc>, Option<Uuid>)> = sqlx::query_as(
+            "SELECT expiry_days, version, updated_at, updated_by FROM record_draft_settings \
+             WHERE tenant_id = $1",
+        )
+        .bind(self.tenant_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        Ok(row.map(
+            |(expiry_days, version, updated_at, updated_by)| crate::DraftSettings {
+                expiry_days,
+                version,
+                updated_at: Some(updated_at),
+                updated_by,
+            },
+        ))
+    }
+
+    async fn put_draft_settings(
+        &mut self,
+        settings: &crate::DraftSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let updated_at = settings.updated_at.ok_or(ObjectError::Invariant)?;
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO record_draft_settings (tenant_id, expiry_days, version, updated_at, updated_by) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id) DO NOTHING",
+            )
+            .bind(self.tenant_id)
+            .bind(settings.expiry_days)
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(settings.updated_by)
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE record_draft_settings SET expiry_days = $1, version = $2, updated_at = $3, \
+                 updated_by = $4 WHERE tenant_id = $5 AND version = $6",
+            )
+            .bind(settings.expiry_days)
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(settings.updated_by)
+            .bind(self.tenant_id)
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn delete_quick_action(
         &mut self,
         action_id: Uuid,

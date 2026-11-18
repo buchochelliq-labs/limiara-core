@@ -7,6 +7,7 @@ import {
   House,
   List,
   MagnifyingGlass,
+  Note,
   Question,
   SignOut,
   UserCircle,
@@ -43,6 +44,11 @@ import {QueryConsole, queryRoute} from '../objects/QueryConsole';
 import {ReportsPage, reportsRoute} from '../objects/Reports';
 import {GlobalSearch, SearchResultsPage, searchRoute} from '../objects/GlobalSearch';
 import {GlobalNew} from '../objects/GlobalNew';
+import {DraftsContext, createDraftRuntime, type DraftRuntime} from '../drafts/runtime';
+import {useDraftList} from '../drafts/lists';
+import {DraftsPage, draftsRoute} from '../drafts/DraftsPage';
+import {DraftSettingsPage, draftSettingsRoute} from '../drafts/DraftSettingsPage';
+import type {DraftsContribution} from '../drafts/types';
 
 type AppShellProps = {
   model: ShellViewModel;
@@ -59,7 +65,47 @@ type AppShellProps = {
   devicesClient?: DevicesClient;
   /** Workspace objects (ADR 0015); resolved from the workspace when omitted. */
   objectsClient?: ObjectsClient;
+  /** Signs out; without it the menu item is shown disabled. */
+  onSignOut?: () => void;
+  /** A ready draft runtime, for tests; otherwise built from the model's `drafts` block. */
+  draftRuntime?: DraftRuntime | null;
 };
+
+/** Sweeps expired drafts hourly while the shell is open (ADR 0036 §9). */
+const DRAFT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * The workspace's draft runtime (ADR 0036 §3), from the host's `drafts`
+ * contribution: none without one. It sweeps expired drafts when it starts,
+ * when the workspace changes and hourly.
+ */
+function useDraftRuntime(contribution: DraftsContribution | null | undefined, member: string, workspace: string, ready: boolean): DraftRuntime | null {
+  const [runtime, setRuntime] = useState<DraftRuntime | null>(null);
+  const scope = useRef('');
+  const store = contribution?.store;
+  const expiryDays = contribution?.expiryDays;
+  const maxDrafts = contribution?.maxDrafts;
+  const maxBytes = contribution?.maxBytes;
+  useEffect(() => {
+    // Another member or workspace never sees the previous one's store, not even briefly;
+    // a changed expiry keeps the current store until the new one is ready.
+    if (scope.current !== `${member}/${workspace}` || !ready || !store) setRuntime(null);
+    scope.current = `${member}/${workspace}`;
+    if (!ready || !store || expiryDays === undefined || maxDrafts === undefined || maxBytes === undefined || !member || !workspace) return;
+    let cancelled = false;
+    let interval: number | undefined;
+    createDraftRuntime({contribution: {store, expiryDays, maxDrafts, maxBytes}, member, workspace}).then(next => {
+      if (cancelled) return;
+      setRuntime(next);
+      if (next?.status !== 'ready') return;
+      const sweep = () => { void next.store.sweep(expiryDays).catch(() => undefined); };
+      sweep();
+      interval = window.setInterval(sweep, DRAFT_SWEEP_INTERVAL_MS);
+    }).catch(() => undefined);
+    return () => { cancelled = true; if (interval !== undefined) window.clearInterval(interval); };
+  }, [ready, store, expiryDays, maxDrafts, maxBytes, member, workspace]);
+  return runtime;
+}
 
 const writeStates = new Set(['ready', 'denied', 'error', 'duplicate', 'conflict']);
 const peopleStates = new Set<PeopleDirectoryState>(['ready', 'loading', 'empty', 'denied', 'error', 'disabled', 'archived']);
@@ -133,9 +179,14 @@ function WorkspaceControl({model, onWorkspaceChange, compact = false}: Pick<AppS
   </label>;
 }
 
-function UserMenu({model}: Pick<AppShellProps, 'model'>) {
+function UserMenu({model, onNavigate, onSignOut}: Pick<AppShellProps, 'model' | 'onNavigate' | 'onSignOut'>) {
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const [opened, setOpened] = useState(0);
+  // Counted afresh each time the menu opens.
+  const drafts = useDraftList(opened);
+  const hasDrafts = React.useContext(DraftsContext) !== null;
   useEffect(() => {
     if (!open) return;
     const close = (event: KeyboardEvent) => {
@@ -146,7 +197,7 @@ function UserMenu({model}: Pick<AppShellProps, 'model'>) {
   }, [open]);
 
   return <div className="user-menu">
-    <button ref={buttonRef} className="user-menu__trigger" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(value => !value)}>
+    <button ref={buttonRef} className="user-menu__trigger" aria-expanded={open} aria-haspopup="menu" onClick={() => { if (!open) setOpened(value => value + 1); setOpen(value => !value); }}>
       <Avatar name={model.user.displayName} size="small" />
       <span className="user-menu__identity"><strong>{model.user.displayName}</strong><small>{model.user.role}</small></span>
       <CaretDown aria-hidden="true" />
@@ -154,7 +205,8 @@ function UserMenu({model}: Pick<AppShellProps, 'model'>) {
     {open && <div className="user-menu__popover" aria-label="Account menu">
       <div className="user-menu__summary"><Avatar name={model.user.displayName} /><div><strong>{model.user.displayName}</strong><span>{model.user.role}</span></div></div>
       <button><UserCircle aria-hidden="true" />Account settings</button>
-      <button disabled><SignOut aria-hidden="true" />Sign out</button>
+      {hasDrafts && <button onClick={() => { setOpen(false); onNavigate(draftsRoute); }}><Note aria-hidden="true" />Drafts ({drafts.drafts.length})</button>}
+      <button disabled={!onSignOut || signingOut} aria-busy={signingOut || undefined} onClick={() => { if (!onSignOut) return; setSigningOut(true); onSignOut(); }}><SignOut aria-hidden="true" />{signingOut ? 'Signing out…' : 'Sign out'}</button>
     </div>}
   </div>;
 }
@@ -167,7 +219,7 @@ function ShellState({model, onRetry}: Pick<AppShellProps, 'model' | 'onRetry'>) 
   return null;
 }
 
-function SettingsHome({onNavigate, headingRef}: Pick<AppShellProps, 'onNavigate'> & {headingRef: React.RefObject<HTMLHeadingElement | null>}) {
+function SettingsHome({onNavigate, headingRef, canManageObjects}: Pick<AppShellProps, 'onNavigate'> & {headingRef: React.RefObject<HTMLHeadingElement | null>; canManageObjects: boolean}) {
   return <div className="content-canvas">
     <header className="page-header"><div><p className="page-header__breadcrumb">Workspace</p><h1 ref={headingRef} tabIndex={-1}>Settings</h1></div></header>
     <ul className="settings-links">
@@ -175,6 +227,7 @@ function SettingsHome({onNavigate, headingRef}: Pick<AppShellProps, 'onNavigate'
       <li><a href={membersRoute} onClick={event => { event.preventDefault(); onNavigate(membersRoute); }}><strong>Members</strong><span>Who reports to whom, for record access</span></a></li>
       <li><a href={devicesRoute} onClick={event => { event.preventDefault(); onNavigate(devicesRoute); }}><strong>Devices</strong><span>Phones and computers signed in with the app, and revoking them</span></a></li>
       <li><a href={queryRoute} onClick={event => { event.preventDefault(); onNavigate(queryRoute); }}><strong>Query</strong><span>Query records of any object with the query language</span></a></li>
+      {canManageObjects && <li><a href={draftSettingsRoute} onClick={event => { event.preventDefault(); onNavigate(draftSettingsRoute); }}><strong>Record drafts</strong><span>How long members’ unsaved record changes are kept</span></a></li>}
     </ul>
   </div>;
 }
@@ -212,7 +265,8 @@ function PageContent({route, search = '', model, onNavigate, contactsClient, use
   const editPersonName = editPersonId ? editPersonId.split('-').map(part => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join(' ') : '';
   const detailPersonName = detailPersonId ? detailPersonId.split('-').map(part => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join(' ') : '';
   const organisationName = (editOrganisationId ?? detailOrganisationId)?.split('-').map(part => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join(' ') ?? '';
-  const title = isHome ? 'Workspace overview' : userId ? 'User' : route === '/settings' ? 'Settings' : route === objectManagerRoute || managedObject ? 'Object Manager' : route === membersRoute ? 'Members' : route === devicesRoute ? 'Devices' : route === queryRoute ? 'Query' : route === reportsRoute || route.startsWith(`${reportsRoute}/`) ? 'Reports' : route === searchRoute ? 'Search' : objectApiName ? (activeContribution?.label ?? 'Records') : route === '/contacts/people/new' ? 'Add person' : route === '/contacts/organisations/new' ? 'Add organisation' : editPersonId ? `Edit ${editPersonName}` : detailPersonId ? detailPersonName : editOrganisationId ? `Edit ${organisationName}` : detailOrganisationId ? organisationName : route === '/contacts/organisations' ? 'Organisations' : activeContribution?.label ?? 'Page unavailable';
+  const draftId = new URLSearchParams(search).get('draft') ?? undefined;
+  const title = isHome ? 'Workspace overview' : userId ? 'User' : route === draftsRoute ? 'Drafts' : route === draftSettingsRoute ? 'Record drafts' : route === '/settings' ? 'Settings' : route === objectManagerRoute || managedObject ? 'Object Manager' : route === membersRoute ? 'Members' : route === devicesRoute ? 'Devices' : route === queryRoute ? 'Query' : route === reportsRoute || route.startsWith(`${reportsRoute}/`) ? 'Reports' : route === searchRoute ? 'Search' : objectApiName ? (activeContribution?.label ?? 'Records') : route === '/contacts/people/new' ? 'Add person' : route === '/contacts/organisations/new' ? 'Add organisation' : editPersonId ? `Edit ${editPersonName}` : detailPersonId ? detailPersonName : editOrganisationId ? `Edit ${organisationName}` : detailOrganisationId ? organisationName : route === '/contacts/organisations' ? 'Organisations' : activeContribution?.label ?? 'Page unavailable';
   const subtitle = activeContribution ? `Manage ${activeContribution.label.toLowerCase()} across this workspace.` : 'This route is not available in the current workspace.';
   const headingRef = useRef<HTMLHeadingElement>(null);
   const hasMounted = useRef(false);
@@ -223,7 +277,9 @@ function PageContent({route, search = '', model, onNavigate, contactsClient, use
     hasMounted.current = true;
   }, [title, model.activeWorkspaceId]);
 
-  if (route === '/settings') return <SettingsHome onNavigate={onNavigate} headingRef={headingRef} />;
+  if (route === '/settings') return <SettingsHome onNavigate={onNavigate} headingRef={headingRef} canManageObjects={callerPermissions.has('objects.manage')} />;
+  if (route === draftsRoute) return <DraftsPage client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
+  if (route === draftSettingsRoute) return <DraftSettingsPage workspaceId={model.activeWorkspaceId} canManage={callerPermissions.has('objects.manage')} headingRef={headingRef} />;
   if (route === membersRoute) return <MembersPage client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === devicesRoute) return <DevicesPage client={resolvedDevices} address={currentWorkspaceAddress(model.activeWorkspaceId)} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === queryRoute) return <QueryConsole client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
@@ -231,8 +287,8 @@ function PageContent({route, search = '', model, onNavigate, contactsClient, use
   if (route === searchRoute) return <SearchResultsPage client={resolvedObjects} search={search} onNavigate={onNavigate} headingRef={headingRef} />;
   if (route === objectManagerRoute) return <ObjectManager client={resolvedObjects} onNavigate={onNavigate} headingRef={headingRef} />;
   if (managedObject) return <ObjectManagerDetail key={managedObject} client={resolvedObjects} apiName={decodeRouteSegment(managedObject)} onNavigate={onNavigate} headingRef={headingRef} />;
-  if (objectApiName && objectRecordId === 'new') return <NewRecordPage key={objectApiName} client={resolvedObjects} apiName={objectApiName} onNavigate={onNavigate} headingRef={headingRef} />;
-  if (objectApiName && objectRecordId) return <ObjectRecordPage key={`${objectApiName}/${objectRecordId}`} client={resolvedObjects} apiName={objectApiName} recordId={objectRecordId} onNavigate={onNavigate} headingRef={headingRef} />;
+  if (objectApiName && objectRecordId === 'new') return <NewRecordPage key={`${objectApiName}/${draftId ?? ''}`} client={resolvedObjects} apiName={objectApiName} onNavigate={onNavigate} headingRef={headingRef} draftId={draftId} />;
+  if (objectApiName && objectRecordId) return <ObjectRecordPage key={`${objectApiName}/${objectRecordId}/${draftId ?? ''}`} client={resolvedObjects} apiName={objectApiName} recordId={objectRecordId} onNavigate={onNavigate} headingRef={headingRef} draftId={draftId} />;
   if (objectApiName) return <ObjectHome key={objectApiName} client={resolvedObjects} apiName={objectApiName} onNavigate={onNavigate} headingRef={headingRef} />;
   if (userId) return <UserRecordPage key={userId} userId={decodeRouteSegment(userId)} client={resolvedUsers} headingRef={headingRef} onNavigate={onNavigate} onTitle={name => { document.title = `${name} - Limiara`; }} />;
   if (route === '/contacts/people/new' && contactsActive) return <PersonForm client={resolvedClient} onNavigate={onNavigate} permissions={callerPermissions} />;
@@ -265,7 +321,9 @@ function decodeRouteSegment(segment: string): string {
   }
 }
 
-export function AppShell({model, route, search, announcement, onNavigate, onWorkspaceChange, onRetry, contactsClient, usersClient, devicesClient, objectsClient}: AppShellProps) {
+export function AppShell({model, route, search, announcement, onNavigate, onWorkspaceChange, onRetry, contactsClient, usersClient, devicesClient, objectsClient, onSignOut, draftRuntime}: AppShellProps) {
+  const built = useDraftRuntime(draftRuntime === undefined ? model.drafts : null, model.user.id, model.activeWorkspaceId, model.status === 'ready');
+  const drafts = draftRuntime === undefined ? built : draftRuntime;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const shellFormFactor = useResponsiveFormFactor();
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -306,7 +364,7 @@ export function AppShell({model, route, search, announcement, onNavigate, onWork
   const shellLabel = useMemo(() => `${activeWorkspace?.name ?? 'Limiara'} application`, [activeWorkspace]);
   const searchClient = useMemo(() => objectsClient ?? resolveObjectsClient(model.activeWorkspaceId), [objectsClient, model.activeWorkspaceId]);
 
-  return <div className="shell" aria-label={shellLabel}>
+  return <DraftsContext.Provider value={drafts}><div className="shell" aria-label={shellLabel}>
     <a className="skip-link" href="#main-content">Skip to main content</a>
     <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
 
@@ -319,7 +377,7 @@ export function AppShell({model, route, search, announcement, onNavigate, onWork
       <button ref={menuButtonRef} className="mobile-menu-button" aria-label="Open navigation" aria-expanded={drawerOpen} aria-controls="mobile-navigation" onClick={() => setDrawerOpen(true)}><List aria-hidden="true" /></button>
       <WorkspaceControl model={model} onWorkspaceChange={onWorkspaceChange} />
       {model.status === 'ready' ? <GlobalSearch key={model.activeWorkspaceId} client={searchClient} onNavigate={navigate} /> : <label className="global-search"><MagnifyingGlass aria-hidden="true" /><span className="sr-only">Search Limiara</span><input type="search" placeholder="Search Limiara" disabled /><kbd>⌘ K</kbd></label>}
-      <div className="topbar-actions">{model.status === 'ready' && <GlobalNew key={model.activeWorkspaceId} client={searchClient} onNavigate={navigate} />}<IconButton label="Help" variant="quiet" icon={<Question aria-hidden="true" />} /><UserMenu model={model} /></div>
+      <div className="topbar-actions">{model.status === 'ready' && <GlobalNew key={model.activeWorkspaceId} client={searchClient} onNavigate={navigate} />}<IconButton label="Help" variant="quiet" icon={<Question aria-hidden="true" />} /><UserMenu model={model} onNavigate={navigate} onSignOut={onSignOut} /></div>
     </header>
 
     {drawerOpen && <div className="mobile-drawer-layer"><button className="mobile-drawer-backdrop" aria-label="Close navigation" onClick={() => { setDrawerOpen(false); menuButtonRef.current?.focus(); }} /><div ref={drawerRef} className="mobile-drawer" id="mobile-navigation" role="dialog" aria-modal="true" aria-label="Navigation menu"><div className="mobile-drawer__header"><a className="brand" href="/" onClick={event => { event.preventDefault(); navigate('/'); }}><img src={brandMark} alt="" /><span>Limiara</span></a><IconButton label="Close navigation" variant="quiet" icon={<X aria-hidden="true" />} onClick={() => { setDrawerOpen(false); menuButtonRef.current?.focus(); }} /></div><WorkspaceControl compact model={model} onWorkspaceChange={onWorkspaceChange} /><ShellNavigation mobile model={model} route={route} onNavigate={navigate} /></div></div>}
@@ -327,5 +385,5 @@ export function AppShell({model, route, search, announcement, onNavigate, onWork
     <main ref={mainRef} id="main-content" className="shell-main">
       {model.status === 'ready' ? <PageContent key={workspaceStateKey(model)} route={route} search={search} model={model} onNavigate={navigate} contactsClient={contactsClient} usersClient={usersClient} devicesClient={devicesClient} objectsClient={objectsClient} /> : <div className="content-canvas"><header className="page-header"><div><p className="page-header__breadcrumb">Workspace</p><h1 tabIndex={-1}>{model.status === 'loading' ? 'Loading workspace' : 'Workspace features'}</h1></div></header><ShellState model={model} onRetry={onRetry} /></div>}
     </main>
-  </div>;
+  </div></DraftsContext.Provider>;
 }

@@ -1,3 +1,5 @@
+import type {DraftsContribution} from '../drafts/types';
+
 export type Workspace = {id: string; name: string};
 
 export type NavigationContribution = {
@@ -25,4 +27,6 @@ export type ShellViewModel = {
   activationRevision: string;
   user: SessionUser;
   message?: string;
+  /** Where this host keeps record drafts (ADR 0036 §3); absent when it keeps none. */
+  drafts?: DraftsContribution | null;
 };

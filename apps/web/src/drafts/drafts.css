@@ -1,0 +1,19 @@
+.draft-status { min-height: 1.25rem; color: var(--text-secondary); font-size: var(--text-sm); }
+.draft-status--problem { color: var(--text-warning); }
+.draft-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.draft-prompt,
+.draft-cancel,
+.draft-chooser { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-subtle); }
+.draft-cancel { background: var(--surface-warning); }
+.draft-prompt p,
+.draft-cancel p,
+.draft-chooser p { margin: 0; }
+.draft-prompt__notice { color: var(--text-secondary); font-size: var(--text-sm); }
+.draft-chooser ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.draft-chooser li { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; justify-content: space-between; }
+.draft-notice { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
+.drafts-table-wrap { overflow-x: auto; }
+.drafts-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.drafts-table th,
+.drafts-table td { padding: var(--space-3); border-bottom: 1px solid var(--border-subtle); text-align: left; vertical-align: top; }
+.drafts-settings { display: grid; gap: var(--space-4); max-width: 32rem; }
