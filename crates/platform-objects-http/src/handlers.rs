@@ -2198,6 +2198,7 @@ pub async fn list_changes<H: ObjectsHost>(
             "next_after": page.next_after,
             "head": page.head,
             "metadata_version": page.metadata_version,
+            "purges": page.purges,
         }))
         .into_response(),
         Err(error) => error_response(error),
@@ -2841,7 +2842,7 @@ pub async fn undelete_record<H: ObjectsHost>(
         Err(response) => return response,
     };
     match service
-        .undelete_record(
+        .undelete_record_with_lookups(
             &object,
             &record,
             version.expected_version,
@@ -2849,14 +2850,22 @@ pub async fn undelete_record<H: ObjectsHost>(
         )
         .await
     {
-        Ok(restored) => {
-            respond_records(
-                &state,
-                &caller,
-                StatusCode::OK,
-                one_record_json(&service, &object, &restored).await,
-            )
-            .await
+        Ok((restored, lookups)) => {
+            let mut body = one_record_json(&service, &object, &restored).await;
+            // What became of the lookups the deletion cleared on other
+            // records (ADR 0035 G3), as counts only: the member may not be
+            // able to read those records.
+            if let Some(map) = body.as_object_mut() {
+                map.insert(
+                    "lookups_restored".into(),
+                    json!({
+                        "restored": lookups.restored,
+                        "skipped": lookups.skipped_total(),
+                        "skipped_by_reason": lookups.skipped,
+                    }),
+                );
+            }
+            respond_records(&state, &caller, StatusCode::OK, body).await
         }
         Err(error) => error_response(error),
     }

@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -59,6 +59,20 @@ function LoadState({load, noun, onRetry}: {load: Load<unknown>; noun: string; on
   return null;
 }
 
+/** The recycle bin's retention, stated where its records are listed (ADR 0035 G2). */
+export function RecycleBinNotice() {
+  return <p className="object-page__hint">Deleted records are permanently removed after {RECYCLE_BIN_RETENTION_DAYS} days.</p>;
+}
+
+/** Tells the member what an undelete did with the links its deletion cleared on other records (ADR 0035 G3). */
+export function describeLookupRestore(lookups: LookupRestore | null): string {
+  if (!lookups || (lookups.restored === 0 && lookups.skipped === 0)) return '';
+  const links = (count: number) => `${count} ${count === 1 ? 'link' : 'links'}`;
+  const restored = lookups.restored > 0 ? ` ${links(lookups.restored)} to it ${lookups.restored === 1 ? 'was' : 'were'} restored.` : '';
+  const skipped = lookups.skipped > 0 ? ` ${links(lookups.skipped)} ${lookups.skipped === 1 ? 'was' : 'were'} not restored because the linking record changed or is in the recycle bin.` : '';
+  return `${restored}${skipped}`;
+}
+
 /** Object home: the record list for one engine object. */
 export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: ObjectsClient; apiName: string; onNavigate: Navigate; headingRef?: RefObject<HTMLHeadingElement | null>}) {
   const [objectLoad, retryObject] = useObject(client, apiName);
@@ -91,8 +105,8 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
   const restore = async (record: ObjectRecord) => {
     if (!object) return;
     try {
-      await client.undeleteRecord(object.apiName, record.id, record.version);
-      setNotice(`${record.name} was restored.`);
+      const restored = await client.undeleteRecord(object.apiName, record.id, record.version);
+      setNotice(`${record.name} was restored.${describeLookupRestore(restored.lookupsRestored)}`);
       setAttempt(value => value + 1);
     } catch (error) {
       setNotice(error instanceof ObjectsApiError && error.code === 'records.duplicate_value'
@@ -124,6 +138,7 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
       {object.access.delete && <Button type="button" variant="quiet" aria-pressed={bin} onClick={() => { setCursor(undefined); setBin(value => !value); }}>{bin ? 'Back to records' : 'Recycle bin'}</Button>}
     </form>
     {page.status !== 'ready' && <LoadState load={page} noun="record list" onRetry={() => setAttempt(value => value + 1)} />}
+    {bin && <RecycleBinNotice />}
     {page.status === 'ready' && page.value.records.length === 0 && <EmptyState title={bin ? 'The recycle bin is empty' : submitted ? 'No matching records' : shown === 'archived' ? `No archived ${object.pluralLabel.toLowerCase()}` : `No ${object.pluralLabel.toLowerCase()} yet`} description={bin ? 'Deleted records appear here until they are restored or purged.' : submitted ? 'Try a different search.' : shown === 'archived' ? 'Archived records appear here. They stay readable but leave lists and search.' : object.access.create ? `Create the first ${object.label.toLowerCase()} to get started.` : 'Records you can see will appear here.'} />}
     {page.status === 'ready' && page.value.records.length > 0 && <div className="object-table-wrap">
       <table className="object-table">

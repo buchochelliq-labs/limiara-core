@@ -127,6 +127,7 @@ events share one payload.
 | `platform.objects.record-undeleted.v1` | A record is restored from the recycle bin. | Record payload |
 | `platform.objects.record-archived.v1` | A record is archived (ADR 0035 G1). | Record payload |
 | `platform.objects.record-unarchived.v1` | An archived record is brought back. | Record payload |
+| `platform.objects.record-purged.v1` | The recycle-bin purge removed a record for good, 15 days after its deletion (ADR 0035 G2). | Purged record payload |
 
 ### Record payload
 
@@ -138,6 +139,29 @@ events share one payload.
 | `changed_fields` | array of strings | Field API names a create or update set; empty for the lifecycle events. |
 | `source` | string, optional | What the change came through: `web`, `api_client`, `device`, `automation`, `quick_action`, `assistant`, `import` or `system`. Its detail stays in the audit record. |
 | `automation_id` | UUID, optional | The automation that made the change. |
+
+### Purged record payload
+
+One event per purged record, so a consumer keyed on records (a read model,
+a search index, an integration) drops it as it handles any other record
+event; a batch event would make every consumer split it again, and would
+grow with the batch. The record is gone, so the payload names it and when
+it went, never its values. The event has no actor; the purge's audit entry,
+`records.recycle_bin.purged`, covers the whole batch.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `object` | string | The object's API name. |
+| `entity_id` | string | The record's public ID; it is never reused. |
+| `version` | integer | The record's last version. |
+| `deleted_at` | timestamp | When it went to the recycle bin. |
+| `purged_at` | timestamp | When the purge removed it. |
+| `source` | string | Always `system`. |
+
+Undeleting a record also restores the lookups its deletion cleared on other
+records (ADR 0035 G3): each restore is a `record-updated` event of the
+referencing record, with `source` `system` and the field in
+`changed_fields`.
 
 Archiving and unarchiving also leave an audit record
 (`records.record.archived`, `records.record.unarchived`) and an `updated`

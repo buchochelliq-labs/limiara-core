@@ -22,6 +22,7 @@ pub mod push;
 pub mod query;
 pub mod quick_action_replicas;
 pub mod quick_actions;
+pub mod recycle_bin;
 pub mod related;
 pub mod related_actions;
 pub mod related_to;
@@ -587,8 +588,17 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
         .undelete_record("custom:account", &acme.public_id, binned.version, context())
         .await
         .expect("undelete");
-    mutations += 1;
+    mutations += 2; // the undelete and the lookup it restored on Apollo
     assert!(restored.deleted_at.is_none());
+    let apollo_now = admin
+        .get_record("custom:project", &apollo.public_id, false)
+        .await
+        .expect("apollo");
+    assert_eq!(
+        apollo_now.values.get("custom:account"),
+        Some(&json!(acme.public_id)),
+        "undelete restores the lookup its deletion cleared (ADR 0035 G3)"
+    );
 
     // The recycle bin releases unique values; undelete reclaims them or
     // fails when another record took one meanwhile.

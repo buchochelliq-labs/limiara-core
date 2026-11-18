@@ -233,7 +233,7 @@ impl ObjectService {
         let evidence = self.evidence(context);
         let audit = AuditEvent::with_context(
             Some(evidence.tenant_id),
-            Some(evidence.actor_id),
+            evidence.actor_id,
             evidence.correlation_id,
             evidence.causation_id,
             RELATED_ACTION_SKIPPED,

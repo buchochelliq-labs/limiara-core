@@ -122,6 +122,8 @@ struct World {
     colleague: Uuid,
     role: Uuid,
     admin: ObjectService,
+    /// The server's store, for the platform's own jobs.
+    server_store: Arc<dyn ObjectStore>,
     client: SyncClient<HttpTransport>,
     bridge: Bridge,
     device_files: Arc<SqliteTenantDatabases>,
@@ -227,6 +229,7 @@ impl World {
         .await
         .expect("record");
 
+        let server_store = store.clone();
         let server = Server {
             store,
             roles: Arc::new(BTreeMap::from([(member_id, vec![role])])),
@@ -310,6 +313,7 @@ impl World {
             colleague,
             role,
             admin,
+            server_store,
             client,
             bridge,
             device_files,
@@ -1094,4 +1098,189 @@ async fn the_replica_follows_the_servers_archive_state() {
     assert_eq!(status, 200, "{page}");
     assert_eq!(page["data"][0]["name"], "Acme");
     assert!(page["data"][0]["archived_at"].is_null(), "{page}");
+}
+
+#[tokio::test]
+async fn the_replica_forgets_records_the_server_purged() {
+    let world = World::new().await;
+    let acme = world
+        .admin
+        .list_records(ACCOUNT, Default::default())
+        .await
+        .expect("server records")
+        .records
+        .into_iter()
+        .find(|record| record.name == "Acme")
+        .expect("acme");
+    let records = world.path("/objects/custom:account/records");
+    let one = format!("{records}/{}", acme.public_id);
+
+    // Deleted on the server: the device keeps it in its recycle bin, as
+    // the server does.
+    world
+        .admin
+        .delete_record(ACCOUNT, &acme.public_id, acme.version, context())
+        .await
+        .expect("delete on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, bin) = world
+        .call("GET", &format!("{records}?status=deleted"), None)
+        .await;
+    assert_eq!(status, 200, "{bin}");
+    assert_eq!(bin["data"][0]["name"], "Acme", "{bin}");
+
+    // A sync before the purge keeps it there.
+    let report = world.client.sync_once(context()).await.expect("sync");
+    assert_eq!(report.revoked, 0);
+
+    // The server purges its bin 15 days on; the next sync sees the purge
+    // count move, asks which held records are gone, and forgets it.
+    let outcome = purge_recycle_bin(
+        world.server_store.clone(),
+        world.workspace,
+        chrono::Utc::now() + RECYCLE_BIN_RETENTION + chrono::TimeDelta::hours(1),
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("purge");
+    assert_eq!(outcome.purged, 1);
+    let report = world.client.sync_once(context()).await.expect("sync");
+    assert_eq!(report.revoked, 1, "{report:?}");
+    let (status, bin) = world
+        .call("GET", &format!("{records}?status=deleted"), None)
+        .await;
+    assert_eq!(status, 200, "{bin}");
+    assert_eq!(bin["data"], json!([]), "{bin}");
+    let (status, _) = world.call("GET", &one, None).await;
+    assert_eq!(status, 404);
+    // And it stays forgotten.
+    let report = world.client.sync_once(context()).await.expect("sync");
+    assert_eq!(report.revoked, 0);
+}
+
+#[tokio::test]
+async fn lookups_restored_on_the_server_reach_the_replica() {
+    let world = World::new().await;
+    let acme = world
+        .admin
+        .list_records(ACCOUNT, Default::default())
+        .await
+        .expect("server records")
+        .records
+        .into_iter()
+        .find(|record| record.name == "Acme")
+        .expect("acme");
+    world
+        .admin
+        .create_object(
+            CreateObject {
+                name: "deal".into(),
+                label: "Deal".into(),
+                plural_label: "Deals".into(),
+                description: None,
+                name_label: None,
+                sharing_model: Some(SharingModel::Private),
+                grant_hierarchy: None,
+                track_history: None,
+                searchable: None,
+                in_navigation: Some(true),
+            },
+            context(),
+        )
+        .await
+        .expect("deal object");
+    world
+        .admin
+        .create_field(
+            "custom:deal",
+            CreateField {
+                name: "account".into(),
+                label: "Account".into(),
+                field_type: FieldType::Lookup,
+                description: None,
+                required: false,
+                unique: false,
+                indexed: false,
+                searchable: false,
+                track_history: false,
+                max_length: None,
+                scale: None,
+                options: Vec::new(),
+                default_value: None,
+                reference_object: Some(ACCOUNT.into()),
+                reference_objects: None,
+                delete_behaviour: None,
+                formula: None,
+                formula_type: None,
+                rollup: None,
+                lookup_filter: None,
+                read_permission: None,
+                write_permission: None,
+            },
+            context(),
+        )
+        .await
+        .expect("lookup");
+    world
+        .admin
+        .set_object_permission(
+            "custom:deal",
+            world.role,
+            AccessFlags {
+                read: true,
+                create: true,
+                edit: true,
+                delete: true,
+                ..AccessFlags::default()
+            },
+            context(),
+        )
+        .await
+        .expect("grant");
+    let deal = ObjectService::new(
+        world.server_store.clone(),
+        ObjectCaller::new(
+            world.workspace,
+            world.member_id,
+            BTreeSet::new(),
+            vec![world.role],
+        ),
+    )
+    .create_record(
+        "custom:deal",
+        json!({"name": "Big", "custom:account": acme.public_id})
+            .as_object()
+            .expect("values"),
+        context(),
+    )
+    .await
+    .expect("deal");
+    world.client.sync_once(context()).await.expect("sync");
+    let one = world.path(&format!("/objects/custom:deal/records/{}", deal.public_id));
+    let (status, read) = world.call("GET", &one, None).await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["custom:account"], json!(acme.public_id));
+
+    // Deleting the account on the server clears the deal's lookup; the
+    // device takes the clear.
+    let deleted = world
+        .admin
+        .delete_record(ACCOUNT, &acme.public_id, acme.version, context())
+        .await
+        .expect("delete on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (_, read) = world.call("GET", &one, None).await;
+    assert!(read["custom:account"].is_null(), "{read}");
+
+    // Undeleting it puts the lookup back, and the device takes that too.
+    let (_, restore) = world
+        .admin
+        .undelete_record_with_lookups(ACCOUNT, &acme.public_id, deleted.version, context())
+        .await
+        .expect("undelete on the server");
+    assert_eq!(restore.restored, 1);
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, read) = world.call("GET", &one, None).await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["custom:account"], json!(acme.public_id), "{read}");
 }

@@ -38,6 +38,7 @@ pub mod plugin_objects;
 pub mod push;
 pub mod query;
 pub mod quick_actions;
+pub mod recycle_bin;
 pub mod related;
 pub mod related_actions;
 pub mod replica;
@@ -68,6 +69,10 @@ pub use model::*;
 pub use plugin_objects::PluginObjectsInstalled;
 pub use push::{PushAnswer, PushBatch, PushOperation, PushReport};
 pub use query::{QueryColumn, QueryRequest, QueryResult};
+pub use recycle_bin::{
+    purge_recycle_bin, ClearedLookup, LookupRestore, PurgeOutcome, SkipReason,
+    RECYCLE_BIN_RETENTION, RECYCLE_BIN_RETENTION_DAYS,
+};
 pub use related::{RelatedList, RelatedTarget, Relationship};
 pub use replica::{
     Applied, Choices, DeleteConflict, FieldConflict, Lease, Merge, RemoteRecord, Side,

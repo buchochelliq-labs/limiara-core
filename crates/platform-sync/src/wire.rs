@@ -387,6 +387,8 @@ struct ChangesBody {
     next_after: i64,
     head: i64,
     metadata_version: i64,
+    #[serde(default)]
+    purges: i64,
 }
 
 #[derive(Deserialize)]
@@ -427,6 +429,7 @@ pub fn changes_page(value: &Value) -> Result<ChangesPage, SyncError> {
         next_after: body.next_after,
         head: body.head,
         metadata_version: body.metadata_version,
+        purges: body.purges,
     })
 }
 

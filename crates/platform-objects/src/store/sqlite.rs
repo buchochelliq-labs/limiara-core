@@ -862,6 +862,31 @@ CREATE TABLE record_draft_settings (
 );
 "#,
     },
+    // The recycle bin (ADR 0035 G2, G3): the purge's oldest-first scan, its
+    // pass count for synced devices, and the lookup values deleting a
+    // record cleared, kept until it is undeleted or purged.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0035_recycle_bin",
+        sql: r#"
+CREATE INDEX records_tenant_bin_idx ON records (tenant_id, deleted_at, id)
+  WHERE deleted_at IS NOT NULL;
+ALTER TABLE change_counters ADD COLUMN purges INTEGER NOT NULL DEFAULT 0 CHECK (purges >= 0);
+CREATE TABLE record_cleared_lookups (
+  tenant_id TEXT NOT NULL,
+  deleted_record_id TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  value TEXT NOT NULL CHECK (json_valid(value) AND length(value) <= 1024),
+  cleared_version INTEGER NOT NULL CHECK (cleared_version >= 1),
+  changed INTEGER NOT NULL DEFAULT 0 CHECK (changed IN (0, 1)),
+  cleared_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, deleted_record_id, record_id, field_id)
+);
+CREATE INDEX record_cleared_lookups_record_idx
+  ON record_cleared_lookups (tenant_id, record_id, field_id);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -3858,6 +3883,214 @@ impl ObjectTx for SqliteObjectTx {
         Ok(())
     }
 
+    async fn purge_candidates(
+        &mut self,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<Uuid>, ObjectError> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM records WHERE tenant_id = ?1 AND deleted_at IS NOT NULL \
+             AND deleted_at < ?2 ORDER BY deleted_at, id LIMIT ?3",
+        )
+        .bind(&self.tenant)
+        .bind(timestamp(before))
+        .bind(i64::from(limit))
+        .fetch_all(&mut *self.tx)
+        .await?;
+        ids.iter()
+            .map(|id| Uuid::parse_str(id).map_err(|_| ObjectError::Invariant))
+            .collect()
+    }
+
+    async fn claim_purge(
+        &mut self,
+        record_id: Uuid,
+        before: Option<DateTime<Utc>>,
+    ) -> Result<bool, ObjectError> {
+        // The IMMEDIATE transaction holds the database's write lock, so no
+        // undelete can commit between this check and the purge.
+        let claimed = sqlx::query(
+            "UPDATE records SET version = version WHERE tenant_id = ?1 AND id = ?2 \
+             AND deleted_at IS NOT NULL AND (?3 IS NULL OR deleted_at < ?3)",
+        )
+        .bind(&self.tenant)
+        .bind(record_id.to_string())
+        .bind(before.map(timestamp))
+        .execute(&mut *self.tx)
+        .await?
+        .rows_affected();
+        Ok(claimed == 1)
+    }
+
+    async fn referencing_all(&mut self, target_id: Uuid) -> Result<Vec<(Uuid, Uuid)>, ObjectError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT field_id, record_id FROM record_references \
+             WHERE tenant_id = ?1 AND target_id = ?2 ORDER BY record_id, field_id",
+        )
+        .bind(&self.tenant)
+        .bind(target_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.into_iter()
+            .map(|(field, record)| {
+                Ok((
+                    Uuid::parse_str(&field).map_err(|_| ObjectError::Invariant)?,
+                    Uuid::parse_str(&record).map_err(|_| ObjectError::Invariant)?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn purge_records(&mut self, ids: &[Uuid]) -> Result<u64, ObjectError> {
+        let mut purged = 0;
+        for record_id in ids {
+            let id = record_id.to_string();
+            let removed = sqlx::query(
+                "DELETE FROM records WHERE tenant_id = ?1 AND id = ?2 AND deleted_at IS NOT NULL",
+            )
+            .bind(&self.tenant)
+            .bind(&id)
+            .execute(&mut *self.tx)
+            .await?
+            .rows_affected();
+            if removed == 0 {
+                continue;
+            }
+            purged += removed;
+            for statement in [
+                "DELETE FROM record_references WHERE tenant_id = ?1 AND target_id = ?2",
+                "DELETE FROM record_index WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_unique WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_references WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_search_terms WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_shares WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_history WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_changes WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM record_cleared_lookups WHERE tenant_id = ?1 \
+                 AND (deleted_record_id = ?2 OR record_id = ?2)",
+                "DELETE FROM replica_versions WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM replica_pending_references WHERE tenant_id = ?1 AND record_id = ?2",
+                "DELETE FROM replica_bases WHERE tenant_id = ?1 AND record_id = ?2",
+            ] {
+                sqlx::query(statement)
+                    .bind(&self.tenant)
+                    .bind(&id)
+                    .execute(&mut *self.tx)
+                    .await?;
+            }
+        }
+        Ok(purged)
+    }
+
+    async fn append_event(&mut self, event: &EventEnvelope) -> Result<(), ObjectError> {
+        append_outbox(&mut self.tx, event).await?;
+        Ok(())
+    }
+
+    async fn note_purge(&mut self) -> Result<i64, ObjectError> {
+        Ok(sqlx::query_scalar(
+            "INSERT INTO change_counters (tenant_id, purges) VALUES (?1, 1) \
+             ON CONFLICT (tenant_id) DO UPDATE SET purges = change_counters.purges + 1 \
+             RETURNING purges",
+        )
+        .bind(&self.tenant)
+        .fetch_one(&mut *self.tx)
+        .await?)
+    }
+
+    async fn purge_count(&mut self) -> Result<i64, ObjectError> {
+        let count: Option<i64> =
+            sqlx::query_scalar("SELECT purges FROM change_counters WHERE tenant_id = ?1")
+                .bind(&self.tenant)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+        Ok(count.unwrap_or(0))
+    }
+
+    async fn put_cleared_lookup(
+        &mut self,
+        lookup: &crate::recycle_bin::ClearedLookup,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO record_cleared_lookups (tenant_id, deleted_record_id, record_id, field_id, \
+               value, cleared_version, changed, cleared_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT (tenant_id, deleted_record_id, record_id, field_id) DO UPDATE \
+             SET value = excluded.value, cleared_version = excluded.cleared_version, \
+                 changed = excluded.changed, cleared_at = excluded.cleared_at",
+        )
+        .bind(&self.tenant)
+        .bind(lookup.deleted_record_id.to_string())
+        .bind(lookup.record_id.to_string())
+        .bind(lookup.field_id.to_string())
+        .bind(encode(&lookup.value)?)
+        .bind(lookup.cleared_version)
+        .bind(i64::from(lookup.changed))
+        .bind(timestamp(lookup.cleared_at))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn cleared_lookups(
+        &mut self,
+        deleted_record_id: Uuid,
+    ) -> Result<Vec<crate::recycle_bin::ClearedLookup>, ObjectError> {
+        let rows = sqlx::query(
+            "SELECT record_id, field_id, value, cleared_version, changed, cleared_at \
+             FROM record_cleared_lookups WHERE tenant_id = ?1 AND deleted_record_id = ?2 \
+             ORDER BY record_id, field_id",
+        )
+        .bind(&self.tenant)
+        .bind(deleted_record_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::recycle_bin::ClearedLookup {
+                    deleted_record_id,
+                    record_id: uuid(row, "record_id")?,
+                    field_id: uuid(row, "field_id")?,
+                    value: serde_json::from_str(&row.try_get::<String, _>("value")?)
+                        .map_err(|_| ObjectError::Invariant)?,
+                    cleared_version: row.try_get("cleared_version")?,
+                    changed: flag(row, "changed")?,
+                    cleared_at: time(row, "cleared_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn forget_cleared_lookups(&mut self, deleted_record_id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query(
+            "DELETE FROM record_cleared_lookups WHERE tenant_id = ?1 AND deleted_record_id = ?2",
+        )
+        .bind(&self.tenant)
+        .bind(deleted_record_id.to_string())
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_cleared_lookups_changed(
+        &mut self,
+        record_id: Uuid,
+        field_ids: &[Uuid],
+    ) -> Result<(), ObjectError> {
+        for field_id in field_ids {
+            sqlx::query(
+                "UPDATE record_cleared_lookups SET changed = 1 WHERE tenant_id = ?1 \
+                 AND record_id = ?2 AND field_id = ?3 AND changed = 0",
+            )
+            .bind(&self.tenant)
+            .bind(record_id.to_string())
+            .bind(field_id.to_string())
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn remote_version(
         &mut self,
         record_id: Uuid,
@@ -4115,7 +4348,7 @@ impl ObjectTx for SqliteObjectTx {
             "SELECT o.api_name, r.public_id FROM records r \
              JOIN replica_versions v ON v.tenant_id = r.tenant_id AND v.record_id = r.id \
              JOIN object_definitions o ON o.tenant_id = r.tenant_id AND o.id = r.object_id \
-             WHERE r.tenant_id = ?1 AND r.deleted_at IS NULL \
+             WHERE r.tenant_id = ?1 \
              ORDER BY r.created_at, r.id",
         )
         .bind(&self.tenant)
@@ -4136,6 +4369,8 @@ impl ObjectTx for SqliteObjectTx {
             "DELETE FROM replica_versions WHERE tenant_id = ?1 AND record_id = ?2",
             "DELETE FROM replica_pending_references WHERE tenant_id = ?1 AND record_id = ?2",
             "DELETE FROM replica_bases WHERE tenant_id = ?1 AND record_id = ?2",
+            "DELETE FROM record_cleared_lookups WHERE tenant_id = ?1 \
+             AND (deleted_record_id = ?2 OR record_id = ?2)",
             "DELETE FROM records WHERE tenant_id = ?1 AND id = ?2",
         ] {
             sqlx::query(statement)
