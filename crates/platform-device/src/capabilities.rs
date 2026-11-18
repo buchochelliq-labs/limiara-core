@@ -10,6 +10,8 @@
 //! reads records only through the engine as the member. None of them needs
 //! an OS permission.
 
+use crate::assistant::confirm::{AssistantClock, SystemClock};
+use crate::assistant::{AssistantBridge, AssistantService};
 use crate::feed::{ChangeSubscription, ReplicaFeed};
 use crate::route::{RouteContext, RouteSubscription};
 use std::collections::BTreeSet;
@@ -23,16 +25,20 @@ pub enum LocalCapability {
     ReplicaChanges,
     /// `device.route_context`: read the route the web shell shows.
     RouteContext,
+    /// `device.assistant`: call the assistant bridge (ADR 0034), which
+    /// consumes the feed and the route context itself.
+    Assistant,
 }
 
 impl LocalCapability {
-    pub const ALL: [Self; 2] = [Self::ReplicaChanges, Self::RouteContext];
+    pub const ALL: [Self; 3] = [Self::ReplicaChanges, Self::RouteContext, Self::Assistant];
 
     /// The capability's stable name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReplicaChanges => "device.replica_changes",
             Self::RouteContext => "device.route_context",
+            Self::Assistant => "device.assistant",
         }
     }
 }
@@ -119,15 +125,40 @@ impl PluginDeclaration {
 
 /// The shell's services that local capabilities reach. The controller
 /// owns them for the app's lifetime.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LocalServices {
     feed: ReplicaFeed,
     routes: RouteContext,
+    assistant: AssistantService,
+}
+
+impl Default for LocalServices {
+    fn default() -> Self {
+        Self::new(ReplicaFeed::default(), RouteContext::default())
+    }
 }
 
 impl LocalServices {
+    /// Services with no assistant: the desktop's.
     pub fn new(feed: ReplicaFeed, routes: RouteContext) -> Self {
-        Self { feed, routes }
+        Self::with_assistant(feed, routes, None, std::sync::Arc::new(SystemClock))
+    }
+
+    /// Services on a platform with `assistant` (Siri on iOS, Gemini on
+    /// Android): the assistant bridge accepts calls naming only it.
+    /// `clock` times confirmations; the shell passes [`SystemClock`].
+    pub fn with_assistant(
+        feed: ReplicaFeed,
+        routes: RouteContext,
+        assistant: Option<platform_objects::Assistant>,
+        clock: std::sync::Arc<dyn AssistantClock>,
+    ) -> Self {
+        let assistant = AssistantService::new(feed.clone(), routes.clone(), assistant, clock);
+        Self {
+            feed,
+            routes,
+            assistant,
+        }
     }
 
     pub fn feed(&self) -> &ReplicaFeed {
@@ -138,6 +169,12 @@ impl LocalServices {
         &self.routes
     }
 
+    /// The shell's side of the assistant bridge: opened and closed with
+    /// the workspace, with the member's device setting.
+    pub fn assistant(&self) -> &AssistantService {
+        &self.assistant
+    }
+
     /// The handles a plugin gets: exactly what it declared.
     pub fn grant(&self, declaration: &PluginDeclaration) -> PluginGrant {
         let declared = |capability| declaration.capabilities.contains(&capability);
@@ -145,6 +182,8 @@ impl LocalServices {
             plugin: declaration.plugin.clone(),
             feed: declared(LocalCapability::ReplicaChanges).then(|| self.feed.clone()),
             routes: declared(LocalCapability::RouteContext).then(|| self.routes.clone()),
+            assistant: declared(LocalCapability::Assistant)
+                .then(|| self.assistant.bridge_for(&declaration.plugin)),
         }
     }
 }
@@ -156,6 +195,7 @@ pub struct PluginGrant {
     plugin: String,
     feed: Option<ReplicaFeed>,
     routes: Option<RouteContext>,
+    assistant: Option<AssistantBridge>,
 }
 
 impl PluginGrant {
@@ -168,7 +208,15 @@ impl PluginGrant {
         match capability {
             LocalCapability::ReplicaChanges => self.feed.is_some(),
             LocalCapability::RouteContext => self.routes.is_some(),
+            LocalCapability::Assistant => self.assistant.is_some(),
         }
+    }
+
+    /// The assistant bridge (`device.assistant`).
+    pub fn assistant(&self) -> Result<AssistantBridge, CapabilityError> {
+        self.assistant
+            .clone()
+            .ok_or_else(|| self.refused(LocalCapability::Assistant))
     }
 
     /// Subscribes to the replica change feed (`device.replica_changes`).
@@ -223,7 +271,7 @@ mod tests {
             declared.capabilities(),
             &BTreeSet::from([LocalCapability::RouteContext])
         );
-        for unknown in ["device.assistant", "device.camera", "replica_changes", ""] {
+        for unknown in ["device.camera", "assistant", "replica_changes", ""] {
             let error = PluginDeclaration::new("probe", &[unknown]).expect_err(unknown);
             assert_eq!(error.code(), "device.capability_unknown");
         }
@@ -255,6 +303,22 @@ mod tests {
         let nothing = services.grant(&PluginDeclaration::new("bare", &[]).expect("declaration"));
         assert!(nothing.replica_changes().is_err());
         assert!(nothing.route_context().is_err());
+        assert_eq!(
+            nothing
+                .assistant()
+                .map(|_| ())
+                .map_err(|error| error.code()),
+            Err("device.capability_not_granted")
+        );
+        let assistant = services
+            .grant(&PluginDeclaration::new("siri", &["device.assistant"]).expect("declaration"));
+        assert_eq!(
+            assistant
+                .assistant()
+                .map(|bridge| bridge.plugin().to_owned()),
+            Ok("siri".into())
+        );
+        assert!(assistant.replica_changes().is_err());
 
         let both = services.grant(
             &PluginDeclaration::new("index", &["device.replica_changes", "device.route_context"])
@@ -262,5 +326,6 @@ mod tests {
         );
         assert!(both.replica_changes().is_ok());
         assert!(both.route_context().is_ok());
+        assert!(!both.holds(LocalCapability::Assistant));
     }
 }

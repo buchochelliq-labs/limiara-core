@@ -16,6 +16,7 @@ so sharing, permissions and the offline lease still decide.
 | --- | --- |
 | `device.replica_changes` | The replica change feed: what changed in the device's copy of the workspace, by id. |
 | `device.route_context` | The current-route context: which object or record the web shell shows, by id. |
+| `device.assistant` | The assistant bridge: the `assistant.v1` operations and the index stream, for a system assistant. |
 
 Declare them with `platform_device::capabilities::PluginDeclaration`, and
 ask the controller for the grant when the shell builds the plugin:
@@ -28,8 +29,8 @@ let refused = grant.replica_changes();    // not declared: device.capability_not
 ```
 
 An unknown capability name refuses the whole declaration
-(`device.capability_unknown`). Neither capability needs an OS permission,
-and the web view reaches neither: no route of the local command bridge
+(`device.capability_unknown`). None of them needs an OS permission, and
+the web view reaches none of them: no route of the local command bridge
 serves the feed, and the route context only takes messages from the web
 shell, never hands them back.
 
@@ -73,6 +74,141 @@ name, never the address, so search terms and filters stay in the page. The
 bridge treats the message as untrusted data: it accepts only that shape,
 an object the member reads in the replica and a record id of that object,
 and passes it on as data.
+
+## The assistant bridge
+
+A plugin that connects a system assistant (Siri's App Intents on iOS,
+AppFunctions on Android) declares `device.assistant` and gets an
+`AssistantBridge` from `grant.assistant()`
+([ADR 0034](../adr/0034-assistant-bridge.md)). No route of the local
+command bridge and no Tauri command serves it, so nothing in the web view
+can reach it. The bridge holds all of the logic; the plugin's Swift or
+Kotlin half maps the platform's calls onto bridge requests and the answers
+back onto the platform's types, and never reads the replica, checks
+permissions, formats values or writes its own messages.
+
+### Requests and answers
+
+Every request is an `AssistantRequest` under the `assistant.v1` contract,
+as Rust types or as JSON through `call_json`:
+
+```json
+{"contract": "assistant.v1", "assistant": "siri", "device_unlocked": true,
+ "operation": {"name": "get", "object": "custom:account", "record": "a01-0000000001"}}
+```
+
+- `assistant` is `siri` or `gemini`. The shell builds the bridge for its
+  platform's assistant, and a request naming another is refused.
+- `device_unlocked` is what the platform says. Require an unlocked device
+  with the platform's own setting as well; the bridge refuses a locked one
+  (`assistant.device_locked`), so a mistake fails closed.
+
+Every call runs as the signed-in member through the command bridge, so
+permissions, sharing, field-level security, validation rules and lookup
+filters apply as they do in the app. Before each one the bridge checks the
+workspace's assistant policy in the replica's definitions, which only
+narrows what the member could reach. Answers are inert data: values with
+display text the bridge formatted, never markup.
+
+| Operation | What it does |
+| --- | --- |
+| `describe` | The exposed objects with the fields the member reads, the offered quick actions and whether records have a timeline, with the metadata version. Ask again when it moves. |
+| `search` | Search over the exposed objects, or one (`object`), at most 20 results. |
+| `get` | One record's readable values, each with a display value. |
+| `list` | Records of one object, with at most 5 typed `conditions` and one `sort`, 50 a page with a `cursor`. |
+| `timeline` | A record's Activity timeline, paged with a `cursor`. |
+| `actions` | The quick actions offered on an object or a record. |
+| `create`, `update`, `run_action` | Prepare a change and answer with a confirmation. |
+| `commit` | Makes a prepared change, with the confirmation's token only. |
+| `on_screen` | The record the app shows, by id, when its object is exposed. |
+
+A `list` condition is `{"test": ..., "field": ..., "value": ...}` with the
+test `equals`, `not_equals`, `contains`, `before`, `after`, `between` (with
+`from` and `to`) or `is_empty`. The bridge compiles conditions into the
+record query language; never send query text. Delete, owner changes,
+sharing, bulk changes and metadata changes are not offered.
+
+### Writes: prepare, confirm, commit
+
+`create`, `update` and `run_action` run the save path as a dry run and
+answer with a `Confirmation`: the object's label, the record's name for an
+update or a quick action, each field that would change with its label and
+display value, and a `token`. Show it to the member with the platform's own
+confirmation, every time, then send `commit` with the token. There is no
+way to skip the confirmation, and nothing writes without a token.
+
+A token is single use, lives two minutes and is bound to that exact change,
+the record's version and the metadata version. `commit` refuses
+`assistant.confirmation_invalid` (used, expired or unknown) and
+`assistant.confirmation_stale` (the record or the definitions moved): ask
+the member again. Writes record the assistant as the source, and the
+device's push marks them so the server checks them against its current
+policy; a write it no longer allows comes back as `assistant.not_allowed`,
+like any write the server refuses.
+
+### Errors
+
+An error answer has a `code`, a `message` to speak or show as it is, and
+for `assistant.invalid` the failing `fields` with their labels and
+messages. Branch on the code; never compose a message.
+
+| Code | When |
+| --- | --- |
+| `assistant.signed_out` | No workspace on the device, or a sign-out or wipe in progress. |
+| `assistant.locked` | Past the offline lease. |
+| `assistant.unavailable` | The key or storage cannot be opened. |
+| `assistant.device_locked` | The device is locked. |
+| `assistant.disabled` | Assistant access is off for the workspace or on this device. |
+| `assistant.not_found` | No such record, or one the member cannot read: the same answer. |
+| `assistant.object_not_exposed` | The policy does not expose the object, or the member cannot read it. |
+| `assistant.not_writable` | The policy does not let assistants write the object. |
+| `assistant.action_not_offered` | The policy does not offer the quick action. |
+| `assistant.not_permitted` | The member may not make this change. |
+| `assistant.invalid` | The request or a value is not valid. |
+| `assistant.confirmation_invalid`, `assistant.confirmation_stale` | See above. |
+| `assistant.not_allowed` | The server's policy refused a pushed write. |
+| `assistant.failed` | Anything else. |
+
+### The member's settings on the device
+
+`DeviceAssistantSettings` holds the member's choice on the device, kept
+with the stored session: `assistant_access` (on by default; off answers
+`assistant.disabled`) and `indexing` (off until the member turns it on).
+The shell changes them with `Controller::set_assistant_settings`.
+
+### The index stream
+
+A plugin that keeps the OS's semantic or search index takes
+`bridge.index_stream()` and applies its updates, and nothing else, to the
+index:
+
+| Update | Apply it by |
+| --- | --- |
+| `upsert (entry)` | Adding the entry, or replacing the one for the same record. |
+| `remove (workspace, object, record)` | Removing one entry. |
+| `remove_object (workspace, object)` | Removing the object's entries. |
+| `remove_workspace (workspace)` | Removing the workspace's entries. |
+| `rebuild (workspace)` | Removing the workspace's entries; the `upsert` updates that follow are what it holds. |
+| `refresh (workspace, expires_at)` | Moving every entry's expiry of the workspace. |
+
+Entries are already filtered: indexing needs the workspace switch, the
+object's indexable setting and the member's `indexing` setting, and holds
+only the record's id, its object's label, its name unless the policy
+excludes it, and the readable fields the policy does not exclude. Group
+entries by `workspace` (a domain identifier on iOS, a namespace on
+Android) and set each entry's expiry to `expires_at`, the offline lease
+length from when it was written; `refresh` moves it after each sync. A
+lease that locks keeps the index. Sign-out and wipe remove the workspace's
+entries before its replica goes.
+
+At each launch, after the shell opened what it holds, call
+`bridge.sweep(&indexed)` with the workspaces the index holds entries for.
+Remove every workspace it lists, and every entry that expired before
+`remove_expired_before`.
+
+On-screen awareness uses `on_screen` and ids only. Describe the activity
+with the record's name only when the object is indexable, and never mark
+it as eligible for public indexing.
 
 ## The route probe
 

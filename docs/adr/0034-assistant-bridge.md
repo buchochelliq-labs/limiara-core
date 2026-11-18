@@ -25,8 +25,18 @@ server's re-check of pushed assistant writes with the push marker of §6
 from anything but a device's push). A marked quick action is named by its
 object and API name, since action names are unique only per object.
 Slice 2, the replica change feed and the current-route context (#235), is
-delivered (2026-11-17), as described under "Built" at the end of §9. The
-bridge operations and the harness are still to come.
+delivered (2026-11-17), as described under "Built" at the end of §9.
+Slice 3, the bridge operations (#232), is delivered (2026-11-18), as
+described under "Built" at the end of §10. The harness is still to come.
+
+For the owner to confirm (slice 3): review left open whether members also
+opt in on each device for assistant reads and writes, as they do for
+indexing. The bridge implements what this ADR says: the member's
+per-device setting exists for both (§4), indexing is off until the member
+turns it on (§7), and assistant access defaults to on once the workspace's
+administrator allows assistants, so the workspace switch and the object
+policy are the opt-in for reads and writes. Making assistant access
+opt-in per device too is a one-line change of the default.
 
 Decided in review (2026-11-10):
 
@@ -520,7 +530,7 @@ Built (2026-11-17), slice 2:
   (`device.capability_unknown`). `Controller::grant` hands back a
   `PluginGrant` that holds only what was declared, and each subscription
   is checked against it (`device.capability_not_granted`). No route of the
-  bridge serves the feed. `device.assistant` comes with slice 3.
+  bridge serves the feed. `device.assistant` came with slice 3.
 - **The route probe** (`apps/device-shell/src-tauri/route-probe`) is a
   debug-build test plugin that declares `device.route_context` only, with
   Swift and Kotlin halves in the `device-push` pattern. The desktop tests
@@ -552,6 +562,70 @@ message:
 - **`assistant.invalid` names the fields.** It lists the failing fields
   by label, with each field's message, so the assistant can ask for the
   missing value.
+
+Built (2026-11-18), slice 3:
+
+- **The interface** is `platform_device::assistant`: the `assistant.v1`
+  contract (`AssistantRequest`, `Operation`, `AssistantAnswer`) as Rust
+  types and as JSON (`AssistantBridge::call_json`), reached only through
+  `PluginGrant::assistant`, which needs the `device.assistant` local
+  capability. The command bridge has no route for it and the shell no
+  Tauri command. The controller opens it when the signed-in workspace
+  opens, and the shell names the platform's assistant (Siri on iOS,
+  Gemini on Android); a request naming another is `assistant.invalid`.
+  The demonstration workspace answers `assistant.signed_out`.
+- **How operations run.** Each operation is requests to `Bridge::handle`
+  as the member: the policy (`/objects/assistant-policy`), objects and
+  fields with their field access, quick actions, records, search, the
+  query route for `list` and the timeline route. The bridge checks the
+  policy first, every time, and applies it after the member's access.
+  `list` compiles at most 5 typed conditions on indexed fields the member
+  reads into the query language, with every literal escaped and typed.
+  `describe` reports a timeline when the timeline route counts a source
+  for one of the object's records; replicas carry no timeline sources yet,
+  so it is false on devices today. `on_screen` passes the route context on
+  for exposed objects only, as ids.
+- **Writes.** A prepare is an all-or-none composite request through the
+  bridge whose second operation always fails, so the engine runs the whole
+  save path (permissions, sharing, field-level security, required fields,
+  validation rules, lookup filters, uniqueness, before-save automations)
+  and rolls it back. Tokens are 16 bytes of id and 32 of secret from the
+  OS's CSPRNG (`ring`), held in memory only (at most 32 waiting), compared
+  in constant time (`subtle`), single use and bound to the workspace, the
+  member, the assistant, the exact values, the record's version and the
+  replica's metadata version, for two minutes. An update confirms and
+  sends only the fields whose value changes. Commits write through a host
+  whose caller has `MutationSource::assistant` and whose engine
+  (`ObjectService::with_assistant_marker`) remembers each change it makes
+  in the replica's `replica_assistant_marks` table (SQLite migration
+  0035), in the write's transaction; the push queue sets the marker on any
+  record with such a change unsent, with the quick action's object and
+  name, and forgets the marks once pushed. A record that also has the
+  member's own unsent edits is marked as a whole: the marker only adds
+  checks. A record not on the server yet pushes as one create, so its
+  marker keeps a quick action only when that is a create action making
+  records of its object; an update action run on it before its first push
+  leaves a plain assistant create, which the server still checks against
+  the workspace switch and the object's exposed and writable settings.
+  A quick action's presets are the form's defaults: a value the member
+  gives for a field the form asks for wins, a cleared one included, as in
+  the web's form.
+- **The member's setting** is `DeviceAssistantSettings`
+  (`assistant_access`, on by default, and `indexing`, off by default),
+  kept with the stored session.
+- **The index stream** (`AssistantBridge::index_stream`) reads every
+  entry back through the bridge as the member, and emits `upsert`,
+  `remove`, `remove_object`, `remove_workspace`, `rebuild` and `refresh`
+  (a sync moved the lease's last contact). Changes to the policy or the
+  definitions remove the entries of objects no longer indexable and write
+  again those of objects whose indexed fields or labels moved. A rebuild
+  that cannot read the replica, as while it is locked, waits for it to
+  open rather than clearing anything. `AssistantBridge::sweep` is the
+  launch-time sweep.
+- **Sign-out and wipe** close the bridge before the replica goes: calls
+  answer `assistant.signed_out` from then on, prepared changes are
+  forgotten, and the controller waits for calls already running before it
+  deletes the files.
 
 ## Alternatives considered
 
@@ -607,7 +681,8 @@ Delivery is sliced:
    operations, the policy checks, the two-step writes, the source and the
    push marker, the error table and the index stream, tested over the
    SQLite replica like the engine's conformance suites. Quick-action
-   operations need #236.
+   operations need #236. Delivered (2026-11-18); see "Built" at the end of
+   §10.
 4. **A reference test harness.** A headless driver that runs scripted
    assistant sessions against the bridge with no phone: describe, search,
    read, prepare and commit writes, every refusal state in §8, and the

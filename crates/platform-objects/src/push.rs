@@ -123,6 +123,7 @@ impl ObjectService {
         let mut positions = tx.sync_positions().await?;
         positions.pushed = sent_through(tx.as_mut(), positions.pushed).await?;
         tx.set_sync_positions(positions).await?;
+        tx.prune_assistant_marks(positions.pushed).await?;
         let candidates = queued(tx.as_mut(), positions.pushed).await?;
         let security = FieldSecurity::for_caller(self.caller());
         let mut operations = Vec::new();
@@ -139,6 +140,15 @@ impl ObjectService {
             };
             let reference = format!("r{}", operations.len());
             let object_name = object.api_name.clone();
+            // A change the device's assistant bridge made says so (ADR 0034
+            // §6), so the server re-checks it against its own assistant
+            // policy. Any assistant change among the record's unsent ones
+            // marks the whole operation: the marker only adds checks.
+            let taken = tx
+                .remote_version(record.id)
+                .await?
+                .map_or(0, |taken| taken.through);
+            let assistant = tx.assistant_mark(record.id, taken).await?;
             let id = record.public_id.clone();
             let (operation, held_back) = match pending {
                 Pending::Create(values) => {
@@ -146,12 +156,16 @@ impl ObjectService {
                         hold_back(tx.as_mut(), &object, values, &arriving).await?;
                     values.insert("id".into(), Value::String(id.clone()));
                     arriving.insert(id.clone());
+                    let assistant = match assistant {
+                        Some(marker) => Some(create_marker(tx.as_mut(), &object, marker).await?),
+                        None => None,
+                    };
                     (
                         CompositeOperation::Create {
                             reference,
                             object: object_name,
                             values,
-                            assistant: None,
+                            assistant,
                         },
                         held_back,
                     )
@@ -169,7 +183,7 @@ impl ObjectService {
                             id: id.clone(),
                             expected_version,
                             values,
-                            assistant: None,
+                            assistant,
                         },
                         held_back,
                     )
@@ -287,6 +301,7 @@ impl ObjectService {
         let mut positions = tx.sync_positions().await?;
         positions.pushed = sent_through(tx.as_mut(), positions.pushed).await?;
         tx.set_sync_positions(positions).await?;
+        tx.prune_assistant_marks(positions.pushed).await?;
         tx.commit().await?;
         Ok(report)
     }
@@ -372,6 +387,41 @@ impl ObjectService {
         }
         Ok(positions)
     }
+}
+
+/// The marker a record that has not reached the server yet pushes with.
+/// Its changes coalesce into one create, so a quick action the assistant
+/// ran on it stays in the marker only when it is a create action that makes
+/// records of this object; an update action run on the new record before
+/// its first push would name a write the server never receives, and the
+/// server's re-check would refuse the whole record. The create is then
+/// marked as a plain assistant create: the server still checks that its
+/// policy has assistant access on and the object exposed and writable,
+/// which an assistant create of the same values needs anyway.
+async fn create_marker(
+    tx: &mut dyn ObjectTx,
+    object: &ObjectDefinition,
+    marker: crate::AssistantMarker,
+) -> Result<crate::AssistantMarker, ObjectError> {
+    let Some(marked) = &marker.quick_action else {
+        return Ok(marker);
+    };
+    let creates_this = match tx.object_by_api_name(&marked.object).await? {
+        Some(owner) => tx.quick_actions(owner.id).await?.into_iter().any(|action| {
+            action.name == marked.name
+                && action.kind == crate::QuickActionKind::Create
+                && action.target_object_id == Some(object.id)
+        }),
+        None => false,
+    };
+    Ok(if creates_this {
+        marker
+    } else {
+        crate::AssistantMarker {
+            quick_action: None,
+            ..marker
+        }
+    })
 }
 
 /// The furthest position from `after` up to which no entry's record has

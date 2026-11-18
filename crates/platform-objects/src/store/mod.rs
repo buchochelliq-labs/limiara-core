@@ -660,5 +660,26 @@ pub trait ObjectTx: Send {
         target_public_id: &str,
     ) -> Result<Vec<Uuid>, ObjectError>;
 
+    /// Remembers that the replica change at `position` was an assistant's
+    /// write through the device's assistant bridge (ADR 0034 §6), so the
+    /// push that sends it carries the marker. Replicas only.
+    async fn put_assistant_mark(
+        &mut self,
+        position: i64,
+        record_id: Uuid,
+        marker: &crate::AssistantMarker,
+    ) -> Result<(), ObjectError>;
+
+    /// The latest assistant marker on a record's changes after `after`, if
+    /// any of them was an assistant's.
+    async fn assistant_mark(
+        &mut self,
+        record_id: Uuid,
+        after: i64,
+    ) -> Result<Option<crate::AssistantMarker>, ObjectError>;
+
+    /// Forgets the marks of changes at or before `through`, once pushed.
+    async fn prune_assistant_marks(&mut self, through: i64) -> Result<(), ObjectError>;
+
     async fn commit(self: Box<Self>) -> Result<(), ObjectError>;
 }

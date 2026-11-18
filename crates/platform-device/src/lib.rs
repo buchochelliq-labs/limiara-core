@@ -35,6 +35,7 @@
 //! never reaches the server.
 
 pub mod app;
+pub mod assistant;
 pub mod capabilities;
 pub mod feed;
 pub mod route;
@@ -169,6 +170,19 @@ impl DeviceHost {
     /// The caller every request runs as.
     pub fn caller(&self) -> &Caller {
         &self.0.caller
+    }
+
+    /// The host the assistant bridge writes through (ADR 0034 §6): the same
+    /// member and replica, with the assistant as the source of its changes
+    /// and an engine that marks them for the push. It takes no route
+    /// messages. Only [`assistant`] builds one; no route or Tauri command
+    /// reaches it.
+    pub(crate) fn for_assistant(&self, marker: platform_objects::AssistantMarker) -> Self {
+        let mut inner = (*self.0).clone();
+        inner.caller.source = MutationSource::assistant(marker.assistant);
+        inner.engine = inner.engine.clone().with_assistant_marker(marker);
+        inner.routes = None;
+        Self(Arc::new(inner))
     }
 
     fn me(&self) -> BTreeMap<Uuid, String> {
@@ -541,6 +555,11 @@ impl Bridge {
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .with_state(host.clone());
         Self { router, host }
+    }
+
+    /// The host the bridge answers over.
+    pub(crate) fn host(&self) -> &DeviceHost {
+        &self.host
     }
 
     /// Answers one request as the server would. After a write, the
