@@ -3,7 +3,7 @@
 //! few records, so the shell's navigation, lists and record pages work with
 //! no server. Its key is held in memory only, so it starts afresh each time.
 
-use platform_device::{device_databases, Bridge, DeviceHost, Member, MemoryKeys, Workspace};
+use platform_device::{device_databases, DeviceHost, Member, MemoryKeys, Workspace};
 use platform_objects::store::sqlite::SqliteObjectStore;
 use platform_objects::*;
 use serde_json::{json, Map, Value};
@@ -56,8 +56,8 @@ fn text_field(name: &str, label: &str) -> CreateField {
 }
 
 /// Opens the demonstration workspace under `directory`, replacing any
-/// left by an earlier launch.
-pub async fn open(directory: &Path) -> Result<Bridge, ObjectError> {
+/// left by an earlier launch, as the host the controller's bridge serves.
+pub async fn open(directory: &Path) -> Result<DeviceHost, ObjectError> {
     let files = device_databases(directory, Arc::new(MemoryKeys::new()));
     // A file from an earlier launch was written under a key that ended
     // with that process.
@@ -138,7 +138,7 @@ pub async fn open(directory: &Path) -> Result<Bridge, ObjectError> {
             )
             .await?;
     }
-    Ok(Bridge::new(DeviceHost::new(
+    Ok(DeviceHost::new(
         engine,
         Member {
             display_name: "Demo member".into(),
@@ -149,5 +149,5 @@ pub async fn open(directory: &Path) -> Result<Bridge, ObjectError> {
         Workspace {
             name: "Demonstration".into(),
         },
-    )))
+    ))
 }

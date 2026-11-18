@@ -67,10 +67,10 @@ fn signed_out_shell(directory: &std::path::Path) -> Shell {
 /// A shell with the demonstration workspace open.
 async fn open_shell(directory: &std::path::Path) -> Shell {
     let shell = signed_out_shell(directory);
-    let bridge = fixture::open(&directory.join("demonstration"))
+    let host = fixture::open(&directory.join("demonstration"))
         .await
         .expect("demo workspace");
-    shell.controller().show_demo(bridge).expect("demo");
+    shell.controller().show_demo(host).expect("demo");
     shell
 }
 

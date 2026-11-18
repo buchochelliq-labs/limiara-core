@@ -7,6 +7,7 @@ import type {ShellStatus, ShellViewModel} from './shell/types';
 import {ExternalHostApp, ExternalUnavailableApp, isExternalRoutePath, parseExternalRoute} from './external-host/ExternalHostApp';
 import {DeviceGate} from './device/DeviceGate';
 import {inDeviceShell} from './device/session';
+import {RouteReporter} from './shell/route-context';
 import './styles/global.css';
 
 const debugStatus = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('shell-state') as ShellStatus | null : null;
@@ -31,10 +32,10 @@ function LimiaraApp() {
     const sequence = requestSequence.current.begin();
     commitModel({status: 'loading', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation: [], permissions: [], activationRevision: '', user: baseModel.user});
     try {
-      const {navigation, permissions, revision} = await loadWorkspaceNavigation(workspaceId);
+      const {navigation, permissions, revision, routeContext} = await loadWorkspaceNavigation(workspaceId);
       if (!requestSequence.current.isCurrent(sequence)) return;
       const workspace = baseModel.workspaces.find(item => item.id === workspaceId);
-      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: baseModel.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.'});
+      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: baseModel.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: baseModel.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext});
       if (announce) setAnnouncement(`${workspace?.name ?? 'Workspace'} loaded. ${navigation.length ? `${navigation.length === 1 ? '1 feature' : `${navigation.length} features`} available.` : 'No features are enabled.'}`);
     } catch (reason) {
       if (!requestSequence.current.isCurrent(sequence)) return;
@@ -50,12 +51,12 @@ function LimiaraApp() {
     const sequence = requestSequence.current.begin();
     revalidationInFlight.current = true;
     try {
-      const {navigation, permissions, revision} = await loadWorkspaceNavigation(workspaceId);
+      const {navigation, permissions, revision, routeContext} = await loadWorkspaceNavigation(workspaceId);
       if (!requestSequence.current.isCurrent(sequence)) return;
       const latest = modelRef.current;
       if (latest.activeWorkspaceId !== workspaceId || latest.activationRevision === revision) return;
       const workspace = latest.workspaces.find(item => item.id === workspaceId);
-      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: latest.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: latest.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.'});
+      commitModel({status: navigation.length ? 'ready' : 'empty', workspaces: latest.workspaces, activeWorkspaceId: workspaceId, navigation, permissions, activationRevision: revision, user: latest.user, message: navigation.length ? undefined : 'No features are enabled for this workspace yet.', routeContext});
       setAnnouncement(`${workspace?.name ?? 'Workspace'} permissions and features refreshed.`);
     } catch (reason) {
       if (!requestSequence.current.isCurrent(sequence)) return;
@@ -102,6 +103,19 @@ function LimiaraApp() {
       window.clearInterval(interval);
     };
   }, [revalidateActivation]);
+
+  // Only a host whose contributions ask for route messages gets them
+  // (ADR 0034 §9): the pattern's name and ids, never the address. When the
+  // shell stops showing a workspace page (no features left, or navigation
+  // that could not be loaded), a host that was told one is told `other`.
+  const routeReporter = useRef(new RouteReporter());
+  useEffect(() => {
+    if (!model.routeContext || model.status !== 'ready' || !model.activeWorkspaceId) {
+      routeReporter.current.leave();
+      return;
+    }
+    routeReporter.current.report(model.activeWorkspaceId, route);
+  }, [model.routeContext, model.status, model.activeWorkspaceId, route]);
 
   useEffect(() => {
     const syncRoute = () => {

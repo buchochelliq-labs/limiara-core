@@ -13,6 +13,7 @@ async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
 http.workspace = true
+platform-id.workspace = true
 platform-objects.workspace = true
 platform-objects-http.workspace = true
 # The replica is always encrypted on a device (ADR 0024, "Encryption at rest").
@@ -29,4 +30,5 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+plugin-contract.workspace = true
 tempfile = "3"
