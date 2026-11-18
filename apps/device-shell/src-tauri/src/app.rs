@@ -223,10 +223,11 @@ fn device_name() -> String {
 
 /// Builds and runs the app: the desktop binary's `main`, and the entry point
 /// the iOS and Android projects call. An app crate that links native
-/// plugins of its own builds the app with [`AppBuilder`] instead, and turns
-/// this crate's `mobile-entry-point` feature off so that its own entry
-/// point is the only one.
-#[cfg_attr(all(mobile, feature = "mobile-entry-point"), tauri::mobile_entry_point)]
+/// plugins of its own builds the app with [`AppBuilder`] and its own Tauri
+/// configuration instead, and turns this crate's `entry-point` feature off,
+/// so that its own entry point is the only one.
+#[cfg(feature = "entry-point")]
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     AppBuilder::new().run(tauri::generate_context!());
 }

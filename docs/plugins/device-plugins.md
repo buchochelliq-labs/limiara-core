@@ -215,9 +215,10 @@ it as eligible for public indexing.
 The shell names its own plugins (`device-keystore`, `device-browser`,
 `device-push` and, in debug builds, `device-route-probe`). An app crate
 built on the shell can link more native plugins without the shell naming
-them. It depends on the `device-shell` library with its
-`mobile-entry-point` feature off, declares its own mobile entry point, and
-builds the app with `device_shell::app::AppBuilder`:
+them. It depends on the `device-shell` library with its `entry-point`
+feature off (the shell's own `app::run`, its Tauri configuration and its
+web build), declares its own mobile entry point with its own Tauri
+configuration, and builds the app with `device_shell::app::AppBuilder`:
 
 ```rust
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
