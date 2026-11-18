@@ -54,7 +54,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/test-keycloak-fixture.sh
   device-sign-in:
-    runs-on: ubuntu-latest
+    # Playwright 1.56 cannot install Chromium on ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +71,8 @@ jobs:
       - run: echo '127.0.0.1 auth.localhost' | sudo tee -a /etc/hosts
       - run: bash scripts/test-device-sign-in.sh
   device-app-sign-in:
-    runs-on: ubuntu-latest
+    # Playwright 1.56 cannot install Chromium on ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +110,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
       - run: bash scripts/test-inbox-consumer.sh
   plugin-runtime-lifecycle:
-    runs-on: ubuntu-latest
+    # Playwright 1.56 cannot install Chromium on ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +138,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/validate-ui-metadata.mjs
   docs-quality:
-    runs-on: ubuntu-latest
+    # Playwright 1.56 cannot install Chromium on ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
