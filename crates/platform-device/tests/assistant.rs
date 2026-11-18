@@ -1940,3 +1940,49 @@ async fn supplied_action_values_override_editable_presets() {
         Value::Null
     );
 }
+
+#[tokio::test]
+async fn a_record_back_at_its_prepared_version_with_other_content_is_stale() {
+    let world = World::new().await;
+    // The member's own edit, not pushed yet: the device numbers it.
+    let version = world.device_record(&world.acme).await["version"].clone();
+    let (status, _) = world
+        .web(
+            "PATCH",
+            &format!("/objects/{ACCOUNT}/records/{}", world.acme),
+            Some(json!({"expected_version": version, "custom:notes": "Mine"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let confirmation = world
+        .prepare(Operation::Update {
+            object: ACCOUNT.into(),
+            record: world.acme.clone(),
+            values: values(json!({"custom:notes": "Assistant"})),
+        })
+        .await;
+    // The push answer and a colleague's change bring the record back to
+    // the version number it had on the device, with other content.
+    world.sync().await;
+    let on_server = world
+        .admin
+        .get_record(ACCOUNT, &world.acme, false)
+        .await
+        .expect("acme");
+    world
+        .admin
+        .update_record(
+            ACCOUNT,
+            &world.acme,
+            on_server.version,
+            &values(json!({"custom:amount": 1500})),
+            context(),
+        )
+        .await
+        .expect("colleague");
+    world.sync().await;
+    assert_eq!(
+        world.commit(&confirmation.token).await.map_err(|e| e.code),
+        Err(AssistantCode::ConfirmationStale)
+    );
+}

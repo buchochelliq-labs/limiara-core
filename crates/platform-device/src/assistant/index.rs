@@ -204,6 +204,32 @@ impl IndexStream {
         tokio::time::timeout(timeout, self.next()).await.ok()
     }
 
+    /// Every update the changes already published call for, without
+    /// waiting: the feed's waiting events and the member's setting are
+    /// taken in turn until neither has more. A plugin that applies the
+    /// index in batches, and the reference harness (ADR 0034 slice 4),
+    /// which must not depend on timing, call it after each step.
+    pub async fn ready(&mut self) -> Vec<IndexUpdate> {
+        loop {
+            let mut progressed = false;
+            while let Some(event) = self.feed.try_next() {
+                self.on_change(event.workspace, event.change).await;
+                self.check_refresh().await;
+                progressed = true;
+            }
+            if self.settings.has_changed().unwrap_or(false) {
+                self.on_settings().await;
+                self.check_refresh().await;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+        self.check_refresh().await;
+        self.queue.drain(..).collect()
+    }
+
     fn remove_workspace(&mut self) {
         if let Some((workspace, _)) = self.indexed.take() {
             self.queue

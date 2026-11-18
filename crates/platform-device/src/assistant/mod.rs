@@ -61,8 +61,8 @@ use uuid::Uuid;
 ///
 /// - `assistant_access` turns every assistant operation off on this device
 ///   (`assistant.disabled`). It is on by default, so assistants work once
-///   the workspace's administrator allows them; this default is a decision
-///   recorded for the owner to confirm (ADR 0034, open question 2).
+///   the workspace's administrator allows them, as the product owner
+///   decided (ADR 0034, Status).
 /// - `indexing` lets the device put records into the OS's index. It is off
 ///   until the member turns it on, as §7 requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1076,7 +1076,7 @@ impl Session<'_> {
         &self,
         write: PreparedWrite,
         meta: &ObjectMeta,
-        record: Option<(String, i64)>,
+        record: Option<(String, i64, Map<String, Value>)>,
         record_name: Option<String>,
         action_label: Option<String>,
         values: Map<String, Value>,
@@ -1098,8 +1098,9 @@ impl Session<'_> {
                 assistant: self.assistant,
                 write,
                 object: meta.api_name.clone(),
-                record: record.as_ref().map(|(id, _)| id.clone()),
-                record_version: record.as_ref().map(|(_, version)| *version),
+                record: record.as_ref().map(|(id, _, _)| id.clone()),
+                record_version: record.as_ref().map(|(_, version, _)| *version),
+                record_read: record.map(|(_, _, read)| read),
                 metadata_version,
                 values,
             })
@@ -1185,7 +1186,7 @@ impl Session<'_> {
         self.confirmation(
             PreparedWrite::Update,
             &meta,
-            Some((id, version)),
+            Some((id, version, found.clone())),
             Some(text_of(&Value::Object(found), "name")),
             None,
             values,
@@ -1273,7 +1274,7 @@ impl Session<'_> {
                 creates: action.kind == QuickActionKind::Create,
             },
             &target,
-            Some((id, version)),
+            Some((id, version, found.clone())),
             Some(text_of(&Value::Object(found), "name")),
             Some(action.label.clone()),
             values,
@@ -1320,7 +1321,11 @@ impl Session<'_> {
         };
         if let (Some(record), Some(version)) = (&prepared.record, prepared.record_version) {
             let found = self.reader.record(&action_object, record).await?;
-            if found.and_then(|found| found.get("version").and_then(Value::as_i64)) != Some(version)
+            if found
+                .as_ref()
+                .and_then(|found| found.get("version").and_then(Value::as_i64))
+                != Some(version)
+                || found.as_ref() != prepared.record_read.as_ref()
             {
                 return Err(stale());
             }

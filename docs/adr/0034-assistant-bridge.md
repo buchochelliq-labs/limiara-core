@@ -27,16 +27,23 @@ object and API name, since action names are unique only per object.
 Slice 2, the replica change feed and the current-route context (#235), is
 delivered (2026-11-17), as described under "Built" at the end of §9.
 Slice 3, the bridge operations (#232), is delivered (2026-11-18), as
-described under "Built" at the end of §10. The harness is still to come.
+described under "Built" at the end of §10. Slice 4, the reference
+harness, is delivered (2026-11-18), as described under "Built" at the end
+of Consequences. With it every slice is delivered.
 
-For the owner to confirm (slice 3): review left open whether members also
-opt in on each device for assistant reads and writes, as they do for
-indexing. The bridge implements what this ADR says: the member's
-per-device setting exists for both (§4), indexing is off until the member
-turns it on (§7), and assistant access defaults to on once the workspace's
-administrator allows assistants, so the workspace switch and the object
-policy are the opt-in for reads and writes. Making assistant access
-opt-in per device too is a one-line change of the default.
+Decided by the product owner (2026-11-18), closing the questions slice 3
+left open:
+
+- Assistant access stays on by default on each device once the
+  workspace's administrator allows assistants; the member's per-device
+  switch turns it off. Indexing stays off on a device until the member
+  turns it on (§4, §7).
+- A record that has both an assistant's and the member's own edits unsent
+  is pushed with the assistant marker for the whole change. The stricter
+  rule is kept: the marker only adds checks (§6).
+- The confirmation lists only the fields the request sets, with their new
+  display values, and not the changes a before-save automation would add
+  when the change is saved (§5).
 
 Decided in review (2026-11-10):
 
@@ -706,3 +713,64 @@ Also:
   on Apple Intelligence devices and opens to the App Store in the spring;
   Gemini's is an experimental preview. The bridge does not depend on
   either: the harness exercises it whatever the platforms ship.
+
+Built (2026-11-18), slice 4:
+
+- **The harness** is `apps/assistant-harness`, a library and a command
+  line. It builds the reference world: a workspace server (the object
+  routes over a SQLite workspace, on an ephemeral loopback port, stopped
+  with the world) and a device that signs in, syncs over HTTP into an
+  encrypted SQLite replica and opens the assistant bridge, with a native
+  plugin's `device.assistant` grant for Siri or Gemini. Every request goes
+  through `call_json` as the bytes a native plugin sends, so the wire
+  format is what is tested.
+- **Scripts** are JSON in the `assistant-harness.v1` format under
+  `tests/assistant-harness/`. Each step makes one call, acts on the world
+  (sync, sign-out begun or finished, wipe, sign-in, storage that cannot be
+  opened, the member's device settings, the workspace switch and object
+  policy on the server, a relabelled object, a colleague's change, the
+  push queue, history on either side, web-shell requests, the offline
+  limit, the clock and the lease check) or works the index stream
+  (subscribe, drain, sweep), and asserts on the answer by JSON Pointer:
+  its kind, error code, spoken sentence and key fields. Variables carry
+  ids and tokens from step to step.
+- **The contract file** is
+  `crates/platform-device/contract/assistant.v1.schema.json`
+  (`platform_device::assistant::SCHEMA`), a JSON Schema of every request,
+  answer, index update and the sweep, with each code's sentence. The
+  harness checks every request and answer it exchanges against it, and
+  that requests the scripts mark malformed are refused by it and answered
+  `assistant.invalid`; its tests build one of each Rust request, answer
+  and update, with matches that fail to compile when a variant is added,
+  and compare the codes, sentences and enumerations. The Rust decoder accepts extra
+  keys on `describe` and `on_screen`; the file, which plugins code
+  against, refuses them.
+- **Invariants on every answer:** each error speaks its code's fixed
+  sentence or one of the forms filled with labels, and no message carries
+  a record id, a hidden value or a code.
+- **Coverage.** A run of the whole suite fails unless it reached every
+  operation, condition test, result kind, prepared and committed write
+  kind, index update and the world actions, every error code the bridge
+  answers, each with its fixed sentence, and `assistant.not_allowed` from
+  the server's push re-check; the lists come from the contract file.
+  `assistant.failed`, the answer to an engine fault, is the one code no
+  script provokes.
+- **Determinism.** The harness's clock is both the confirmation store's
+  clock and the replica's trusted clock, so the token's two minutes and the
+  offline lease move only when a script advances it. The index stream
+  gained `IndexStream::ready`, which takes every update the published
+  changes call for without waiting; nothing sleeps.
+- **A finding fixed.** The harness showed that a token's record version
+  alone can miss a change: the device numbers its own unsent edits, and a
+  push answer followed by a colleague's change can bring a record back to
+  the same version number with other content. A token is now bound to the
+  record as the member read it as well, and such a commit is
+  `assistant.confirmation_stale`.
+- **Native plugins** replay the suite: `assistant-harness export` writes
+  the contract file, the scripts and a transcript per script and
+  assistant with the exact request bytes and answers, and
+  `assistant-harness session` serves the reference world over standard
+  input and output ([device plugins](../plugins/device-plugins.md)).
+- **CI** runs it in the `assistant-harness` job (ubuntu-24.04) for both
+  assistants, and `cargo test` runs it too.
+
