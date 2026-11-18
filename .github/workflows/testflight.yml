@@ -1,0 +1,283 @@
+name: testflight
+# Builds the iOS app shell (apps/device-shell, app.limiara.shell) in release
+# mode, signs it for App Store distribution and uploads it to App Store
+# Connect, where it appears in TestFlight. The owner's runbook, with every
+# secret and the Apple portal steps, is docs/operations/testflight.md.
+#
+# It runs only when someone asks: a manual dispatch, or a pushed `ios-v*`
+# tag. It never runs for pull requests, so no fork can reach the signing
+# material, which lives in the `testflight` environment.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "CFBundleVersion to use instead of the run number (one to three dot-separated integers, higher than any earlier upload)"
+        required: false
+        default: ""
+      keep_ipa:
+        description: "Keep the signed .ipa as a workflow artifact for 7 days"
+        type: boolean
+        required: false
+        default: false
+  push:
+    tags: ["ios-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    # A fork's copy of this workflow has neither the environment nor its
+    # secrets; stop before a macOS runner is spent on it.
+    if: ${{ !github.event.repository.fork }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment: testflight
+    env:
+      APP_DIR: apps/device-shell/src-tauri
+    steps:
+      - name: Check the signing secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_APP_STORE_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
+        run: |
+          # Names only: no value is ever printed.
+          missing=()
+          for name in APPLE_TEAM_ID APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_P8_BASE64; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          # Manual signing is all three secrets or none of them.
+          manual=(IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 IOS_DISTRIBUTION_CERTIFICATE_PASSWORD IOS_APP_STORE_PROFILE_BASE64)
+          present=0
+          for name in "${manual[@]}"; do [[ -n "${!name}" ]] && present=$((present + 1)); done
+          if ((present > 0 && present < ${#manual[@]})); then
+            for name in "${manual[@]}"; do [[ -n "${!name}" ]] || missing+=("$name"); done
+          fi
+          if ((${#missing[@]} > 0)); then
+            echo "::error title=Missing secrets::The testflight environment is missing: ${missing[*]}. See docs/operations/testflight.md."
+            exit 1
+          fi
+          if [[ ! "$APP_STORE_CONNECT_API_KEY_ID" =~ ^[A-Z0-9]+$ ]]; then
+            echo "::error::APP_STORE_CONNECT_API_KEY_ID must be the key's ID (letters and digits), not the key itself."
+            exit 1
+          fi
+          if ((present > 0)); then mode=manual; else mode=automatic; fi
+          {
+            echo "SIGNING_MODE=$mode"
+            # Everything sensitive lives here; the last step removes it.
+            echo "SIGNING_DIR=$RUNNER_TEMP/signing"
+          } >>"$GITHUB_ENV"
+          echo "Signing secrets present; signing mode: $mode"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Work out the versions
+        env:
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          short_version=$(jq -r '.version' "$APP_DIR/tauri.conf.json")
+          [[ "$short_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            { echo "::error::tauri.conf.json version '$short_version' is not MAJOR.MINOR.PATCH"; exit 1; }
+          # A pushed tag must name the version it builds.
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" == "ios-v$short_version" ]] ||
+              { echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $short_version (expected ios-v$short_version)"; exit 1; }
+          fi
+          # Every upload needs a CFBundleVersion App Store Connect has not
+          # seen. The run number grows with each run; a re-run of the same
+          # run adds its attempt, which still sorts after the first attempt.
+          if [[ -n "$INPUT_BUILD_NUMBER" ]]; then
+            build="$INPUT_BUILD_NUMBER"
+          elif ((RUN_ATTEMPT > 1)); then
+            build="$RUN_NUMBER.$RUN_ATTEMPT"
+          else
+            build="$RUN_NUMBER"
+          fi
+          [[ "$build" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] ||
+            { echo "::error::build number '$build' must be one to three dot-separated integers"; exit 1; }
+          {
+            echo "SHORT_VERSION=$short_version"
+            echo "BUILD_NUMBER=$build"
+          } >>"$GITHUB_ENV"
+          echo "Building $short_version ($build)"
+
+      # The App Store accepts only builds made with Xcode 26 or later and an
+      # iOS 26 SDK (Apple's upcoming requirements, since 28 April 2026).
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          major=$(xcodebuild -version | awk '/^Xcode/ {split($2, v, "."); print v[1]}')
+          ((major >= 26)) || { echo "::error::Xcode $major is too old for App Store uploads; Xcode 26 or later is required"; exit 1; }
+
+      # The toolchain of the `ios` workflow. No dependency cache: a release
+      # build restores nothing another workflow could have written.
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "aarch64-apple-ios" }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: pnpm install --frozen-lockfile
+      # The CLI this workflow was written against, matching the `tauri`
+      # crate in the app's Cargo.lock.
+      - run: cargo install tauri-cli --version "=2.12.5" --locked
+
+      - name: Build the web shell
+        run: |
+          pnpm --filter web build
+          bash scripts/check-ios-release-build.sh web apps/web/dist
+
+      - name: Install the signing material
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          umask 077
+          mkdir -p "$SIGNING_DIR/private_keys"
+          # The App Store Connect API key: Tauri reads it through
+          # APPLE_API_KEY_PATH, and altool finds AuthKey_<id>.p8 in
+          # API_PRIVATE_KEYS_DIR.
+          key="$SIGNING_DIR/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | base64 --decode >"$key"
+          chmod 600 "$key"
+          grep -q 'BEGIN PRIVATE KEY' "$key" ||
+            { echo "::error::APP_STORE_CONNECT_API_KEY_P8_BASE64 does not decode to a .p8 private key"; exit 1; }
+          {
+            echo "APPLE_API_KEY_PATH=$key"
+            echo "API_PRIVATE_KEYS_DIR=$SIGNING_DIR/private_keys"
+          } >>"$GITHUB_ENV"
+
+          [[ "$SIGNING_MODE" == manual ]] || exit 0
+          # Manual signing: the distribution certificate goes into a
+          # keychain of this job's own, deleted by the cleanup step.
+          certificate="$SIGNING_DIR/distribution.p12"
+          printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64" | base64 --decode >"$certificate"
+          chmod 600 "$certificate"
+          keychain="$SIGNING_DIR/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "::add-mask::$keychain_password"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -f pkcs12 \
+            -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          rm -f "$certificate"
+          # Search the job's keychain first, then the runner's own.
+          existing=$(security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//')
+          # shellcheck disable=SC2086 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $existing
+          security find-identity -v -p codesigning "$keychain" | grep -q 'Apple Distribution' ||
+            { echo "::error::IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 holds no Apple Distribution identity"; exit 1; }
+          echo "SIGNING_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
+
+      - name: Generate the Xcode project
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd "$APP_DIR"
+          cargo tauri ios init --ci
+          # Tauri's configuration has no iOS entitlements, so the committed
+          # file replaces the generated one, as in the `ios` workflow. A
+          # distribution build registers with production APNs.
+          entitlements=$(find gen/apple -maxdepth 2 -name '*.entitlements' | head -n 1)
+          [[ -n "$entitlements" ]] || { echo "::error::the generated iOS project has no entitlements file"; exit 1; }
+          cp Entitlements.ios.plist "$entitlements"
+          /usr/libexec/PlistBuddy -c 'Set :aps-environment production' "$entitlements"
+          if [[ "$SIGNING_MODE" == manual ]]; then
+            # Tauri starts from the project's ExportOptions.plist; the
+            # export signs with the imported distribution certificate.
+            options=gen/apple/ExportOptions.plist
+            /usr/libexec/PlistBuddy -c 'Delete :signingCertificate' "$options" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Add :signingCertificate string Apple Distribution' "$options"
+          fi
+
+      - name: Build, sign and export the IPA
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          # Read by Tauri only in manual mode; empty otherwise.
+          PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
+        run: |
+          cd "$APP_DIR"
+          if [[ "$SIGNING_MODE" == manual ]]; then
+            export IOS_MOBILE_PROVISION="$PROFILE_BASE64"
+          fi
+          unset PROFILE_BASE64
+          # Automatic signing: with the API key, Xcode creates or reuses
+          # the distribution certificate and profile itself
+          # (-allowProvisioningUpdates with the authentication key).
+          config=$(jq -cn --arg build "$BUILD_NUMBER" '{bundle: {iOS: {bundleVersion: $build}}}')
+          cargo tauri ios build --ci --target aarch64 --export-method app-store-connect --config "$config"
+          ipa=$(find gen/apple/build -name '*.ipa' -type f | head -n 1)
+          [[ -n "$ipa" ]] || { echo "::error::the build produced no .ipa"; exit 1; }
+          echo "IPA_PATH=$PWD/$ipa" >>"$GITHUB_ENV"
+
+      - name: Check the release build
+        run: bash scripts/check-ios-release-build.sh ipa "$IPA_PATH" "$BUILD_NUMBER" "$SHORT_VERSION"
+
+      - name: Upload to App Store Connect
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          # Optional: the app's numeric Apple ID, for accounts where altool
+          # cannot tell the app from its bundle identifier alone.
+          APP_STORE_APP_ID: ${{ vars.APP_STORE_APP_ID }}
+        run: |
+          args=(--upload-app -f "$IPA_PATH" --platform ios
+            --api-key "$APP_STORE_CONNECT_API_KEY_ID" --api-issuer "$APP_STORE_CONNECT_API_ISSUER_ID")
+          [[ -z "$APP_STORE_APP_ID" ]] || args+=(--apple-id "$APP_STORE_APP_ID")
+          log="$SIGNING_DIR/altool.log"
+          status=0
+          xcrun altool "${args[@]}" >"$log" 2>&1 || status=$?
+          cat "$log"
+          # altool has reported failures with a zero exit status, so its
+          # output must also say the upload succeeded.
+          if ((status != 0)) || ! grep -Eq 'UPLOAD SUCCEEDED|No errors uploading' "$log"; then
+            echo "::error::the upload to App Store Connect failed (altool exit status $status)"
+            exit 1
+          fi
+          {
+            echo "### TestFlight upload"
+            echo
+            echo "Uploaded \`app.limiara.shell\` $SHORT_VERSION ($BUILD_NUMBER). App Store Connect processes it before it appears in TestFlight."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # The IPA holds the signed app and no signing secrets; it is kept
+      # only when asked for, and briefly.
+      - name: Keep the IPA
+        if: ${{ inputs.keep_ipa }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: limiara-ios-${{ env.SHORT_VERSION }}-${{ env.BUILD_NUMBER }}
+          path: ${{ env.IPA_PATH }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove the signing material
+        if: ${{ always() }}
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          # Profiles Tauri installed (manual) or Xcode downloaded
+          # (automatic) on this ephemeral runner.
+          rm -rf "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          if [[ -n "${SIGNING_DIR:-}" ]]; then rm -rf "$SIGNING_DIR"; fi
