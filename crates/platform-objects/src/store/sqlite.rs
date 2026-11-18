@@ -862,6 +862,27 @@ CREATE TABLE record_draft_settings (
 );
 "#,
     },
+    // The device's assistant marks (ADR 0034 §6): which local changes the
+    // assistant bridge made, so the push that sends them says so and the
+    // server re-checks them against its assistant policy. Replicas only.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0035_replica_assistant_marks",
+        sql: r#"
+CREATE TABLE replica_assistant_marks (
+  tenant_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK (position >= 1),
+  record_id TEXT NOT NULL,
+  assistant TEXT NOT NULL CHECK (assistant IN ('siri', 'gemini')),
+  action_object TEXT CHECK (action_object IS NULL OR length(action_object) BETWEEN 1 AND 128),
+  action_name TEXT CHECK (action_name IS NULL OR length(action_name) BETWEEN 1 AND 128),
+  CHECK ((action_object IS NULL) = (action_name IS NULL)),
+  PRIMARY KEY (tenant_id, position)
+);
+CREATE INDEX replica_assistant_marks_record_idx
+  ON replica_assistant_marks (tenant_id, record_id, position);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -4136,6 +4157,7 @@ impl ObjectTx for SqliteObjectTx {
             "DELETE FROM replica_versions WHERE tenant_id = ?1 AND record_id = ?2",
             "DELETE FROM replica_pending_references WHERE tenant_id = ?1 AND record_id = ?2",
             "DELETE FROM replica_bases WHERE tenant_id = ?1 AND record_id = ?2",
+            "DELETE FROM replica_assistant_marks WHERE tenant_id = ?1 AND record_id = ?2",
             "DELETE FROM records WHERE tenant_id = ?1 AND id = ?2",
         ] {
             sqlx::query(statement)
@@ -4179,6 +4201,77 @@ impl ObjectTx for SqliteObjectTx {
         rows.iter()
             .map(|id| Uuid::parse_str(id).map_err(|_| ObjectError::Invariant))
             .collect()
+    }
+
+    async fn put_assistant_mark(
+        &mut self,
+        position: i64,
+        record_id: Uuid,
+        marker: &crate::AssistantMarker,
+    ) -> Result<(), ObjectError> {
+        let (action_object, action_name) = match &marker.quick_action {
+            Some(action) => (Some(action.object.as_str()), Some(action.name.as_str())),
+            None => (None, None),
+        };
+        sqlx::query(
+            "INSERT INTO replica_assistant_marks (tenant_id, position, record_id, assistant, \
+             action_object, action_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (tenant_id, position) DO UPDATE SET record_id = excluded.record_id, \
+             assistant = excluded.assistant, action_object = excluded.action_object, \
+             action_name = excluded.action_name",
+        )
+        .bind(&self.tenant)
+        .bind(position)
+        .bind(record_id.to_string())
+        .bind(marker.assistant.as_str())
+        .bind(action_object)
+        .bind(action_name)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn assistant_mark(
+        &mut self,
+        record_id: Uuid,
+        after: i64,
+    ) -> Result<Option<crate::AssistantMarker>, ObjectError> {
+        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT assistant, action_object, action_name FROM replica_assistant_marks \
+             WHERE tenant_id = ?1 AND record_id = ?2 AND position > ?3 \
+             ORDER BY position DESC LIMIT 1",
+        )
+        .bind(&self.tenant)
+        .bind(record_id.to_string())
+        .bind(after)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        let Some((assistant, action_object, action_name)) = row else {
+            return Ok(None);
+        };
+        let assistant = match assistant.as_str() {
+            "siri" => crate::Assistant::Siri,
+            "gemini" => crate::Assistant::Gemini,
+            _ => return Err(ObjectError::Invariant),
+        };
+        let quick_action = match (action_object, action_name) {
+            (Some(object), Some(name)) => Some(crate::MarkedQuickAction { object, name }),
+            (None, None) => None,
+            _ => return Err(ObjectError::Invariant),
+        };
+        Ok(Some(crate::AssistantMarker {
+            assistant,
+            quick_action,
+        }))
+    }
+
+    async fn prune_assistant_marks(&mut self, through: i64) -> Result<(), ObjectError> {
+        sqlx::query("DELETE FROM replica_assistant_marks WHERE tenant_id = ?1 AND position <= ?2")
+            .bind(&self.tenant)
+            .bind(through)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
     }
 
     async fn commit(self: Box<Self>) -> Result<(), ObjectError> {

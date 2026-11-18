@@ -36,6 +36,7 @@ async fn the_session_is_kept_replaced_and_forgotten() {
                 name: "Engines".into(),
             },
         },
+        assistant: Default::default(),
     };
     keychain.save(&session).await.expect("save");
     session.refresh_token = "refresh-2".into();

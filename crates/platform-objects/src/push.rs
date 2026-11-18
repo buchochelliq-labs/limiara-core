@@ -123,6 +123,7 @@ impl ObjectService {
         let mut positions = tx.sync_positions().await?;
         positions.pushed = sent_through(tx.as_mut(), positions.pushed).await?;
         tx.set_sync_positions(positions).await?;
+        tx.prune_assistant_marks(positions.pushed).await?;
         let candidates = queued(tx.as_mut(), positions.pushed).await?;
         let security = FieldSecurity::for_caller(self.caller());
         let mut operations = Vec::new();
@@ -139,6 +140,15 @@ impl ObjectService {
             };
             let reference = format!("r{}", operations.len());
             let object_name = object.api_name.clone();
+            // A change the device's assistant bridge made says so (ADR 0034
+            // §6), so the server re-checks it against its own assistant
+            // policy. Any assistant change among the record's unsent ones
+            // marks the whole operation: the marker only adds checks.
+            let taken = tx
+                .remote_version(record.id)
+                .await?
+                .map_or(0, |taken| taken.through);
+            let assistant = tx.assistant_mark(record.id, taken).await?;
             let id = record.public_id.clone();
             let (operation, held_back) = match pending {
                 Pending::Create(values) => {
@@ -151,7 +161,7 @@ impl ObjectService {
                             reference,
                             object: object_name,
                             values,
-                            assistant: None,
+                            assistant,
                         },
                         held_back,
                     )
@@ -169,7 +179,7 @@ impl ObjectService {
                             id: id.clone(),
                             expected_version,
                             values,
-                            assistant: None,
+                            assistant,
                         },
                         held_back,
                     )
@@ -287,6 +297,7 @@ impl ObjectService {
         let mut positions = tx.sync_positions().await?;
         positions.pushed = sent_through(tx.as_mut(), positions.pushed).await?;
         tx.set_sync_positions(positions).await?;
+        tx.prune_assistant_marks(positions.pushed).await?;
         tx.commit().await?;
         Ok(report)
     }

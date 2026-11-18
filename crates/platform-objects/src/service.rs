@@ -156,6 +156,10 @@ pub struct ObjectService {
     client_ids: bool,
     trusted_clock: Option<Arc<dyn crate::TrustedClock>>,
     observer: Option<Arc<dyn crate::ReplicaObserver>>,
+    /// Set on the engine a device's assistant bridge writes through (ADR
+    /// 0034 §6): every record change it makes is marked as the assistant's
+    /// for the push.
+    assistant_marker: Option<Arc<crate::AssistantMarker>>,
 }
 
 impl ObjectService {
@@ -167,7 +171,20 @@ impl ObjectService {
             client_ids: false,
             trusted_clock: None,
             observer: None,
+            assistant_marker: None,
         }
+    }
+
+    /// The engine a device's assistant bridge writes through (ADR 0034
+    /// §6): each record it creates or changes is remembered as the
+    /// assistant's, in the write's transaction, so the push that sends it
+    /// carries `marker` and the server re-checks it against its assistant
+    /// policy. The marker can only add checks. It applies to a replica's
+    /// engine only (`with_replica`); the server ignores it, since only a
+    /// device's push may claim an assistant's write.
+    pub fn with_assistant_marker(mut self, marker: crate::AssistantMarker) -> Self {
+        self.assistant_marker = Some(Arc::new(marker));
+        self
     }
 
     pub(crate) fn set_observer(&mut self, observer: Arc<dyn crate::ReplicaObserver>) {
@@ -309,6 +326,14 @@ impl ObjectService {
                     correlation_id: Some(context.correlation_id),
                 })
                 .await?;
+            if let (true, Some(marker)) = (self.replica, self.assistant_marker.as_deref()) {
+                if matches!(
+                    kind,
+                    crate::ChangeKind::Created | crate::ChangeKind::Updated
+                ) {
+                    tx.put_assistant_mark(position, record.id, marker).await?;
+                }
+            }
             // Expire the log as it grows rather than on a schedule.
             if position % CHANGE_EXPIRY_EVERY == 0 {
                 tx.expire_changes(Utc::now() - CHANGE_RETENTION).await?;

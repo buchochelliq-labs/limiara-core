@@ -18,6 +18,8 @@
 //! report to, and which sign-out and wipe close; and the route context the
 //! bridge sets. Native plugins reach them through [`Controller::grant`].
 
+use crate::assistant::confirm::SystemClock;
+use crate::assistant::DeviceAssistantSettings;
 use crate::capabilities::{LocalServices, PluginDeclaration, PluginGrant};
 use crate::feed::{ClearReason, FeedTap};
 use crate::{device_databases, Bridge, DatabaseKeys, DeviceHost, Member, Workspace};
@@ -79,6 +81,10 @@ pub struct StoredSession {
     pub refresh_token: String,
     pub offline_limit_seconds: u64,
     pub profile: DeviceProfile,
+    /// The member's assistant settings on this device (ADR 0034 §4); a
+    /// session saved before they existed has the defaults.
+    #[serde(default)]
+    pub assistant: DeviceAssistantSettings,
 }
 
 impl fmt::Debug for StoredSession {
@@ -88,6 +94,7 @@ impl fmt::Debug for StoredSession {
             .field("server", &self.server)
             .field("offline_limit_seconds", &self.offline_limit_seconds)
             .field("profile", &self.profile)
+            .field("assistant", &self.assistant)
             .finish_non_exhaustive()
     }
 }
@@ -442,7 +449,6 @@ impl Controller {
     ) -> Arc<Self> {
         Arc::new(Self {
             directory: directory.into(),
-            settings,
             services,
             status: Mutex::new(Status::default()),
             bridge: RwLock::new(None),
@@ -452,7 +458,17 @@ impl Controller {
             generation: AtomicU64::new(0),
             prepared: Mutex::new(None),
             push: Mutex::new(None),
-            local: LocalServices::default(),
+            local: LocalServices::with_assistant(
+                crate::feed::ReplicaFeed::default(),
+                crate::route::RouteContext::default(),
+                match settings.platform.as_str() {
+                    "ios" => Some(platform_objects::Assistant::Siri),
+                    "android" => Some(platform_objects::Assistant::Gemini),
+                    _ => None,
+                },
+                Arc::new(SystemClock),
+            ),
+            settings,
         })
     }
 
@@ -481,15 +497,64 @@ impl Controller {
     }
 
     fn set_bridge(&self, bridge: Option<Bridge>) {
+        // The assistant bridge answers from a signed-in, open workspace
+        // only; the demonstration workspace has no member to answer as.
+        match &bridge {
+            Some(bridge) if self.phase() == Phase::Ready => {
+                let sync = self.sync.read().ok().and_then(|sync| sync.clone());
+                let pushed: Option<crate::assistant::PushNudge> = sync.map(|sync| {
+                    Arc::new(move || sync.local_change()) as crate::assistant::PushNudge
+                });
+                self.local.assistant().open(bridge, pushed);
+            }
+            _ => self.local.assistant().signed_out(),
+        }
         if let Ok(mut slot) = self.bridge.write() {
             *slot = bridge;
         }
     }
 
+    /// The member's assistant settings on this device (ADR 0034 §4).
+    pub fn assistant_settings(&self) -> DeviceAssistantSettings {
+        self.local.assistant().device_settings()
+    }
+
+    /// Changes the member's assistant settings on this device and keeps
+    /// them with the stored session. Turning indexing off removes the
+    /// workspace's OS index entries through the index stream.
+    pub async fn set_assistant_settings(
+        &self,
+        settings: DeviceAssistantSettings,
+    ) -> Result<(), String> {
+        let sink = self
+            .active
+            .lock()
+            .await
+            .as_ref()
+            .map(|active| active.sink.clone());
+        if let Some(sink) = sink {
+            let mut stored = sink.stored.lock().await;
+            if !sink.closed.load(Ordering::SeqCst) {
+                stored.assistant = settings;
+                self.services
+                    .vault
+                    .save(&stored)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        self.local.assistant().set_device_settings(settings);
+        Ok(())
+    }
+
     /// Closes the open workspace at once and holds the app in
     /// [`Phase::SigningOut`] while its storage is deleted.
     fn closing(&self) {
-        self.set_bridge(None);
+        // Assistant calls answer `assistant.signed_out` from now on.
+        self.local.assistant().closing();
+        if let Ok(mut slot) = self.bridge.write() {
+            *slot = None;
+        }
         self.local.routes().clear();
         if let Ok(mut sync) = self.sync.write() {
             *sync = None;
@@ -656,6 +721,7 @@ impl Controller {
             refresh_token: tokens.refresh_token.clone(),
             offline_limit_seconds: tokens.offline_limit_seconds,
             profile,
+            assistant: DeviceAssistantSettings::default(),
         };
         if let Err(error) = self.services.vault.save(&stored).await {
             // A device the app cannot keep a token for is signed out again.
@@ -682,6 +748,7 @@ impl Controller {
     ) -> Result<(), String> {
         let profile = stored.profile.clone();
         let workspace = profile.workspace.id;
+        self.local.assistant().set_device_settings(stored.assistant);
         let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(files.clone()));
         // Reports nothing until the workspace opens below.
         let tap = self.local.feed().tap(workspace);
@@ -727,11 +794,11 @@ impl Controller {
                 ..Status::default()
             }
         });
-        if resumed {
-            self.set_bridge(Some(bridge.clone()));
-        }
         if let Ok(mut slot) = self.sync.write() {
             *slot = Some(sync.clone());
+        }
+        if resumed {
+            self.set_bridge(Some(bridge.clone()));
         }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let (stop, stopped) = watch::channel(false);
@@ -1116,6 +1183,8 @@ impl Controller {
         // they derived from it; nothing the workspace reports after it is
         // published.
         self.local.feed().clear(&active.tap, ClearReason::Wiped);
+        // An assistant call already running finishes before the files go.
+        self.local.assistant().drained().await;
         stop_worker(&mut active).await;
         self.forget(&active).await;
         // Only now can another sign-in start: nothing of this workspace is
@@ -1148,6 +1217,7 @@ impl Controller {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.closing();
         self.local.feed().clear(&active.tap, ClearReason::SignedOut);
+        self.local.assistant().drained().await;
         stop_worker(&mut active).await;
         let reached = tokio::time::timeout(SIGN_OUT_WAIT, async {
             let token = active.session.access().await.ok()?;
@@ -1491,6 +1561,7 @@ mod tests {
                         name: "Analytical Engines".into(),
                     },
                 },
+                assistant: Default::default(),
             })
             .await
             .expect("saved");

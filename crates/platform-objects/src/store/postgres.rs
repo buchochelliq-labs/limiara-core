@@ -2972,6 +2972,27 @@ impl ObjectTx for PostgresObjectTx {
         Err(ObjectError::Conflict("replica.unsupported"))
     }
 
+    async fn put_assistant_mark(
+        &mut self,
+        _: i64,
+        _: Uuid,
+        _: &crate::AssistantMarker,
+    ) -> Result<(), ObjectError> {
+        Err(ObjectError::Conflict("replica.unsupported"))
+    }
+
+    async fn assistant_mark(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<crate::AssistantMarker>, ObjectError> {
+        Err(ObjectError::Conflict("replica.unsupported"))
+    }
+
+    async fn prune_assistant_marks(&mut self, _: i64) -> Result<(), ObjectError> {
+        Err(ObjectError::Conflict("replica.unsupported"))
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), ObjectError> {
         self.tx.commit().await?;
         Ok(())

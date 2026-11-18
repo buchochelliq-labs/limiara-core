@@ -45,12 +45,21 @@ fn stored(server: String, workspace: Uuid) -> StoredSession {
                 name: "Analytical Engines".into(),
             },
         },
+        assistant: Default::default(),
     }
 }
 
 async fn controller(
     directory: &std::path::Path,
     session: StoredSession,
+) -> (Arc<Controller>, Arc<MemoryVault>) {
+    controller_on(directory, session, "desktop").await
+}
+
+async fn controller_on(
+    directory: &std::path::Path,
+    session: StoredSession,
+    platform: &str,
 ) -> (Arc<Controller>, Arc<MemoryVault>) {
     let vault = Arc::new(MemoryVault::default());
     vault.save(&session).await.expect("saved");
@@ -59,7 +68,7 @@ async fn controller(
         AppSettings {
             redirect_uri: "http://127.0.0.1:47185/callback".into(),
             device_name: "Test".into(),
-            platform: "desktop".into(),
+            platform: platform.into(),
         },
         Services {
             vault: vault.clone(),
@@ -231,7 +240,100 @@ async fn plugins_get_only_the_capabilities_they_declared() {
     );
     assert!(probe.route_context().is_ok());
     assert_eq!(
-        PluginDeclaration::new("probe", &["device.assistant"]).map_err(|error| error.code()),
+        probe.assistant().map(|_| ()).map_err(|error| error.code()),
+        Err("device.capability_not_granted")
+    );
+    assert_eq!(
+        PluginDeclaration::new("probe", &["device.camera"]).map_err(|error| error.code()),
         Err("device.capability_unknown")
     );
+}
+
+async fn ask(
+    bridge: &platform_device::assistant::AssistantBridge,
+    assistant: platform_objects::Assistant,
+) -> Option<platform_device::assistant::errors::AssistantCode> {
+    use platform_device::assistant::{AssistantRequest, Operation};
+    bridge
+        .call(AssistantRequest::new(assistant, true, Operation::Describe))
+        .await
+        .into_result()
+        .err()
+        .map(|error| error.code)
+}
+
+#[tokio::test]
+async fn the_assistant_bridge_follows_the_signed_in_workspace() {
+    use platform_device::assistant::errors::AssistantCode;
+    use platform_device::assistant::DeviceAssistantSettings;
+    use platform_objects::Assistant;
+    let directory = tempfile::tempdir().expect("dir");
+    let (phone, vault) = controller_on(
+        directory.path(),
+        stored("http://127.0.0.1:1".into(), Uuid::now_v7()),
+        "ios",
+    )
+    .await;
+    let bridge = phone
+        .grant(&PluginDeclaration::new("siri", &["device.assistant"]).expect("declared"))
+        .assistant()
+        .expect("granted");
+    // Before the workspace opens, and for the wrong assistant.
+    assert_eq!(
+        ask(&bridge, Assistant::Siri).await,
+        Some(AssistantCode::SignedOut)
+    );
+    phone.resume().await;
+    assert_eq!(
+        ask(&bridge, Assistant::Gemini).await,
+        Some(AssistantCode::Invalid)
+    );
+    // Open, with no policy taken yet: assistant access is off.
+    assert_eq!(
+        ask(&bridge, Assistant::Siri).await,
+        Some(AssistantCode::Disabled)
+    );
+    // The member's device setting is kept with the session.
+    assert_eq!(
+        phone.assistant_settings(),
+        DeviceAssistantSettings::default()
+    );
+    let off = DeviceAssistantSettings {
+        assistant_access: false,
+        indexing: true,
+    };
+    phone.set_assistant_settings(off).await.expect("saved");
+    assert_eq!(
+        vault
+            .load()
+            .await
+            .expect("vault")
+            .map(|stored| stored.assistant),
+        Some(off)
+    );
+    assert_eq!(phone.assistant_settings(), off);
+    // Sign-out closes it before the replica goes.
+    phone.sign_out().await;
+    assert_eq!(
+        ask(&bridge, Assistant::Siri).await,
+        Some(AssistantCode::SignedOut)
+    );
+
+    // The desktop has no assistant.
+    let directory = tempfile::tempdir().expect("dir");
+    let (desktop, _) = controller(
+        directory.path(),
+        stored("http://127.0.0.1:1".into(), Uuid::now_v7()),
+    )
+    .await;
+    desktop.resume().await;
+    let bridge = desktop
+        .grant(&PluginDeclaration::new("any", &["device.assistant"]).expect("declared"))
+        .assistant()
+        .expect("granted");
+    assert_eq!(
+        ask(&bridge, Assistant::Siri).await,
+        Some(AssistantCode::Invalid)
+    );
+    desktop.sign_out().await;
 }

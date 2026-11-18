@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 chrono.workspace = true
 http.workspace = true
 platform-id.workspace = true
@@ -19,8 +20,12 @@ platform-objects-http.workspace = true
 # The replica is always encrypted on a device (ADR 0024, "Encryption at rest").
 platform-storage = { workspace = true, features = ["encryption"] }
 platform-sync.workspace = true
+# The assistant bridge's confirmation tokens (ADR 0034 §5): drawn from the
+# OS's CSPRNG and compared in constant time.
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subtle = "2.6"
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true

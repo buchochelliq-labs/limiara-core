@@ -3106,6 +3106,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "http",
  "platform-id",
@@ -3113,8 +3114,10 @@ dependencies = [
  "platform-objects-http",
  "platform-storage",
  "platform-sync",
+ "ring",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 1.0.69",
  "tokio",
  "tower",
