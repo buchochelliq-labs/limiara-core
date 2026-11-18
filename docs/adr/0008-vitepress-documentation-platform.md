@@ -39,7 +39,7 @@ Docusaurus has mature documentation versioning and official sitemap and redirect
 
 ### Zensical (under evaluation)
 
-Zensical, from the authors of Material for MkDocs, builds the same `docs/` Markdown into a static site with built-in local search. A Zensical build sits alongside the VitePress site in `apps/docs-zensical` so the two can be compared page for page: it is built and link-checked in CI, uploaded as the `docs-zensical-site` artifact, and can be deployed to its own Cloudflare Pages project with every response marked `noindex`, so search engines index only the VitePress site. VitePress remains the decision until that comparison is reviewed; the [documentation contributor guide](../contributing/documentation.md#the-zensical-build) lists what the Zensical build does and does not cover yet.
+Zensical, from the authors of Material for MkDocs, builds the same `docs/` Markdown into a static site with built-in local search. A Zensical build sits alongside the VitePress site in `apps/docs-zensical` so the two can be compared page for page: it is built and link-checked in CI, uploaded as the `docs-zensical-site` artifact, and deployed to this repository's GitHub Pages site with every page marked `noindex`, so search engines index only the VitePress site. VitePress remains the decision until that comparison is reviewed; the [documentation contributor guide](../contributing/documentation.md#the-zensical-build) lists what the Zensical build does and does not cover yet.
 
 ## Revisit triggers
 

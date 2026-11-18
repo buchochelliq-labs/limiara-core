@@ -18,6 +18,9 @@ The Zensical site is built from the same Markdown as the VitePress site
    under its inventory title, and a folder the sidebar leaves out gets a
    section of its own.
 
+The environment variable `ZENSICAL_SITE_URL`, when set, replaces the
+configuration's `site_url` for a deployment served at another address.
+
 It fails, naming the page, when the sidebar links a page that is not
 public or does not exist, or when a page uses a VitePress container this
 script does not convert. Run it with any Python 3.11 or later; it needs
@@ -310,6 +313,18 @@ def write_config(nav: list) -> None:
     if marker not in template:
         raise StageError("zensical.toml: the nav marker is missing")
     config = template.replace(marker, f"nav = {toml_value(nav)}")
+    # A deployment to another address (GitHub Pages serves the site under
+    # /<repository>/) passes its URL, so the 404 page's links and the
+    # canonical links match where the site is served.
+    site_url = os.environ.get("ZENSICAL_SITE_URL")
+    if site_url:
+        if not re.fullmatch(r"https://[^\s\"]+/", site_url):
+            raise StageError(f"ZENSICAL_SITE_URL must be an https URL ending in /: {site_url!r}")
+        config, count = re.subn(
+            r'^site_url = ".*"$', f"site_url = {json.dumps(site_url)}", config, flags=re.M
+        )
+        if count != 1:
+            raise StageError("zensical.toml: no site_url line to replace")
     (BUILD / "zensical.toml").write_text(config, encoding="utf-8")
 
 

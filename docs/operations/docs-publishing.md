@@ -33,18 +33,17 @@ The workflow never uses `pull_request_target`, and the preview deploy job reject
 
 ## The Zensical site
 
-The Zensical build of the same pages (`apps/docs-zensical`, under evaluation in [ADR 0008](../adr/0008-vitepress-documentation-platform.md)) deploys through its own workflow, `docs-zensical-deploy`, to its own Pages project. It follows the same model as the VitePress site: the `docs-zensical-publish-build` job holds no secrets, previews deploy only for pull requests from this repository, production deploys from `main`, and a manual run takes `deployment_environment` and `source_ref` for a preview or a rollback.
+The Zensical build of the same pages (`apps/docs-zensical`, under evaluation in [ADR 0008](../adr/0008-vitepress-documentation-platform.md)) is published to this repository's GitHub Pages site, `https://buchochelliq-labs.github.io/limiara-core/`, by its own workflow, `docs-zensical-deploy`. It needs no Cloudflare project, token or secret.
 
-It reuses the `docs-preview` and `docs-production` environments, their tokens and their protection; the Pages Edit token already reaches every project in the account. Each environment needs one more variable, `CLOUDFLARE_ZENSICAL_PAGES_PROJECT`, the Zensical project's name. The site is never indexed: `scripts/prepare_deployment.py` makes `robots.txt` disallow everything, sends `X-Robots-Tag: noindex, nofollow` on every response through `_headers`, drops the sitemap (it lists the canonical domain) and writes `deployment.json`. Give the project only its `pages.dev` domain; do not point `docs.limiara.org` or another public name at it while it is under evaluation.
+- **Pull requests** run `docs-zensical-publish-build`: the strict build, the link check and the deployment preparation, with read-only permissions and nothing deployed. GitHub Pages has no per-pull-request previews; download the `github-pages` artifact from the run to look at a pull request's site.
+- **Pushes to `main`** that touch `docs/` or `apps/docs-zensical/` build and deploy through the `github-pages` environment, with `pages: write` and `id-token: write` given to the deploy job only.
+- **A manual run** builds and deploys `source_ref`, which is how to roll back: run it with a known-good commit SHA. `deployment.json` and the artifact always record the commit that was built.
 
-To activate it:
+The site is never indexed. GitHub Pages sends no custom headers and serves the site under `/limiara-core/`, where `robots.txt` is not read, so `scripts/prepare_deployment.py` adds `<meta name="robots" content="noindex, nofollow">` to every page's `<head>`, removes `robots.txt`, and writes `deployment.json`; the sitemap stays because the theme's instant navigation loads it, and it lists only the Pages URLs. The build sets `ZENSICAL_SITE_URL` to the Pages address, so the 404 page and the canonical links carry the `/limiara-core/` prefix. Do not give the Pages site a custom domain while it is under evaluation.
 
-1. Create a second Direct Upload Pages project and record its `pages.dev` domain.
-2. Add `CLOUDFLARE_ZENSICAL_PAGES_PROJECT` to both `docs-preview` and `docs-production`.
-3. Run `docs-zensical-deploy` manually with `deployment_environment=preview`, and check that `deployment.json` says `zensical` and `preview`, `robots.txt` disallows `/`, and responses carry `X-Robots-Tag: noindex, nofollow`.
-4. Set the repository variable `DOCS_ZENSICAL_DEPLOY_ENABLED=true`. It is separate from `DOCS_DEPLOY_ENABLED`, so either site can be switched on or off alone.
+To activate it, once: in **Settings → Pages**, set **Source** to **GitHub Actions**. Until then a deploy fails at its first step and nothing is published. Then run `docs-zensical-deploy` manually with `source_ref=main`, open the Pages address, and check that `deployment.json` says `zensical`, `github-pages` and the commit, and that a page's source carries the `noindex` tag.
 
-Retire it by setting `DOCS_ZENSICAL_DEPLOY_ENABLED` to `false`, deleting the Pages project and removing the variable.
+To take it down, turn GitHub Pages off in **Settings → Pages**; to stop deploying without taking it down, disable the `docs-zensical-publish` workflow under **Actions**.
 
 ## Release verification
 
