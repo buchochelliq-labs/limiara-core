@@ -37,6 +37,10 @@ GitBook has strong authoring, bidirectional Git Sync, pull-request previews, and
 
 Docusaurus has mature documentation versioning and official sitemap and redirect plugins. It was not selected because its React application/plugin surface is larger than this documentation set requires, while neither first-class versioning nor a React theme ecosystem is presently a release need. It remains the preferred revisit candidate if complex multi-product or multi-version documentation becomes dominant.
 
+### Zensical (under evaluation)
+
+Zensical, from the authors of Material for MkDocs, builds the same `docs/` Markdown into a static site with built-in local search. A Zensical build sits alongside the VitePress site in `apps/docs-zensical` so the two can be compared page for page: it is built and link-checked in CI, uploaded as the `docs-zensical-site` artifact, and not deployed. VitePress remains the decision until that comparison is reviewed; the [documentation contributor guide](../contributing/documentation.md#the-zensical-build) lists what the Zensical build does and does not cover yet.
+
 ## Revisit triggers
 
 - Non-technical contributors cannot complete routine documentation changes with the GitHub editing flow.

@@ -123,6 +123,21 @@ Node.js 22, pnpm 9.12.0, and the committed Cargo and pnpm lockfiles. Required
 checks fail when a command is unavailable or unsuccessful; do not replace a
 required check with a warning or silently skip it.
 
+## Documentation sites
+
+Two static sites are built from the same Markdown in `docs/`. Edit the
+pages there; neither site has content of its own.
+
+| Site | Source | Status | Build and preview |
+| --- | --- | --- | --- |
+| VitePress | [`apps/docs`](apps/docs) | The chosen platform ([ADR 0008](docs/adr/0008-vitepress-documentation-platform.md)). CI builds it and uploads the `docs-static-site` artifact. The `docs-deploy` workflow publishes pull-request previews and `main` to Cloudflare Pages once the repository variable `DOCS_DEPLOY_ENABLED` is `true`; until then it builds without deploying ([publishing runbook](docs/operations/docs-publishing.md)) | `pnpm --filter docs dev` to preview, `pnpm docs:check` for the full gate |
+| Zensical | [`apps/docs-zensical`](apps/docs-zensical) | Under evaluation, not deployed: CI builds it and uploads the `docs-zensical-site` artifact | `pip install -r apps/docs-zensical/requirements.txt`, then `apps/docs-zensical/build.sh`, then `zensical serve` from `apps/docs-zensical/build` |
+
+The Zensical site takes its navigation from the VitePress sidebar, so a
+page added there appears in both. See
+[the Zensical build](docs/contributing/documentation.md#the-zensical-build)
+for what it does and does not cover yet.
+
 ## Documentation map
 
 - Product overview: [docs/product/overview.md](docs/product/overview.md)

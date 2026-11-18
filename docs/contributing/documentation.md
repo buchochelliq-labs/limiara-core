@@ -64,3 +64,18 @@ pnpm docs:check
 ```
 
 See [documentation quality gates](../guide/documentation-quality.md) for individual checks and failure policy.
+
+## The Zensical build
+
+A [Zensical](https://zensical.org) build of the same pages sits alongside the VitePress site, so the two can be compared ([ADR 0008](../adr/0008-vitepress-documentation-platform.md)). VitePress is still the published site. The Zensical build needs Python 3.11 or later:
+
+```sh
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r apps/docs-zensical/requirements.txt
+apps/docs-zensical/build.sh
+(cd apps/docs-zensical/build && zensical serve)
+```
+
+`build.sh` stages the public pages from `docs/inventory.json` into `apps/docs-zensical/build/src`, builds them in strict mode and checks that every page was built and every local link resolves. The navigation is generated from the VitePress sidebar, so a page added there appears in both sites; a public page the sidebar leaves out is listed in its folder's section. Pages need no Zensical-specific syntax: the staging step turns VitePress `::: tip`, `info`, `warning` and `danger` containers into admonitions and the home page's hero and features into Markdown, and fails on any other container.
+
+Not covered yet: the VitePress page-governance banner, the Playwright browser checks, spellcheck of the built output, and deployment. The CI job `docs-zensical` uploads the built site as the `docs-zensical-site` artifact.

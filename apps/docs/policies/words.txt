@@ -48,4 +48,5 @@ Wasmtime
 WCAG
 WebView
 WebViews
+Zensical
 Zoho

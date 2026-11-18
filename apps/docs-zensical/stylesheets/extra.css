@@ -1,0 +1,23 @@
+/* The VitePress site's brand colours (apps/docs/.vitepress/theme/custom.css). */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #16423c;
+  --md-primary-fg-color--light: #1f5c52;
+  --md-primary-fg-color--dark: #0f302c;
+  --md-accent-fg-color: #1f5c52;
+  --md-typeset-a-color: #1f5c52;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #75c4b3;
+  --md-primary-fg-color--light: #9bd6c9;
+  --md-primary-fg-color--dark: #4fa592;
+  --md-accent-fg-color: #75c4b3;
+  --md-typeset-a-color: #75c4b3;
+}
+
+/* The home page's links row. */
+.limiara-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+}
