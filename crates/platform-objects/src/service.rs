@@ -44,6 +44,10 @@ pub struct MutationContext {
     /// `None` when it did not say. Provenance only: it never changes what
     /// the caller may do.
     pub source: Option<crate::MutationSource>,
+    /// The verified device that pushed an assistant's change (ADR 0034
+    /// §6), when `source` is the assistant: the audit entry keeps it beside
+    /// the source, so the trail still names the device.
+    pub assistant_device: Option<crate::SourceDetail>,
 }
 
 impl MutationContext {
@@ -53,6 +57,7 @@ impl MutationContext {
             causation_id: None,
             automation_id: None,
             source: None,
+            assistant_device: None,
         }
     }
 
@@ -64,6 +69,13 @@ impl MutationContext {
         }
     }
 }
+
+/// Archiving a record in the recycle bin, or unarchiving one (ADR 0035 G1).
+pub const ARCHIVE_DELETED: &str = "records.deleted";
+/// Archiving a record that is already archived.
+pub const ALREADY_ARCHIVED: &str = "records.already_archived";
+/// Unarchiving a record that is not archived.
+pub const NOT_ARCHIVED: &str = "records.not_archived";
 
 /// How long the change log keeps changes (ADR 0018); Salesforce keeps
 /// change events for three days too.
@@ -241,6 +253,7 @@ impl ObjectService {
             causation_id: context.causation_id,
             automation_id: context.automation_id,
             source: self.source(context),
+            assistant_device: context.assistant_device,
         }
     }
 
@@ -1490,9 +1503,22 @@ impl ObjectService {
         body: &Map<String, Value>,
         context: MutationContext,
     ) -> Result<Record, ObjectError> {
+        self.create_record_marked(api_name, body, context, None)
+            .await
+    }
+
+    /// A create, re-checked against the assistant policy when `marker` says
+    /// a device's assistant made it (ADR 0034 §6).
+    pub(crate) async fn create_record_marked(
+        &self,
+        api_name: &str,
+        body: &Map<String, Value>,
+        context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
+    ) -> Result<Record, ObjectError> {
         let mut run = Run::default();
         let result = self
-            .create_record_in(api_name, body, context, &mut run)
+            .create_record_in(api_name, body, context, marker, &mut run)
             .await;
         self.keep_failed_runs(run, result).await
     }
@@ -1502,6 +1528,7 @@ impl ObjectService {
         api_name: &str,
         body: &Map<String, Value>,
         context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
         run: &mut Run,
     ) -> Result<Record, ObjectError> {
         let mut tx = self.begin().await?;
@@ -1509,6 +1536,15 @@ impl ObjectService {
         let (object, record) = self
             .create_record_tx(tx.as_mut(), &access, api_name, body, context, run)
             .await?;
+        if let Some(marker) = marker {
+            self.check_assistant_write(
+                tx.as_mut(),
+                &object,
+                crate::assistant_policy::AssistantWrite::Create,
+                marker,
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.with_formula(&object, record).await
     }
@@ -1838,14 +1874,28 @@ impl ObjectService {
         body: &Map<String, Value>,
         context: MutationContext,
     ) -> Result<Record, ObjectError> {
+        self.update_record_marked(api_name, public_id, expected_version, body, context, None)
+            .await
+    }
+
+    /// An update, re-checked against the assistant policy when `marker`
+    /// says a device's assistant made it (ADR 0034 §6).
+    pub(crate) async fn update_record_marked(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        body: &Map<String, Value>,
+        context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
+    ) -> Result<Record, ObjectError> {
         let mut run = Run::default();
         let result = self
             .update_record_in(
-                api_name,
-                public_id,
-                expected_version,
+                (api_name, public_id, expected_version),
                 body,
                 context,
+                marker,
                 &mut run,
             )
             .await;
@@ -1854,11 +1904,10 @@ impl ObjectService {
 
     async fn update_record_in(
         &self,
-        api_name: &str,
-        public_id: &str,
-        expected_version: i64,
+        (api_name, public_id, expected_version): (&str, &str, i64),
         body: &Map<String, Value>,
         context: MutationContext,
+        marker: Option<&crate::AssistantMarker>,
         run: &mut Run,
     ) -> Result<Record, ObjectError> {
         let mut tx = self.begin().await?;
@@ -1875,6 +1924,15 @@ impl ObjectService {
                 run,
             )
             .await?;
+        if let Some(marker) = marker {
+            self.check_assistant_write(
+                tx.as_mut(),
+                &object,
+                crate::assistant_policy::AssistantWrite::Update,
+                marker,
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.with_formula(&object, Self::project(&object, record))
             .await
@@ -2738,6 +2796,113 @@ impl ObjectService {
         )
         .await?;
         Ok((object, record))
+    }
+
+    /// Archives a record (ADR 0035 G1): it leaves default lists, queries,
+    /// global search, lookup pickers and related lists, and stays readable
+    /// by id. Archiving is an edit, so it needs edit access to the record,
+    /// as an update does; it moves the version and the update stamps and
+    /// sets `archived_at`. It changes no values, so validation rules and
+    /// automations do not run. A record already archived is refused with
+    /// `records.already_archived`, and one in the recycle bin with
+    /// `records.deleted`.
+    pub async fn archive_record(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        self.set_archived(api_name, public_id, expected_version, true, context)
+            .await
+    }
+
+    /// Brings an archived record back to default lists. It needs edit
+    /// access, as archiving does; a record that is not archived is refused
+    /// with `records.not_archived`, and one in the recycle bin with
+    /// `records.deleted`.
+    pub async fn unarchive_record(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        self.set_archived(api_name, public_id, expected_version, false, context)
+            .await
+    }
+
+    async fn set_archived(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        archive: bool,
+        context: MutationContext,
+    ) -> Result<Record, ObjectError> {
+        // A replica takes archive state from the server; its push queue
+        // carries no archive, so a local one would never reach the server.
+        if self.is_replica() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let mut tx = self.begin().await?;
+        let access = self.access(tx.as_mut()).await?;
+        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let flags = access.for_object(object.id);
+        if !flags.read {
+            return Err(ObjectError::NotFound);
+        }
+        if !flags.edit {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let mut record = tx
+            .record(object.id, public_id)
+            .await?
+            .ok_or(ObjectError::NotFound)?;
+        let rights = self
+            .rights_on(tx.as_mut(), &access, &object, &record)
+            .await?;
+        if !rights.read {
+            return Err(ObjectError::NotFound);
+        }
+        if !rights.edit {
+            return Err(ObjectError::PermissionDenied);
+        }
+        // The record's state decides before its version, so a member who
+        // missed someone else's archive learns what happened.
+        if record.deleted_at.is_some() {
+            return Err(ObjectError::Conflict(ARCHIVE_DELETED));
+        }
+        match (archive, record.archived_at.is_some()) {
+            (true, true) => return Err(ObjectError::Conflict(ALREADY_ARCHIVED)),
+            (false, false) => return Err(ObjectError::Conflict(NOT_ARCHIVED)),
+            _ => {}
+        }
+        if record.version != expected_version {
+            return Err(ObjectError::VersionConflict);
+        }
+        self.stamp(&mut record);
+        record.archived_at = archive.then_some(record.updated_at);
+        if !tx.update_record(&record, expected_version).await? {
+            return Err(ObjectError::VersionConflict);
+        }
+        let (change, kind) = if archive {
+            (
+                Change::RecordArchived(&object, &record),
+                HistoryKind::Archived,
+            )
+        } else {
+            (
+                Change::RecordUnarchived(&object, &record),
+                HistoryKind::Unarchived,
+            )
+        };
+        self.record_change(tx.as_mut(), context, change).await?;
+        self.track(tx.as_mut(), &object, None, &record, kind, context)
+            .await?;
+        tx.commit().await?;
+        self.with_formula(&object, Self::project(&object, record))
+            .await
     }
 
     /// Brings back the details deleted with `root` (ADR 0025). A junction

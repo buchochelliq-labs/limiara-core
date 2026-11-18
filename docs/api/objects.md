@@ -34,7 +34,7 @@ the plugin lookup `example.tracker:milestone`.
 | Create, change and delete objects and fields; read and set object permissions | `objects.manage` |
 | See an object and read its records | object `read` |
 | Create records | object `create` |
-| Change records | object `edit` |
+| Change, archive and unarchive records | object `edit`, and edit access to the record |
 | Delete and undelete records | object `delete` |
 | Read or change every record whatever sharing says | object `view_all` / `modify_all`, or the system permissions `records.view_all` / `records.modify_all` |
 
@@ -252,6 +252,8 @@ be a roll-up's relationship (`objects.rollup_relationship_invalid`).
 | `PATCH /objects/{api_name}/records/{id}` | Change only the values sent; `null` clears; send `expected_version` |
 | `DELETE /objects/{api_name}/records/{id}?expected_version=` | Move a record to the recycle bin |
 | `POST /objects/{api_name}/records/{id}/undelete?expected_version=` | Restore a record from the recycle bin |
+| `POST /objects/{api_name}/records/{id}/archive?expected_version=` | Archive a record |
+| `POST /objects/{api_name}/records/{id}/unarchive?expected_version=` | Bring an archived record back |
 
 A record carries the standard fields of ADR 0014 (`id`, `object`, `name`,
 `owner`, `created_at`, `created_by`, `updated_at`, `updated_by`,
@@ -280,8 +282,10 @@ returns the record the caller already created; anyone else's id is
 same way, so offline records that refer to each other push with their
 references intact.
 
-Lists accept `status` (`active`, `deleted`, or `any` for sync clients, where
-deleted records are tombstones), `sort` (`name`, `created_at`, `updated_at`,
+Lists accept `status`: `active` (the default: live records that are not
+archived), `archived` (live, archived records), `all` (every live record),
+`deleted` (the recycle bin, archived or not), or `any` for sync clients, where
+deleted records are tombstones and archived ones carry `archived_at`; `sort` (`name`, `created_at`, `updated_at`,
 `touched_at`), `touched_after` (an RFC 3339 time; only records touched
 strictly after it), `direction` (`asc`, `desc`), `limit` (1 to 200), `cursor`,
 `search` (text the record name contains, at most 100 characters), `owner=me` and up to ten
@@ -417,11 +421,60 @@ whose object the caller cannot read, contribute nothing.
   page offers these in the Activity section. Whether the member may run
   one is still decided by the target object's `create` access.
 
+### Archiving
+
+Archiving (ADR 0035 G1) takes a live record out of everyday use without
+deleting it, as Salesforce's archived records are kept: it stays readable by
+id, keeps its values, lookups, owner and shares, and can still be changed,
+deleted and restored. Archive and unarchive are edits: they need the
+object's `edit` permission and edit access to the record through ownership,
+the role hierarchy, a manual edit share or `modify_all` (ADR 0016), exactly
+as an update does, and they take `expected_version`. Each one moves the
+record's `version`, `updated_at`, `updated_by` and `touched_at`, sets or
+clears `archived_at`, and answers with the record. Neither runs validation
+rules or automations, since no value changes.
+
+Archiving is not idempotent. The refusals are, in this order after access:
+
+| Status and code | When |
+| --- | --- |
+| `404 resource.unavailable` | The record does not exist or the caller cannot see it |
+| `403 auth.permission_denied` | The caller can see it but has no edit access |
+| `409 records.deleted` | The record is in the recycle bin; restore it first |
+| `409 records.already_archived` | Archiving a record that is archived |
+| `409 records.not_archived` | Unarchiving a record that is not archived |
+| `409 records.version_conflict` | `expected_version` is not the current version |
+
+The record's state is checked before its version, so a client that missed
+someone else's archive learns that rather than seeing a version conflict.
+
+Where an archived record shows:
+
+| Surface | Archived records |
+| --- | --- |
+| `GET .../records/{id}` and record history | shown, with `archived_at` |
+| `GET .../records` | left out unless `status=archived` or `status=all` |
+| Record queries and saved reports | left out unless the query sends `include_archived=true` (or `include_deleted=true`) |
+| Global search | left out |
+| Lookup and related-to pickers (`.../candidates`) | left out |
+| Related lists and the Activity timeline | left out |
+| Existing lookups to an archived record | kept, with its name in `related`; paths through the lookup still read it |
+| Setting a lookup to an archived record by id | allowed, subject to the field's lookup filter |
+| Sync (`status=any`, revocations) | kept, with `archived_at`, so devices hold it |
+
+A record in the recycle bin keeps its `archived_at`: `status=deleted` lists
+it, and undeleting it brings it back archived. On a synced device
+archiving and unarchiving are made on the server: the command bridge
+answers `403 sync.server_only`, and the replica takes the server's
+`archived_at` with each record it pulls.
+
 ## Change data capture
 
 `GET /objects/changes` returns the workspace's change log after `after`
 (ADR 0018): `data` holds `position`, `object`, `record`, `kind` (`created`,
-`updated`, `deleted`, `undeleted`), the changed `fields` by name,
+`updated`, `deleted`, `undeleted`), the changed `fields` by name (an
+archive or unarchive is an `updated` entry naming `archived_at`, as an
+owner change names `owner`),
 `changed_at`, `changed_by` and `correlation_id`; `next_after` is where to
 resume and `head` the newest position. Positions are gap-free and in commit
 order. Only changes to records the caller can currently see are returned,
@@ -463,8 +516,8 @@ nothing revoked are left out. A request names at most 1,000 record ids
 several requests.
 
 A synced device takes its definitions from the routes above: `GET
-/objects`, then `GET /objects/{api_name}`, its validation rules and its
-quick actions for each object, whenever a change page's `metadata_version` is newer than the one it
+/objects/assistant-policy`, `GET /objects`, then `GET /objects/{api_name}`,
+its validation rules and its quick actions for each object, whenever a change page's `metadata_version` is newer than the one it
 applied. It reads each changed record with `include_deleted=true`, and pushes
 its queued changes as composite requests (ADR 0024). A related-to field
 keeps, on the device, only the objects of its allowlist the device holds.
@@ -489,8 +542,8 @@ LIMIT 500
 
 - Names are API names; standard fields are `id`, `name`, `owner`,
   `created_at`, `created_by`, `updated_at`, `updated_by`, `touched_at`,
-  `version`, `is_deleted` and `deleted_at`. A dot follows a lookup, up to
-  three hops.
+  `version`, `is_deleted`, `deleted_at` and `archived_at`. A dot follows a
+  lookup, up to three hops.
 - Conditions: `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`,
   `NOT LIKE`, `= null`, `!= null`, and `INCLUDES` / `EXCLUDES` for
   multi-select picklists, with `AND`, `OR`, `NOT` and parentheses. Text
@@ -510,7 +563,10 @@ LIMIT 500
   come back as their lowercase key.
 - Sharing applies to the object and to every relationship hop, so a hidden
   parent never matches a condition and its selected fields are `null`.
-  `include_deleted=true` adds records in the recycle bin.
+  Archived records are left out, as lists leave them out:
+  `include_archived=true` adds them, and `include_deleted=true` adds records
+  in the recycle bin, archived or not. A cursor works only with the flags it
+  was issued with.
 
 The response holds `object`, `columns` (`key` and `type`), `data` (rows keyed
 by each selected item or alias; record rows always carry `id`) and
@@ -636,6 +692,100 @@ nothing: running it uses the normal record create and update APIs.
   action on the device is the ordinary local create or update as the
   member, which the server checks again when it is pushed.
 
+## Assistant policy
+
+What a device's assistant bridge (ADR 0034, #234) may reach is object
+metadata. Every setting is off until an administrator turns it on, and the
+policy only narrows: assistants act as the member, after the member's
+permissions and sharing, and the policy grants nothing.
+
+- `GET /objects/assistant-policy` returns the workspace switch with the
+  policy of every object the caller can read (every object for holders of
+  `objects.manage`):
+
+  ```json
+  {"enabled": true, "version": 2, "updated_at": "…", "updated_by": {"id": "…", "name": "…"},
+   "objects": [{"object": "custom:deal", "exposed": true, "writable": true, "indexable": true,
+                "excluded_fields": ["custom:amount"], "offered_actions": ["close"],
+                "version": 3, "updated_at": "…", "updated_by": {"id": "…", "name": "…"}}]}
+  ```
+
+  A workspace or object that never had a policy reads as everything off
+  with `version: 0` and `updated_at: null`.
+- `PATCH /objects/assistant-policy` with `{"expected_version": 2,
+  "enabled": false}` turns assistant access on or off for the workspace.
+- `GET /objects/{object}/assistant-policy` returns one object's policy to
+  anyone who can read the object; to anyone else the object is unknown.
+  `PATCH` with `expected_version` changes any of `exposed`, `writable`,
+  `indexable`, `excluded_fields` and `offered_actions`; what it leaves out
+  stays as it is.
+- `exposed`: assistants may find and read the object's records, as the
+  member. `writable`: they may create and update them, each change confirmed
+  by the member; it requires `exposed`. `indexable`: devices may put the
+  records into the phone's search index; it requires `exposed`.
+  `excluded_fields` lists the fields, the record name as `name`, whose values
+  never enter that index; they apply to the index only, never to assistant
+  reads, which field-level security decides. `offered_actions` lists the
+  quick actions offered to assistants, at most 10: each requires `exposed`,
+  and the object it writes (this object for an update action, the target
+  object for a create action) must be `writable`.
+- Changes need `objects.manage`, otherwise `403 auth.permission_denied`. A
+  plugin's installation never sets the policy, so a plugin object follows the
+  workspace's like its sharing model and starts off; a suspended plugin
+  object is unknown here too. Problems are `400` with
+  `assistant_policy.requires_exposed` (on `writable`, `indexable` or
+  `offered_actions.{name}`), `assistant_policy.field_unknown` and
+  `assistant_policy.field_duplicate` (on `excluded_fields.{field}`),
+  `assistant_policy.action_unknown`, `assistant_policy.action_duplicate` and
+  `assistant_policy.action_not_writable` (on `offered_actions.{name}`), and
+  `assistant_policy.actions_invalid`; a stale `expected_version` is `409
+  records.version_conflict`.
+- Fields and actions are kept by id: a deleted field or action leaves the
+  policy, and one made again under the same name is not excluded or offered.
+  Turning `writable` off takes the create actions of other objects that make
+  its records out of their objects' `offered_actions`, each as its own change.
+- Each change is audited (`objects.assistant_settings.updated`,
+  `objects.assistant_policy.updated`) and publishes
+  `platform.objects.assistant-policy-updated.v1` with `scope` (`workspace` or
+  `object`) and the settings by API names in the same transaction, and moves
+  the workspace `metadata_version`.
+- A synced device reads `GET /objects/assistant-policy` with its other
+  definitions and keeps each object's policy against its own fields and
+  quick actions; names it does not hold are left out, and a server that does
+  not answer leaves assistant access off on the device. A device answers both
+  `GET` routes from its replica and refuses `PATCH` with `403
+  sync.server_only`.
+
+### Assistant writes on push
+
+A create or update in a composite request may carry an assistant marker
+(ADR 0034 §6, ADR 0017 "Change source" rule 3 as amended), which only a
+synced device's push sends for a change its assistant bridge made:
+
+```json
+{"method": "update", "reference": "r0", "object": "custom:deal", "id": "a0B…",
+ "expected_version": 4, "values": {"custom:stage": "won"},
+ "assistant": {"assistant": "siri", "quick_action": {"object": "custom:deal", "name": "close"}}}
+```
+
+- `assistant` is `siri` or `gemini`; any other name makes the request
+  invalid. `quick_action`, when the assistant ran one, names the action by
+  its object and API name.
+- The marker only adds checks. The operation first passes every check it
+  would pass unmarked; then, in the same transaction, the server checks its
+  current policy: assistant access on, the written object exposed and
+  writable, and a named quick action offered on an exposed object and
+  writing this object this way (an update action updates its own object, a
+  create action creates its target object). Otherwise the operation fails
+  with `403 assistant.not_allowed`, and the device keeps the change like any
+  write the server refuses.
+- Only a request a device's token authenticated may carry it; anything else,
+  a device's own command bridge included, fails the operation with `400
+  assistant.marker_not_accepted`.
+- The change's source is `{"kind": "assistant", "detail": "siri"}` in
+  history and audit, and the audit entry keeps the verified device id as
+  `device_id` beside it. Events carry only the kind.
+
 ## Formula fields
 
 A field with `"field_type": "formula"` takes a `formula` and a
@@ -691,6 +841,9 @@ this field is `409 objects.field_in_use`.
   single-record route would return.
 - Problems with the request itself are `composite.operations_invalid`
   (1 to 25 operations) and `composite.reference_invalid`.
+- A create or update a device pushes for its assistant bridge carries an
+  `assistant` marker, checked against the assistant policy
+  ([Assistant writes on push](#assistant-writes-on-push)).
 
 ## API clients
 
@@ -918,7 +1071,8 @@ by object, best group first:
 Objects with `track_history` keep each record's lifecycle, name and owner
 changes; fields with `track_history` also keep their old and new values
 (ADR 0017). `GET /objects/{api_name}/records/{id}/history` returns entries
-newest first with `kind` (`created`, `changed`, `deleted`, `undeleted`),
+newest first with `kind` (`created`, `changed`, `deleted`, `undeleted`,
+`archived`, `unarchived`),
 `field`, `old_value`, `new_value`, `changed_at` and `changed_by`; owner
 changes also carry `old_user` and `new_user`. `related` names lookup values
 the caller can see, and `cursor` and `limit` (1 to 200) page through older
@@ -1027,6 +1181,10 @@ return `400 validation.failed` with an `errors` list of `{field, code,
 detail}`. Version mismatches return `409 records.version_conflict`.
 Changing a field the caller reads but may not change returns
 `403 records.field_not_writable`, with the fields in `errors`.
+A pushed assistant write the workspace's assistant policy does not allow
+returns `403 assistant.not_allowed`, and an assistant marker on anything but
+a device's push `400 assistant.marker_not_accepted` (see
+[Assistant policy](#assistant-policy)).
 Changing or deleting what a plugin owns returns `409 objects.plugin_owned`;
 the codes for refused plugin installations are listed in
 [Declaring objects](../plugins/objects.md#enabling-upgrading-and-disabling).
@@ -1035,12 +1193,14 @@ the codes for refused plugin installations are listed in
 
 Every mutation writes an audit record and a `platform.objects.*.v1` event in
 the same transaction: object, field and object-permission changes, record
-created, updated, deleted and undeleted, and reports created, updated and
+created, updated, deleted, undeleted, archived and unarchived
+(`record-archived`, `record-unarchived`, with the record payload), and reports created, updated and
 deleted (`report-created`, `report-updated`, `report-deleted`, naming the
 report, chart and visibility but not the query), and quick actions created,
 updated and deleted (`platform.objects.quick-action-created.v1`,
 `-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
-target, its fields and the fields it presets, never the preset values). Payloads name the object, record and
+target, its fields and the fields it presets, never the preset values), and
+assistant policy changes (`platform.objects.assistant-policy-updated.v1`). Payloads name the object, record and
 changed fields, never field values; lookup and related-to values, which
 are record ids, are no exception. Changes a plugin's installation makes
 also carry `"plugin": "<plugin id>"`, with the member who changed the

@@ -19,6 +19,9 @@ pub const RECORD_CREATED_V1: &str = "platform.objects.record-created.v1";
 pub const RECORD_UPDATED_V1: &str = "platform.objects.record-updated.v1";
 pub const RECORD_DELETED_V1: &str = "platform.objects.record-deleted.v1";
 pub const RECORD_UNDELETED_V1: &str = "platform.objects.record-undeleted.v1";
+/// A record was archived or came back from the archive (ADR 0035 G1).
+pub const RECORD_ARCHIVED_V1: &str = "platform.objects.record-archived.v1";
+pub const RECORD_UNARCHIVED_V1: &str = "platform.objects.record-unarchived.v1";
 pub const RECORD_OWNER_CHANGED_V1: &str = "platform.objects.record-owner-changed.v1";
 pub const RECORD_SHARING_CHANGED_V1: &str = "platform.objects.record-sharing-changed.v1";
 pub const VALIDATION_RULE_CREATED_V1: &str = "platform.objects.validation-rule-created.v1";
@@ -50,7 +53,11 @@ pub const QUICK_ACTION_CREATED_V1: &str = "platform.objects.quick-action-created
 pub const QUICK_ACTION_UPDATED_V1: &str = "platform.objects.quick-action-updated.v1";
 pub const QUICK_ACTION_DELETED_V1: &str = "platform.objects.quick-action-deleted.v1";
 
-pub const ENGINE_EVENT_TYPES: [&str; 31] = [
+/// The assistant policy (ADR 0034 §4): the workspace switch or one
+/// object's settings, by API names.
+pub const ASSISTANT_POLICY_UPDATED_V1: &str = "platform.objects.assistant-policy-updated.v1";
+
+pub const ENGINE_EVENT_TYPES: [&str; 34] = [
     OBJECT_CREATED_V1,
     OBJECT_UPDATED_V1,
     OBJECT_DELETED_V1,
@@ -62,6 +69,8 @@ pub const ENGINE_EVENT_TYPES: [&str; 31] = [
     RECORD_UPDATED_V1,
     RECORD_DELETED_V1,
     RECORD_UNDELETED_V1,
+    RECORD_ARCHIVED_V1,
+    RECORD_UNARCHIVED_V1,
     RECORD_OWNER_CHANGED_V1,
     RECORD_SHARING_CHANGED_V1,
     VALIDATION_RULE_CREATED_V1,
@@ -82,7 +91,11 @@ pub const ENGINE_EVENT_TYPES: [&str; 31] = [
     QUICK_ACTION_CREATED_V1,
     QUICK_ACTION_UPDATED_V1,
     QUICK_ACTION_DELETED_V1,
+    ASSISTANT_POLICY_UPDATED_V1,
 ];
+
+/// The standard field an archive change names in the change log.
+pub const ARCHIVED_AT: &str = "archived_at";
 
 /// Who and why, for every piece of evidence in one request.
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +109,9 @@ pub struct EvidenceContext {
     /// Where the change came from (#233). The audit entry keeps it whole;
     /// the event names only its kind, never the detail.
     pub source: Option<crate::MutationSource>,
+    /// The verified device that pushed an assistant's change (ADR 0034
+    /// §6). Only the audit entry names it.
+    pub assistant_device: Option<crate::SourceDetail>,
 }
 
 pub enum Change<'a> {
@@ -114,6 +130,10 @@ pub enum Change<'a> {
     RecordUpdated(&'a ObjectDefinition, &'a Record, &'a [String]),
     RecordDeleted(&'a ObjectDefinition, &'a Record),
     RecordUndeleted(&'a ObjectDefinition, &'a Record),
+    /// The record was archived (ADR 0035 G1); `archived_at` is in it.
+    RecordArchived(&'a ObjectDefinition, &'a Record),
+    /// The record came back from the archive.
+    RecordUnarchived(&'a ObjectDefinition, &'a Record),
     /// The new owner is in the record; the previous owner and how many
     /// manual shares the transfer removed are evidence too (ADR 0016).
     OwnerChanged(&'a ObjectDefinition, &'a Record, Option<Uuid>, u64),
@@ -155,6 +175,13 @@ pub enum Change<'a> {
     QuickActionCreated(&'a ObjectDefinition, &'a crate::QuickAction),
     QuickActionUpdated(&'a ObjectDefinition, &'a crate::QuickAction),
     QuickActionDeleted(&'a ObjectDefinition, &'a crate::QuickAction),
+    /// The workspace's assistant switch changed (ADR 0034 §4).
+    AssistantSettingsUpdated(&'a crate::assistant_policy::AssistantSettings),
+    /// One object's assistant policy changed.
+    AssistantPolicyUpdated(
+        &'a ObjectDefinition,
+        &'a crate::assistant_policy::AssistantPolicy,
+    ),
 }
 
 impl Change<'_> {
@@ -237,6 +264,18 @@ impl Change<'_> {
             Self::RecordUndeleted(object, record) => (
                 RECORD_UNDELETED_V1,
                 "records.record.undeleted",
+                record_target(record),
+                record_payload(object, record, &[]),
+            ),
+            Self::RecordArchived(object, record) => (
+                RECORD_ARCHIVED_V1,
+                "records.record.archived",
+                record_target(record),
+                record_payload(object, record, &[]),
+            ),
+            Self::RecordUnarchived(object, record) => (
+                RECORD_UNARCHIVED_V1,
+                "records.record.unarchived",
                 record_target(record),
                 record_payload(object, record, &[]),
             ),
@@ -356,6 +395,31 @@ impl Change<'_> {
                 quick_action_target(object, action),
                 quick_action_payload(object, action),
             ),
+            Self::AssistantSettingsUpdated(settings) => (
+                ASSISTANT_POLICY_UPDATED_V1,
+                "objects.assistant_settings.updated",
+                "assistant_policy:workspace".to_owned(),
+                json!({
+                    "scope": "workspace",
+                    "enabled": settings.enabled,
+                    "version": settings.version,
+                }),
+            ),
+            Self::AssistantPolicyUpdated(object, policy) => (
+                ASSISTANT_POLICY_UPDATED_V1,
+                "objects.assistant_policy.updated",
+                format!("assistant_policy:{}", object.api_name),
+                json!({
+                    "scope": "object",
+                    "object": object.api_name,
+                    "exposed": policy.exposed,
+                    "writable": policy.writable,
+                    "indexable": policy.indexable,
+                    "excluded_fields": policy.excluded_fields,
+                    "offered_actions": policy.offered_actions,
+                    "version": policy.version,
+                }),
+            ),
             Self::SharingChanged(object, record, kind, grantee, access) => (
                 RECORD_SHARING_CHANGED_V1,
                 if access.is_some() {
@@ -377,8 +441,9 @@ impl Change<'_> {
 
     /// Whether this change alters definitions a synced device validates and
     /// reads with (ADR 0024 §3): objects, fields, object permissions,
-    /// validation rules, automations and quick actions (ADR 0032 §5). It
-    /// moves the workspace metadata version.
+    /// validation rules, automations, quick actions (ADR 0032 §5) and the
+    /// assistant policy (ADR 0034 §4). It moves the workspace metadata
+    /// version.
     pub fn is_metadata(&self) -> bool {
         matches!(
             self,
@@ -399,12 +464,17 @@ impl Change<'_> {
                 | Self::QuickActionCreated(..)
                 | Self::QuickActionUpdated(..)
                 | Self::QuickActionDeleted(..)
+                | Self::AssistantSettingsUpdated(..)
+                | Self::AssistantPolicyUpdated(..)
         )
     }
 
     /// The change-log entry this change leaves (ADR 0018): record data
     /// changes only, with the changed field names. Sharing changes alter
-    /// visibility, not data, and leave none.
+    /// visibility, not data, and leave none. Archiving changes the
+    /// standard `archived_at` field, so it is an update naming that field,
+    /// as an owner change names `owner`; clients that know only the four
+    /// kinds read it as they read any update.
     pub fn record_change(
         &self,
     ) -> Option<(&ObjectDefinition, &Record, crate::ChangeKind, Vec<String>)> {
@@ -420,6 +490,14 @@ impl Change<'_> {
             }
             Self::RecordUndeleted(object, record) => {
                 Some((object, record, crate::ChangeKind::Undeleted, Vec::new()))
+            }
+            Self::RecordArchived(object, record) | Self::RecordUnarchived(object, record) => {
+                Some((
+                    object,
+                    record,
+                    crate::ChangeKind::Updated,
+                    vec![ARCHIVED_AT.to_owned()],
+                ))
             }
             Self::OwnerChanged(object, record, _, _) => Some((
                 object,
@@ -452,6 +530,9 @@ impl Change<'_> {
             object.insert("event_id".into(), json!(event.id));
         }
         insert_source(&mut metadata, context.source);
+        if let (Some(device), Some(map)) = (context.assistant_device, metadata.as_object_mut()) {
+            map.insert("device_id".into(), json!(device.as_str()));
+        }
         let mut audit = AuditEvent::with_context(
             Some(context.tenant_id),
             Some(context.actor_id),

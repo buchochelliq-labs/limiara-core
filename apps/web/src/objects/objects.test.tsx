@@ -3,8 +3,8 @@ import {describe, expect, it, vi} from 'vitest';
 import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, sourceFromApi, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
-import {AllowlistForm, allowlistChoices, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
-import {RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
+import {AllowlistForm, allowlistChoices, AssistantAccess, AssistantPolicyForm, AssistantSwitch, indexFields, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
+import {ArchivedNotice, archiveProblem, RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
@@ -112,6 +112,58 @@ describe('workspace objects client', () => {
   });
 });
 
+describe('archiving records (ADR 0035 G1)', () => {
+  it('posts archive and unarchive with the version and reads archived_at', async () => {
+    const shape = {...recordFromApiShape(), archived_at: '2026-11-02T10:00:00Z'};
+    const fetcher = respond(200, shape);
+    const client = createObjectsApiClient(workspace, fetcher);
+    const archived = await client.archiveRecord('custom:project', '000abc', 5);
+    expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records/000abc/archive?expected_version=5`);
+    expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.method).toBe('POST');
+    expect(archived.archivedAt).toBe('2026-11-02T10:00:00Z');
+    expect(archived.values).toEqual({});
+    await client.unarchiveRecord('custom:project', '000abc', 6);
+    expect(vi.mocked(fetcher).mock.calls[1]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records/000abc/unarchive?expected_version=6`);
+    expect(recordFromApi(recordFromApiShape()).archivedAt).toBeNull();
+    const list = respond(200, {data: [], next_cursor: null});
+    await createObjectsApiClient(workspace, list).listRecords('custom:project', {status: 'archived'});
+    expect(vi.mocked(list).mock.calls[0]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records?status=archived`);
+    await expect(createObjectsApiClient(workspace, respond(409, {code: 'records.already_archived'})).archiveRecord('custom:project', '000abc', 5)).rejects.toMatchObject({reason: 'conflict', code: 'records.already_archived'});
+  });
+
+  it('hides archived records from default lists, pickers and search in the fixture engine', async () => {
+    const client = createFixtureObjectsClient();
+    const [apollo] = (await client.listRecords('custom:project', {search: 'apollo'})).records;
+    if (!apollo) throw new Error('fixture');
+    const archived = await client.archiveRecord('custom:project', apollo.id, apollo.version);
+    expect(archived.version).toBe(apollo.version + 1);
+    expect(archived.archivedAt).not.toBeNull();
+    const names = async (status?: 'archived' | 'all') => (await client.listRecords('custom:project', {status})).records.map(record => record.name);
+    expect(await names()).not.toContain('Apollo');
+    expect(await names('archived')).toEqual(['Apollo']);
+    expect(await names('all')).toContain('Apollo');
+    expect((await client.getRecord('custom:project', apollo.id)).archivedAt).not.toBeNull();
+    await expect(client.archiveRecord('custom:project', apollo.id, archived.version)).rejects.toMatchObject({code: 'records.already_archived'});
+    const restored = await client.unarchiveRecord('custom:project', apollo.id, archived.version);
+    expect(restored.archivedAt).toBeNull();
+    expect(await names()).toContain('Apollo');
+    await expect(client.unarchiveRecord('custom:project', apollo.id, restored.version)).rejects.toMatchObject({code: 'records.not_archived'});
+  });
+
+  it('shows the archived state and explains failures', () => {
+    const record = recordFromApi({...recordFromApiShape(), archived_at: '2026-11-02T10:00:00Z'} as Parameters<typeof recordFromApi>[0]);
+    const markup = renderToStaticMarkup(<ArchivedNotice record={record} />);
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('This record is archived');
+    expect(markup).toContain('left out of lists, search, lookup pickers and related lists');
+    expect(renderToStaticMarkup(<ArchivedNotice record={{...record, archivedAt: null}} />)).toBe('');
+    expect(archiveProblem(new ObjectsApiError('conflict', 'records.already_archived'), true)).toContain('changed since it was opened');
+    expect(archiveProblem(new ObjectsApiError('conflict', 'records.deleted'), true)).toContain('recycle bin');
+    expect(archiveProblem(new ObjectsApiError('denied'), false)).toContain('permission');
+    expect(archiveProblem(new Error('offline'), false)).toContain('could not be restored from the archive');
+  });
+});
+
 describe('record sharing (ADR 0016)', () => {
   it('reads rights and shares from the API and sends shares and transfers', async () => {
     const record = await createObjectsApiClient(workspace, respond(200, {id: '000a', name: 'Deal', owner: {id: 'u1'}, created_at: '', created_by: null, updated_at: '', updated_by: null, version: 2, is_deleted: false, access: {read: true, edit: true, delete: false, share: false, transfer: false}})).getRecord('custom:deal', '000a');
@@ -143,7 +195,7 @@ describe('record sharing (ADR 0016)', () => {
 
   it('offers sharing only to those who may share or transfer', () => {
     const client = createFixtureObjectsClient();
-    const base = {id: '000a', name: 'Deal', owner: {id: 'u1', name: 'Riley <b>Rep</b>'}, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, values: {}, related: {}};
+    const base = {id: '000a', name: 'Deal', owner: {id: 'u1', name: 'Riley <b>Rep</b>'}, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, archivedAt: null, values: {}, related: {}};
     expect(renderToStaticMarkup(<SharingPanel client={client} object={project} record={{...base, rights: {read: true, edit: true, delete: false, share: false, transfer: false}}} onTransferred={noop} />)).toBe('');
     const owner = renderToStaticMarkup(<SharingPanel client={client} object={project} record={{...base, rights: {read: true, edit: true, delete: true, share: true, transfer: true}}} onTransferred={noop} />);
     expect(owner).toContain('Change owner');
@@ -207,7 +259,7 @@ describe('field history (ADR 0017)', () => {
 
   it('shows history only for objects that track it', () => {
     const client = createFixtureObjectsClient();
-    const record = {id: '000a', name: 'Deal', owner: null, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, values: {}, related: {}};
+    const record = {id: '000a', name: 'Deal', owner: null, createdAt: '', createdBy: null, updatedAt: '', updatedBy: null, version: 1, isDeleted: false, archivedAt: null, values: {}, related: {}};
     expect(renderToStaticMarkup(<HistoryPanel client={client} object={{...project, trackHistory: false}} record={record} onNavigate={noop} />)).toBe('');
     expect(renderToStaticMarkup(<HistoryPanel client={client} object={project} record={record} onNavigate={noop} />)).toContain('Loading history');
   });
@@ -327,6 +379,9 @@ describe('query console', () => {
     expect(url.searchParams.get('q')).toBe("SELECT name FROM custom:project WHERE name = 'a&b'");
     expect(url.searchParams.get('cursor')).toBe('c1');
     expect(url.searchParams.get('include_deleted')).toBe('true');
+    expect(url.searchParams.get('include_archived')).toBeNull();
+    await createObjectsApiClient(workspace, fetcher).query('SELECT name FROM custom:project WHERE archived_at != null', {includeArchived: true});
+    expect(new URL(String(vi.mocked(fetcher).mock.calls[1]?.[0]), 'http://localhost').searchParams.get('include_archived')).toBe('true');
     expect(result).toEqual({object: 'custom:project', columns: [{key: 'name', type: 'text'}], rows: [{id: '000abc', name: 'Apollo'}], nextCursor: 'next'});
   });
 
@@ -926,5 +981,86 @@ describe('activity timeline (ADR 0033 §4)', () => {
     expect(second.open).toEqual([]);
     expect(second.past.map(entry => entry.name)).toContain('Done before');
     expect(second.nextCursor).toBeNull();
+  });
+});
+
+describe('assistant access (ADR 0034 §4)', () => {
+  it('reads and changes the workspace switch and an object\'s policy with versions', async () => {
+    const base = `/api/v1/workspaces/${workspace}/objects`;
+    const switchRead = respond(200, {enabled: false, version: 0, updated_at: null, updated_by: null, objects: []});
+    expect(await createObjectsApiClient(workspace, switchRead).assistantSettings()).toEqual({enabled: false, version: 0});
+    expect(vi.mocked(switchRead).mock.calls[0]?.[0]).toBe(`${base}/assistant-policy`);
+
+    const switchOn = respond(200, {enabled: true, version: 1});
+    await createObjectsApiClient(workspace, switchOn).updateAssistantSettings(0, true);
+    const [switchUrl, switchInit] = vi.mocked(switchOn).mock.calls[0] ?? [];
+    expect(switchUrl).toBe(`${base}/assistant-policy`);
+    expect(switchInit?.method).toBe('PATCH');
+    expect(JSON.parse(String(switchInit?.body))).toEqual({enabled: true, expected_version: 0});
+
+    const wire = {object: 'custom:project', exposed: true, writable: false, indexable: true, excluded_fields: ['name', 'custom:notes'], offered_actions: ['close'], version: 2, updated_at: '2026-11-17T00:00:00Z', updated_by: {id: 'u1', name: null}};
+    const read = respond(200, wire);
+    expect(await createObjectsApiClient(workspace, read).assistantPolicy('custom:project')).toEqual({object: 'custom:project', exposed: true, writable: false, indexable: true, excludedFields: ['name', 'custom:notes'], offeredActions: ['close'], version: 2});
+    expect(vi.mocked(read).mock.calls[0]?.[0]).toBe(`${base}/custom%3Aproject/assistant-policy`);
+
+    const change = respond(200, {...wire, version: 3});
+    await createObjectsApiClient(workspace, change).updateAssistantPolicy('custom:project', 2, {writable: true});
+    const [changeUrl, changeInit] = vi.mocked(change).mock.calls[0] ?? [];
+    expect(changeUrl).toBe(`${base}/custom%3Aproject/assistant-policy`);
+    expect(changeInit?.method).toBe('PATCH');
+    expect(JSON.parse(String(changeInit?.body))).toEqual({writable: true, expected_version: 2});
+
+    await expect(createObjectsApiClient(workspace, respond(403, {code: 'auth.permission_denied'})).updateAssistantSettings(0, true)).rejects.toMatchObject({reason: 'denied'});
+    await expect(createObjectsApiClient(workspace, respond(400, {code: 'validation.failed', errors: [{field: 'writable', code: 'assistant_policy.requires_exposed', detail: 'expose Project to assistants first'}]})).updateAssistantPolicy('custom:project', 0, {writable: true})).rejects.toMatchObject({reason: 'invalid', issues: [{code: 'assistant_policy.requires_exposed'}]});
+    await expect(createObjectsApiClient(workspace, respond(409, {code: 'records.version_conflict'})).updateAssistantPolicy('custom:project', 0, {exposed: true})).rejects.toMatchObject({reason: 'conflict'});
+  });
+
+  it('starts off in the fixture and keeps the server\'s rules', async () => {
+    const client = createFixtureObjectsClient();
+    expect(await client.assistantSettings()).toEqual({enabled: false, version: 0});
+    expect(await client.assistantPolicy('custom:project')).toMatchObject({exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {writable: true})).rejects.toMatchObject({reason: 'invalid', issues: [{code: 'assistant_policy.requires_exposed'}]});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: true, excluded_fields: ['custom:nope']})).rejects.toMatchObject({issues: [{code: 'assistant_policy.field_unknown'}]});
+    await client.createQuickAction('custom:project', {name: 'win', label: 'Win', kind: 'update', fields: ['custom:status']});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: true, offered_actions: ['win']})).rejects.toMatchObject({issues: [{code: 'assistant_policy.action_not_writable'}]});
+    const saved = await client.updateAssistantPolicy('custom:project', 0, {exposed: true, writable: true, offered_actions: ['win'], excluded_fields: ['name']});
+    expect(saved).toMatchObject({exposed: true, writable: true, offeredActions: ['win'], excludedFields: ['name'], version: 1});
+    await expect(client.updateAssistantPolicy('custom:project', 0, {exposed: false})).rejects.toMatchObject({reason: 'conflict'});
+    expect(await client.updateAssistantSettings(0, true)).toEqual({enabled: true, version: 1});
+  });
+
+  it('lists the record name with every field for the index', () => {
+    expect(indexFields(project).map(field => field.label)).toEqual(['Project name', 'Status', 'Code', 'Notes <i>']);
+  });
+
+  it('renders the switch and the object section with labelled loading states', () => {
+    const switchMarkup = renderToStaticMarkup(<AssistantSwitch client={createFixtureObjectsClient()} />);
+    expect(switchMarkup).toContain('<h2 id="assistant-switch-heading">Assistant access</h2>');
+    expect(switchMarkup).toContain('Loading assistant access');
+    const section = renderToStaticMarkup(<AssistantAccess client={createFixtureObjectsClient()} object={project} onNotice={noop} />);
+    expect(section).toContain('<h2 id="assistant-access-heading">Assistant access</h2>');
+    expect(section).toContain('Loading assistant access');
+    expect(section).toContain('aria-busy="true"');
+  });
+
+  it('renders the policy form with every setting off and dependent settings disabled', () => {
+    const off = {policy: {object: 'custom:project', exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0}, actions: [{name: 'win', label: 'Win <b>now</b>', kind: 'update' as const, position: 0, targetObject: null, targetField: null, fields: ['custom:status'], presets: {}, version: 1}], settings: {enabled: false, version: 0}};
+    const form = renderToStaticMarkup(<AssistantPolicyForm client={createFixtureObjectsClient()} object={project} data={off} onSaved={noop} onStale={noop} />);
+    expect(form).toContain('aria-label="Assistant access for Project"');
+    expect(form).toContain('Assistant access is off for this workspace');
+    expect(form).toContain('Assistants can find and read projects');
+    expect(form).toMatch(/<input type="checkbox" disabled=""\/>Assistants can create and update projects/);
+    expect(form).toMatch(/<input type="checkbox" disabled=""\/>Devices may add projects/);
+    expect(form).toContain('<legend>Quick actions offered to assistants</legend>');
+    expect(form).toContain('Win &lt;b&gt;now&lt;/b&gt;');
+    expect(form).not.toContain('<b>now</b>');
+    expect(form).not.toContain('Fields kept out of the index');
+    expect(form).toMatch(/<button[^>]*disabled=""[^>]*><span>Save assistant access/);
+
+    const indexed = {...off, policy: {...off.policy, exposed: true, indexable: true, excludedFields: ['custom:notes'], version: 3}, settings: {enabled: true, version: 1}};
+    const open = renderToStaticMarkup(<AssistantPolicyForm client={createFixtureObjectsClient()} object={project} data={indexed} onSaved={noop} onStale={noop} />);
+    expect(open).not.toContain('Assistant access is off for this workspace');
+    expect(open).toContain('<legend>Fields kept out of the index</legend>');
+    expect(open).toContain('Kept out of the index: Notes &lt;i&gt;.');
   });
 });

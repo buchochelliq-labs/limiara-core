@@ -424,6 +424,12 @@ impl<T: SyncTransport> SyncClient<T> {
     }
 
     async fn take_definitions(&self) -> Result<DefinitionsApplied, SyncError> {
+        // The assistant policy (ADR 0034 §4) once for every object. A server
+        // that does not show it leaves assistant access off on the device.
+        let (settings, mut policies) = match self.net(self.transport.assistant_policy()).await? {
+            Some(body) => crate::wire::assistant_policy(&body)?,
+            None => Default::default(),
+        };
         let mut objects = Vec::new();
         for listed in self.net(self.transport.objects()).await? {
             let Some(api_name) = listed.get("api_name").and_then(|name| name.as_str()) else {
@@ -435,13 +441,14 @@ impl<T: SyncTransport> SyncClient<T> {
             };
             let rules = self.net(self.transport.validation_rules(api_name)).await?;
             let actions = self.net(self.transport.quick_actions(api_name)).await?;
-            objects.push(remote_object(
-                &described,
-                rules.as_deref(),
-                actions.as_deref(),
-            )?);
+            let mut object = remote_object(&described, rules.as_deref(), actions.as_deref())?;
+            object.assistant = policies.remove(api_name);
+            objects.push(object);
         }
-        Ok(self.engine.apply_remote_definitions(&objects).await?)
+        Ok(self
+            .engine
+            .apply_remote_definitions_with(&objects, Some(settings))
+            .await?)
     }
 
     async fn revocations(&self) -> Result<usize, SyncError> {

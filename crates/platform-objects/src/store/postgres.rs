@@ -10,8 +10,8 @@ use crate::{
     AccessFlags, ChangeKind, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType,
     GranteeKind, HistoryEntry, HistoryKind, IndexValue, ObjectDefinition, ObjectError, Origin,
     PicklistOption, Record, RecordChange, RecordIndex, RecordQuery, RecordShare, RecordSort,
-    RecordStatus, RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel,
-    SortDirection, ValidationRule, ENGINE_CONTEXT,
+    RolePermission, Rollup, RollupFunction, RollupQuery, ShareAccess, SharingModel, SortDirection,
+    ValidationRule, ENGINE_CONTEXT,
 };
 use crate::{MutationSource, RemoteVersion, ReplicaDirectory, ReplicaLease, SyncPositions};
 use async_trait::async_trait;
@@ -1258,11 +1258,7 @@ impl ObjectTx for PostgresObjectTx {
         sql.push_bind(self.tenant_id)
             .push(" AND r.object_id = ")
             .push_bind(object_id);
-        sql.push(match query.status {
-            RecordStatus::Active => " AND r.deleted_at IS NULL",
-            RecordStatus::Deleted => " AND r.deleted_at IS NOT NULL",
-            RecordStatus::Any => "",
-        });
+        sql.push(query.status.condition());
         if let Some(owner) = query.owner {
             sql.push(" AND r.owner_id = ").push_bind(owner);
         }
@@ -1897,6 +1893,149 @@ impl ObjectTx for PostgresObjectTx {
         .bind(expected_version)
         .execute(&mut *self.tx)
         .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn assistant_settings(
+        &mut self,
+    ) -> Result<Option<crate::AssistantSettings>, ObjectError> {
+        let row = sqlx::query(
+            "SELECT enabled, version, updated_at, updated_by FROM assistant_settings \
+             WHERE tenant_id = $1",
+        )
+        .bind(self.tenant_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.map(|row| {
+            Ok(crate::AssistantSettings {
+                enabled: row.try_get("enabled")?,
+                version: row.try_get("version")?,
+                updated_at: Some(row.try_get("updated_at")?),
+                updated_by: row.try_get("updated_by")?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn put_assistant_settings(
+        &mut self,
+        settings: &crate::AssistantSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let updated_at = settings.updated_at.unwrap_or_else(chrono::Utc::now);
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO assistant_settings (tenant_id, enabled, version, updated_at, updated_by) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id) DO NOTHING",
+            )
+            .bind(self.tenant_id)
+            .bind(settings.enabled)
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(settings.updated_by)
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE assistant_settings SET enabled = $1, version = $2, updated_at = $3, \
+                 updated_by = $4 WHERE tenant_id = $5 AND version = $6",
+            )
+            .bind(settings.enabled)
+            .bind(settings.version)
+            .bind(updated_at)
+            .bind(settings.updated_by)
+            .bind(self.tenant_id)
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn assistant_policies(
+        &mut self,
+    ) -> Result<Vec<crate::StoredAssistantPolicy>, ObjectError> {
+        let rows = sqlx::query(
+            "SELECT object_id, exposed, writable, indexable, exclude_name, excluded_field_ids, \
+             offered_action_ids, version, updated_at, updated_by \
+             FROM assistant_object_policies WHERE tenant_id = $1 ORDER BY object_id",
+        )
+        .bind(self.tenant_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let ids = |column: &str| -> Result<Vec<Uuid>, ObjectError> {
+                    let value: Value = row.try_get(column)?;
+                    serde_json::from_value(value).map_err(|_| ObjectError::Invariant)
+                };
+                Ok(crate::StoredAssistantPolicy {
+                    object_id: row.try_get("object_id")?,
+                    exposed: row.try_get("exposed")?,
+                    writable: row.try_get("writable")?,
+                    indexable: row.try_get("indexable")?,
+                    exclude_name: row.try_get("exclude_name")?,
+                    excluded_field_ids: ids("excluded_field_ids")?,
+                    offered_action_ids: ids("offered_action_ids")?,
+                    version: row.try_get("version")?,
+                    updated_at: row.try_get("updated_at")?,
+                    updated_by: row.try_get("updated_by")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn put_assistant_policy(
+        &mut self,
+        policy: &crate::StoredAssistantPolicy,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError> {
+        let excluded =
+            serde_json::to_value(&policy.excluded_field_ids).map_err(|_| ObjectError::Invariant)?;
+        let offered =
+            serde_json::to_value(&policy.offered_action_ids).map_err(|_| ObjectError::Invariant)?;
+        let result = if expected_version == 0 {
+            sqlx::query(
+                "INSERT INTO assistant_object_policies (tenant_id, object_id, exposed, writable, \
+                 indexable, exclude_name, excluded_field_ids, offered_action_ids, version, \
+                 updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                 ON CONFLICT (tenant_id, object_id) DO NOTHING",
+            )
+            .bind(self.tenant_id)
+            .bind(policy.object_id)
+            .bind(policy.exposed)
+            .bind(policy.writable)
+            .bind(policy.indexable)
+            .bind(policy.exclude_name)
+            .bind(excluded)
+            .bind(offered)
+            .bind(policy.version)
+            .bind(policy.updated_at)
+            .bind(policy.updated_by)
+            .execute(&mut *self.tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE assistant_object_policies SET exposed = $1, writable = $2, indexable = $3, \
+                 exclude_name = $4, excluded_field_ids = $5, offered_action_ids = $6, version = $7, \
+                 updated_at = $8, updated_by = $9 \
+                 WHERE tenant_id = $10 AND object_id = $11 AND version = $12",
+            )
+            .bind(policy.exposed)
+            .bind(policy.writable)
+            .bind(policy.indexable)
+            .bind(policy.exclude_name)
+            .bind(excluded)
+            .bind(offered)
+            .bind(policy.version)
+            .bind(policy.updated_at)
+            .bind(policy.updated_by)
+            .bind(self.tenant_id)
+            .bind(policy.object_id)
+            .bind(expected_version)
+            .execute(&mut *self.tx)
+            .await?
+        };
         Ok(result.rows_affected() == 1)
     }
 

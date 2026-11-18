@@ -284,6 +284,7 @@ impl ObjectService {
             causation_id: Some(job.id),
             automation_id: None,
             source: Some(crate::MutationSource::import(job.id)),
+            assistant_device: None,
         };
         let mut run = Run::default();
         let mut tx = self.begin().await?;
@@ -409,6 +410,7 @@ pub async fn process_bulk_job(
         causation_id: Some(job.id),
         automation_id: None,
         source: Some(crate::MutationSource::import(job.id)),
+        assistant_device: None,
     };
     let Some(member) =
         member.filter(|member| member.tenant_id() == tenant_id && member.user_id() == job.actor_id)

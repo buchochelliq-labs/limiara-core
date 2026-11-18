@@ -41,6 +41,7 @@ pub enum Column {
     DeletedAt,
     /// `deleted_at IS NOT NULL` as 0 or 1, for grouping and sorting.
     IsDeleted,
+    ArchivedAt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +182,11 @@ impl Column {
         match self {
             Self::PublicId | Self::NameKey => CellKind::Text,
             Self::Owner | Self::CreatedBy | Self::UpdatedBy => CellKind::Uuid,
-            Self::CreatedAt | Self::UpdatedAt | Self::TouchedAt | Self::DeletedAt => CellKind::Time,
+            Self::CreatedAt
+            | Self::UpdatedAt
+            | Self::TouchedAt
+            | Self::DeletedAt
+            | Self::ArchivedAt => CellKind::Time,
             Self::Version | Self::IsDeleted => CellKind::Int,
         }
     }
@@ -189,7 +194,7 @@ impl Column {
     pub fn nullable(self) -> bool {
         matches!(
             self,
-            Self::Owner | Self::CreatedBy | Self::UpdatedBy | Self::DeletedAt
+            Self::Owner | Self::CreatedBy | Self::UpdatedBy | Self::DeletedAt | Self::ArchivedAt
         )
     }
 }
@@ -251,10 +256,12 @@ pub enum Standard {
     Version,
     IsDeleted,
     DeletedAt,
+    /// When the record was archived (ADR 0035 G1), or null.
+    ArchivedAt,
 }
 
 impl Standard {
-    pub const ALL: [Standard; 11] = [
+    pub const ALL: [Standard; 12] = [
         Self::Id,
         Self::Name,
         Self::Owner,
@@ -266,6 +273,7 @@ impl Standard {
         Self::Version,
         Self::IsDeleted,
         Self::DeletedAt,
+        Self::ArchivedAt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -281,6 +289,7 @@ impl Standard {
             Self::Version => "version",
             Self::IsDeleted => "is_deleted",
             Self::DeletedAt => "deleted_at",
+            Self::ArchivedAt => "archived_at",
         }
     }
 
@@ -296,7 +305,11 @@ impl Standard {
             Self::Id => "id",
             Self::Name => "text",
             Self::Owner | Self::CreatedBy | Self::UpdatedBy => "user",
-            Self::CreatedAt | Self::UpdatedAt | Self::TouchedAt | Self::DeletedAt => "date_time",
+            Self::CreatedAt
+            | Self::UpdatedAt
+            | Self::TouchedAt
+            | Self::DeletedAt
+            | Self::ArchivedAt => "date_time",
             Self::Version => "number",
             Self::IsDeleted => "boolean",
         }
@@ -315,6 +328,7 @@ impl Standard {
             Self::Version => Column::Version,
             Self::IsDeleted => Column::IsDeleted,
             Self::DeletedAt => Column::DeletedAt,
+            Self::ArchivedAt => Column::ArchivedAt,
         }
     }
 }
@@ -387,6 +401,8 @@ pub struct Catalog<'a> {
     pub targets: &'a BTreeMap<Uuid, (ObjectDefinition, Option<Visibility>)>,
     pub now: DateTime<Utc>,
     pub include_deleted: bool,
+    /// Include archived records (ADR 0035 G1).
+    pub include_archived: bool,
     /// Formula fields of the base object and targets whose values are
     /// stored, so they can be filtered, sorted and grouped (ADR 0021 §6).
     pub stored_formulas: &'a BTreeSet<Uuid>,
@@ -535,7 +551,8 @@ fn category(
                 Standard::CreatedAt
                 | Standard::UpdatedAt
                 | Standard::TouchedAt
-                | Standard::DeletedAt => Category::Time,
+                | Standard::DeletedAt
+                | Standard::ArchivedAt => Category::Time,
                 Standard::Version => Category::Int,
                 Standard::IsDeleted => Category::Deleted,
             };
@@ -945,10 +962,11 @@ impl<'a> Catalog<'a> {
         };
         Ok(Scope {
             object_id: self.base.id,
-            status: if self.include_deleted {
-                RecordStatus::Any
-            } else {
-                RecordStatus::Active
+            status: match (self.include_deleted, self.include_archived) {
+                // The recycle bin's records may be archived too.
+                (true, _) => RecordStatus::Any,
+                (false, true) => RecordStatus::All,
+                (false, false) => RecordStatus::Active,
             },
             visibility: self.base_visibility.clone(),
             predicate,
@@ -1451,6 +1469,7 @@ mod tests {
             targets: &fixture.targets,
             now: now(),
             include_deleted: false,
+            include_archived: false,
             stored_formulas: &BTreeSet::new(),
         };
         resolve(&parse(text).expect("parses"), &catalog)

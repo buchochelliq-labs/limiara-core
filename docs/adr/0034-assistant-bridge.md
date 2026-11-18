@@ -10,8 +10,21 @@ ADR 0032 (quick actions), ADR 0033 §4 (the Activity timeline) and
 ADR 0017 ("Change source", the `assistant` kind). Decides issue #232, with
 the assistant policy of #234 and the replica change feed and route context
 of #235. Quick actions on device replicas (#236) are a prerequisite of the
-bridge's quick-action operations. Nothing is implemented yet; the slices
-are listed under Consequences.
+bridge's quick-action operations. The slices are listed under
+Consequences.
+
+Slice 1 is delivered (2026-11-17): the assistant policy of §4 (the
+workspace switch, and per object exposed, writable, indexable with excluded
+fields and offered quick actions) in both stores with forced row-level
+security, the object routes (`/objects/assistant-policy` and
+`/objects/{object}/assistant-policy`) and the Object Manager, versioned,
+audited, published as `platform.objects.assistant-policy-updated.v1`,
+moving the metadata version and carried in replica definitions; and the
+server's re-check of pushed assistant writes with the push marker of §6
+(`assistant.not_allowed`, and `assistant.marker_not_accepted` for a marker
+from anything but a device's push). A marked quick action is named by its
+object and API name, since action names are unique only per object.
+Slices 2 to 4 are not implemented yet.
 
 Decided in review (2026-11-10):
 

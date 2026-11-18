@@ -261,6 +261,17 @@ impl SyncTransport for HttpTransport {
         }
     }
 
+    async fn assistant_policy(&self) -> Result<Option<Value>, SyncError> {
+        let (status, body) = self
+            .call(Method::GET, "/objects/assistant-policy", &[], None)
+            .await?;
+        match status {
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => Ok(None),
+            status if status.is_success() => Ok(Some(body)),
+            status => Err(server(status, &body)),
+        }
+    }
+
     async fn composite(
         &self,
         request: &CompositeRequest,

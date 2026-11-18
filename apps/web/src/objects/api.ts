@@ -179,7 +179,7 @@ export type Member = {id: string; name: string; managerId: string | null};
 /** One tracked change (ADR 0017). `field` is `name`, `owner` or a field API name for changes. */
 export type HistoryEntry = {
   id: string;
-  kind: 'created' | 'changed' | 'deleted' | 'undeleted';
+  kind: 'created' | 'changed' | 'deleted' | 'undeleted' | 'archived' | 'unarchived';
   field: string | null;
   oldValue: unknown;
   newValue: unknown;
@@ -238,6 +238,8 @@ export type ObjectRecord = {
   updatedBy: UserReference;
   version: number;
   isDeleted: boolean;
+  /** When the record was archived (ADR 0035 G1); archived records leave default lists but stay readable. */
+  archivedAt: string | null;
   values: Record<string, unknown>;
   /** Names of lookup targets the caller can read, by record id. */
   related: Record<string, string>;
@@ -249,7 +251,10 @@ export type ObjectRecord = {
 
 export type RecordPage = {records: ObjectRecord[]; nextCursor: string | null};
 
-export type RecordListQuery = {search?: string; status?: 'active' | 'deleted'; sort?: 'name' | 'created_at' | 'updated_at'; direction?: 'asc' | 'desc'; cursor?: string; limit?: number};
+/** Which records a list shows: live ones not archived (the default), archived ones, both, or the recycle bin. */
+export type RecordListStatus = 'active' | 'archived' | 'all' | 'deleted';
+
+export type RecordListQuery = {search?: string; status?: RecordListStatus; sort?: 'name' | 'created_at' | 'updated_at'; direction?: 'asc' | 'desc'; cursor?: string; limit?: number};
 
 export type ValidationIssue = {field: string; code: string; detail: string};
 
@@ -288,6 +293,19 @@ export type NewQuickAction = {name: string; label: string; kind: QuickActionKind
 export type QuickActionChanges = {label?: string; position?: number; fields?: string[]; presets?: Record<string, unknown>};
 /** Quick actions per object (ADR 0032 §2). */
 export const quickActionsMax = 10;
+/** The workspace's assistant switch (ADR 0034 §4): off, at version 0, until an administrator turns it on. */
+export type AssistantSettings = {enabled: boolean; version: number};
+/** One object's assistant policy. Writable, indexable and offered actions each require exposed; `name` in `excludedFields` is the record name. */
+export type AssistantPolicy = {object: string; exposed: boolean; writable: boolean; indexable: boolean; excludedFields: string[]; offeredActions: string[]; version: number};
+export type AssistantPolicyChanges = {exposed?: boolean; writable?: boolean; indexable?: boolean; excluded_fields?: string[]; offered_actions?: string[]};
+type ApiAssistantPolicy = {object: string; exposed?: unknown; writable?: unknown; indexable?: unknown; excluded_fields?: unknown; offered_actions?: unknown; version?: unknown};
+const stringList = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+export function assistantPolicyFromApi(policy: ApiAssistantPolicy): AssistantPolicy {
+  return {object: policy.object, exposed: policy.exposed === true, writable: policy.writable === true, indexable: policy.indexable === true, excludedFields: stringList(policy.excluded_fields), offeredActions: stringList(policy.offered_actions), version: typeof policy.version === 'number' ? policy.version : 0};
+}
+export function assistantSettingsFromApi(settings: {enabled?: unknown; version?: unknown}): AssistantSettings {
+  return {enabled: settings.enabled === true, version: typeof settings.version === 'number' ? settings.version : 0};
+}
 /** Record-triggered automations (ADR 0022). */
 export type AutomationTrigger = 'create' | 'update' | 'create_or_update' | 'delete' | 'undelete';
 export type AutomationTiming = 'before_save' | 'after_save' | 'async' | 'scheduled';
@@ -323,7 +341,7 @@ export type SearchOptions = {object?: string; limit?: number};
 export type QueryColumn = {key: string; type: string};
 /** Rows are keyed by each selected item; record rows always carry `id`. */
 export type QueryResult = {object: string; columns: QueryColumn[]; rows: Record<string, unknown>[]; nextCursor: string | null};
-export type QueryOptions = {cursor?: string; pageSize?: number; includeDeleted?: boolean};
+export type QueryOptions = {cursor?: string; pageSize?: number; includeDeleted?: boolean; includeArchived?: boolean};
 
 /** How a saved report shows its rows (ADR 0027). */
 export type ReportChart = 'table' | 'bar' | 'line' | 'pie' | 'metric';
@@ -377,6 +395,10 @@ export type ObjectsClient = {
   updateRecord(apiName: string, id: string, version: number, values: Record<string, unknown>): Promise<ObjectRecord>;
   deleteRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
   undeleteRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
+  /** Archives a record (ADR 0035 G1); an edit, so it needs edit access. */
+  archiveRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
+  /** Brings an archived record back to default lists. */
+  unarchiveRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
   getSharing(apiName: string, id: string, signal?: AbortSignal): Promise<RecordSharing>;
   history(apiName: string, id: string, cursor?: string, signal?: AbortSignal): Promise<HistoryPage>;
   /** The first records of each related list of a record (ADR 0028). */
@@ -399,6 +421,12 @@ export type ObjectsClient = {
   createQuickAction(apiName: string, input: NewQuickAction): Promise<QuickAction>;
   updateQuickAction(apiName: string, name: string, version: number, changes: QuickActionChanges): Promise<QuickAction>;
   deleteQuickAction(apiName: string, name: string, version: number): Promise<void>;
+  /** The workspace's assistant switch (ADR 0034 §4). */
+  assistantSettings(signal?: AbortSignal): Promise<AssistantSettings>;
+  updateAssistantSettings(version: number, enabled: boolean): Promise<AssistantSettings>;
+  /** One object's assistant policy; every setting is off until turned on. */
+  assistantPolicy(apiName: string, signal?: AbortSignal): Promise<AssistantPolicy>;
+  updateAssistantPolicy(apiName: string, version: number, changes: AssistantPolicyChanges): Promise<AssistantPolicy>;
   automations(apiName: string, signal?: AbortSignal): Promise<Automation[]>;
   createAutomation(apiName: string, input: NewAutomation): Promise<Automation>;
   updateAutomation(apiName: string, name: string, version: number, changes: AutomationChanges): Promise<Automation>;
@@ -500,7 +528,7 @@ function reportFromApi(report: ApiReport): Report {
 export function recordFromApi(record: ApiRecord): ObjectRecord {
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) if (!standardKeys.has(key)) values[key] = value;
-  return {id: record.id, name: record.name, owner: record.owner ?? null, createdAt: record.created_at, createdBy: record.created_by ?? null, updatedAt: record.updated_at, updatedBy: record.updated_by ?? null, version: record.version, isDeleted: record.is_deleted === true, values, related: record.related && typeof record.related === 'object' ? Object.fromEntries(Object.entries(record.related).filter(([, name]) => typeof name === 'string')) : {}, relatedObjects: stringMap(record.related_objects), ...(isRights(record.access) ? {rights: record.access} : {})};
+  return {id: record.id, name: record.name, owner: record.owner ?? null, createdAt: record.created_at, createdBy: record.created_by ?? null, updatedAt: record.updated_at, updatedBy: record.updated_by ?? null, version: record.version, isDeleted: record.is_deleted === true, archivedAt: typeof record.archived_at === 'string' ? record.archived_at : null, values, related: record.related && typeof record.related === 'object' ? Object.fromEntries(Object.entries(record.related).filter(([, name]) => typeof name === 'string')) : {}, relatedObjects: stringMap(record.related_objects), ...(isRights(record.access) ? {rights: record.access} : {})};
 }
 
 function isRights(value: unknown): value is RecordRights {
@@ -593,6 +621,12 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     async undeleteRecord(apiName, id, version) {
       return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/undelete?expected_version=${version}`, {method: 'POST'}));
     },
+    async archiveRecord(apiName, id, version) {
+      return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/archive?expected_version=${version}`, {method: 'POST'}));
+    },
+    async unarchiveRecord(apiName, id, version) {
+      return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/unarchive?expected_version=${version}`, {method: 'POST'}));
+    },
     async getSharing(apiName, id, signal) {
       const body = await request<{owner: UserReference; version: number; access: RecordRights; shares: ApiShare[]}>(`${object(apiName)}/records/${encodeURIComponent(id)}/sharing`, {signal});
       return {owner: body.owner ?? null, version: body.version, access: body.access, shares: body.shares.map(share => ({granteeKind: share.grantee_kind, granteeId: share.grantee_id, granteeName: share.grantee_name ?? null, access: share.access, createdAt: share.created_at}))};
@@ -666,6 +700,18 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     async deleteQuickAction(apiName, name, version) {
       await request<unknown>(`${object(apiName)}/quick-actions/${encodeURIComponent(name)}?expected_version=${version}`, {method: 'DELETE'});
     },
+    async assistantSettings(signal) {
+      return assistantSettingsFromApi(await request<{enabled?: unknown; version?: unknown}>(`${base}/assistant-policy`, {signal}));
+    },
+    async updateAssistantSettings(version, enabled) {
+      return assistantSettingsFromApi(await request<{enabled?: unknown; version?: unknown}>(`${base}/assistant-policy`, {method: 'PATCH', json: {enabled, expected_version: version}}));
+    },
+    async assistantPolicy(apiName, signal) {
+      return assistantPolicyFromApi(await request<ApiAssistantPolicy>(`${object(apiName)}/assistant-policy`, {signal}));
+    },
+    async updateAssistantPolicy(apiName, version, changes) {
+      return assistantPolicyFromApi(await request<ApiAssistantPolicy>(`${object(apiName)}/assistant-policy`, {method: 'PATCH', json: {...changes, expected_version: version}}));
+    },
     async automations(apiName, signal) {
       const body = await request<{data: ApiAutomation[]}>(`${object(apiName)}/automations`, {signal});
       return body.data.map(automationFromApi);
@@ -724,6 +770,7 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
       if (options.cursor) params.set('cursor', options.cursor);
       if (options.pageSize !== undefined) params.set('page_size', String(options.pageSize));
       if (options.includeDeleted) params.set('include_deleted', 'true');
+      if (options.includeArchived) params.set('include_archived', 'true');
       const body = await request<{object: string; columns: QueryColumn[]; data: Record<string, unknown>[]; next_cursor: string | null}>(`${workspaceBase}/query?${params}`, {signal});
       return {object: body.object, columns: body.columns, rows: body.data, nextCursor: body.next_cursor ?? null};
     },
@@ -762,8 +809,8 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     ],
   }];
   const records: Record<string, ObjectRecord[]> = {'custom:project': [
-    {id: '0000000000000001', name: 'Apollo', owner: fixtureUser, createdAt: '2026-09-01T09:00:00Z', createdBy: fixtureUser, updatedAt: '2026-09-02T09:00:00Z', updatedBy: fixtureUser, version: 1, isDeleted: false, values: {'custom:status': 'open', 'custom:code': 'AP-1', 'custom:budget': 1250.5, 'custom:starts_on': '2026-11-02'}, related: {}},
-    {id: '0000000000000002', name: 'Gemini', owner: fixtureUser, createdAt: '2026-09-03T09:00:00Z', createdBy: fixtureUser, updatedAt: '2026-09-03T09:00:00Z', updatedBy: fixtureUser, version: 1, isDeleted: false, values: {'custom:status': 'won', 'custom:code': 'GE-1'}, related: {}},
+    {id: '0000000000000001', name: 'Apollo', owner: fixtureUser, createdAt: '2026-09-01T09:00:00Z', createdBy: fixtureUser, updatedAt: '2026-09-02T09:00:00Z', updatedBy: fixtureUser, version: 1, isDeleted: false, archivedAt: null, values: {'custom:status': 'open', 'custom:code': 'AP-1', 'custom:budget': 1250.5, 'custom:starts_on': '2026-11-02'}, related: {}},
+    {id: '0000000000000002', name: 'Gemini', owner: fixtureUser, createdAt: '2026-09-03T09:00:00Z', createdBy: fixtureUser, updatedAt: '2026-09-03T09:00:00Z', updatedBy: fixtureUser, version: 1, isDeleted: false, archivedAt: null, values: {'custom:status': 'won', 'custom:code': 'GE-1'}, related: {}},
   ]};
   let sequence = 3;
   const members: Member[] = [{id: 'usr-hannah', name: 'Hannah Okafor', managerId: null}, {id: 'usr-morgan', name: 'Morgan Lee', managerId: 'usr-hannah'}];
@@ -771,6 +818,9 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
   const rules: Record<string, ValidationRule[]> = {};
   const automations: Record<string, Automation[]> = {};
   const quickActions: Record<string, QuickAction[]> = {};
+  let assistant: AssistantSettings = {enabled: false, version: 0};
+  const policies: Record<string, AssistantPolicy> = {};
+  const offPolicy = (apiName: string): AssistantPolicy => ({object: apiName, exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0});
   const byPosition = (left: QuickAction, right: QuickAction) => left.position - right.position || left.name.localeCompare(right.name);
   const fullRights: RecordRights = {read: true, edit: true, delete: true, share: true, transfer: true};
   const find = (apiName: string) => {
@@ -819,8 +869,9 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     async listRecords(apiName, query) {
       find(apiName);
       const search = query.search?.toLowerCase() ?? '';
-      const deleted = query.status === 'deleted';
-      const matching = (records[apiName] ?? []).filter(item => item.isDeleted === deleted && item.name.toLowerCase().includes(search));
+      const status = query.status ?? 'active';
+      const shown = (item: ObjectRecord) => status === 'deleted' ? item.isDeleted : !item.isDeleted && (status === 'all' || (status === 'archived') === (item.archivedAt !== null));
+      const matching = (records[apiName] ?? []).filter(item => shown(item) && item.name.toLowerCase().includes(search));
       return {records: structuredClone(matching), nextCursor: null};
     },
     async getRecord(apiName, id) {
@@ -833,7 +884,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       const {name, ...rest} = values;
       if (typeof name !== 'string' || !name.trim()) throw new ObjectsApiError('invalid', 'validation.failed', [{field: 'name', code: 'records.name_required', detail: 'enter a name'}]);
       const defaults = Object.fromEntries(object.fields.flatMap(item => item.options.filter(option => option.default).map(option => [item.apiName, option.value])));
-      const created: ObjectRecord = {id: `${object.keyPrefix}${String(sequence++).padStart(13, '0')}`, name: name.trim(), owner: fixtureUser, createdAt: new Date().toISOString(), createdBy: fixtureUser, updatedAt: new Date().toISOString(), updatedBy: fixtureUser, version: 1, isDeleted: false, values: {...defaults, ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== null))}, related: {}};
+      const created: ObjectRecord = {id: `${object.keyPrefix}${String(sequence++).padStart(13, '0')}`, name: name.trim(), owner: fixtureUser, createdAt: new Date().toISOString(), createdBy: fixtureUser, updatedAt: new Date().toISOString(), updatedBy: fixtureUser, version: 1, isDeleted: false, archivedAt: null, values: {...defaults, ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== null))}, related: {}};
       (records[apiName] ??= []).push(created);
       return structuredClone(created);
     },
@@ -861,6 +912,22 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       stamp(found, {isDeleted: false});
       return structuredClone(found);
     },
+    async archiveRecord(apiName, id, version) {
+      const found = record(apiName, id);
+      if (found.isDeleted) throw new ObjectsApiError('conflict', 'records.deleted');
+      if (found.archivedAt !== null) throw new ObjectsApiError('conflict', 'records.already_archived');
+      if (found.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      stamp(found, {archivedAt: new Date().toISOString()});
+      return structuredClone(found);
+    },
+    async unarchiveRecord(apiName, id, version) {
+      const found = record(apiName, id);
+      if (found.isDeleted) throw new ObjectsApiError('conflict', 'records.deleted');
+      if (found.archivedAt === null) throw new ObjectsApiError('conflict', 'records.not_archived');
+      if (found.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      stamp(found, {archivedAt: null});
+      return structuredClone(found);
+    },
     async updateField(apiName, fieldName, version, changes) {
       const target = find(apiName).fields.find(item => item.apiName === fieldName);
       if (!target) throw new ObjectsApiError('missing');
@@ -871,7 +938,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     async relatedLists(apiName, id) {
       record(apiName, id);
       return objects.flatMap(child => child.fields.filter(item => referenceTargets(item).includes(apiName)).map(item => {
-        const pointing = (records[child.apiName] ?? []).filter(row => !row.isDeleted && row.values[item.apiName] === id).sort((a, b) => a.name.localeCompare(b.name));
+        const pointing = (records[child.apiName] ?? []).filter(row => !row.isDeleted && row.archivedAt === null && row.values[item.apiName] === id).sort((a, b) => a.name.localeCompare(b.name));
         return {object: child.apiName, objectLabel: child.label, objectPluralLabel: child.pluralLabel, field: item.apiName, fieldLabel: item.label, masterDetail: item.type === 'master_detail', records: pointing.map(row => ({id: row.id, name: row.name})), nextCursor: null};
       }));
     },
@@ -913,7 +980,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       if (!found || !target) throw new ObjectsApiError('missing');
       if (!targets.includes(target)) throw new ObjectsApiError('invalid', 'records.reference_object_not_allowed');
       const term = search.trim().toLowerCase();
-      const matching = (records[target] ?? []).filter(row => !row.isDeleted && row.name.toLowerCase().includes(term)).sort((a, b) => a.name.localeCompare(b.name));
+      const matching = (records[target] ?? []).filter(row => !row.isDeleted && row.archivedAt === null && row.name.toLowerCase().includes(term)).sort((a, b) => a.name.localeCompare(b.name));
       return {records: matching.map(row => ({id: row.id, name: row.name})), nextCursor: null};
     },
     async history(apiName, id) {
@@ -969,6 +1036,43 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       return structuredClone(rule);
     },
     async deleteValidationRule(apiName, name) { rules[apiName] = (rules[apiName] ?? []).filter(rule => rule.name !== name); },
+    async assistantSettings() { return {...assistant}; },
+    async updateAssistantSettings(version, enabled) {
+      if (assistant.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      assistant = {enabled, version: version + 1};
+      return {...assistant};
+    },
+    async assistantPolicy(apiName) {
+      find(apiName);
+      return structuredClone(policies[apiName] ?? offPolicy(apiName));
+    },
+    async updateAssistantPolicy(apiName, version, changes) {
+      const object = find(apiName);
+      const current = policies[apiName] ?? offPolicy(apiName);
+      if (current.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      const next: AssistantPolicy = {
+        ...current,
+        ...(changes.exposed !== undefined ? {exposed: changes.exposed} : {}),
+        ...(changes.writable !== undefined ? {writable: changes.writable} : {}),
+        ...(changes.indexable !== undefined ? {indexable: changes.indexable} : {}),
+        ...(changes.excluded_fields !== undefined ? {excludedFields: [...changes.excluded_fields]} : {}),
+        ...(changes.offered_actions !== undefined ? {offeredActions: [...changes.offered_actions]} : {}),
+        version: version + 1,
+      };
+      const issues: ValidationIssue[] = [];
+      for (const setting of ['writable', 'indexable'] as const) if (next[setting] && !next.exposed) issues.push({field: setting, code: 'assistant_policy.requires_exposed', detail: `expose ${object.label} to assistants first`});
+      for (const apiName of next.excludedFields) if (apiName !== 'name' && !object.fields.some(item => item.apiName === apiName)) issues.push({field: `excluded_fields.${apiName}`, code: 'assistant_policy.field_unknown', detail: `${object.apiName} has no field ${apiName}`});
+      for (const name of next.offeredActions) {
+        const action = (quickActions[apiName] ?? []).find(item => item.name === name);
+        if (!action) { issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.action_unknown', detail: `${object.apiName} has no quick action ${name}`}); continue; }
+        if (!next.exposed) { issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.requires_exposed', detail: `expose ${object.label} to assistants first`}); continue; }
+        const writes = action.kind === 'update' ? next : action.targetObject === apiName ? next : policies[action.targetObject ?? ''];
+        if (!writes?.writable) issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.action_not_writable', detail: 'let assistants write that object first'});
+      }
+      if (issues.length) throw new ObjectsApiError('invalid', 'validation.failed', issues);
+      policies[apiName] = next;
+      return structuredClone(next);
+    },
     async quickActions(apiName) { find(apiName); return structuredClone(quickActions[apiName] ?? []); },
     async createQuickAction(apiName, input) {
       find(apiName);
@@ -1047,7 +1151,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       if (terms.join('').length < 2) throw new ObjectsApiError('invalid', 'search.too_short');
       const limit = options.limit ?? 5;
       return objects.filter(object => !options.object || object.apiName === options.object).flatMap(object => {
-        const matches = (records[object.apiName] ?? []).filter(item => !item.isDeleted && terms.every(term => item.name.toLowerCase().split(/[^\p{L}\p{N}]+/u).some(word => word.startsWith(term))));
+        const matches = (records[object.apiName] ?? []).filter(item => !item.isDeleted && item.archivedAt === null && terms.every(term => item.name.toLowerCase().split(/[^\p{L}\p{N}]+/u).some(word => word.startsWith(term))));
         return matches.length ? [{object: object.apiName, label: object.label, pluralLabel: object.pluralLabel, records: matches.slice(0, limit).map(item => ({id: item.id, name: item.name, fields: {}})), hasMore: matches.length > limit}] : [];
       });
     },

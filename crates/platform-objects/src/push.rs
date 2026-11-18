@@ -151,6 +151,7 @@ impl ObjectService {
                             reference,
                             object: object_name,
                             values,
+                            assistant: None,
                         },
                         held_back,
                     )
@@ -168,6 +169,7 @@ impl ObjectService {
                             id: id.clone(),
                             expected_version,
                             values,
+                            assistant: None,
                         },
                         held_back,
                     )

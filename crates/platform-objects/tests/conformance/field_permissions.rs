@@ -585,6 +585,38 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .expect("viewer reads");
     assert_eq!(seen.values["custom:secret"], json!("zebra"));
 
+    // The assistant policy (ADR 0034 §4) never names a field the member
+    // cannot read: its excluded fields follow the member's description.
+    let policy = manager
+        .update_object_assistant_policy(
+            "custom:account",
+            change(
+                json!({"expected_version": 0, "exposed": true, "indexable": true,
+                          "excluded_fields": ["custom:region", "custom:salary"]}),
+            ),
+            context(),
+        )
+        .await
+        .expect("assistant policy");
+    assert_eq!(policy.excluded_fields, ["custom:region", "custom:salary"]);
+    for (member, expected) in [
+        (&viewer, &["custom:region"][..]),
+        (&reader, &["custom:region", "custom:salary"][..]),
+    ] {
+        let one = member
+            .object_assistant_policy("custom:account")
+            .await
+            .expect("policy");
+        assert_eq!(one.excluded_fields, expected);
+        let all = member.assistant_policy().await.expect("policies");
+        let listed = all
+            .objects
+            .iter()
+            .find(|policy| policy.object == "custom:account")
+            .expect("listed");
+        assert_eq!(listed.excluded_fields, expected);
+    }
+
     quick_actions(&store, tenant).await;
 }
 
@@ -820,6 +852,7 @@ pub async fn replica(store: Arc<dyn ObjectStore>) {
         updated_by: None,
         touched_at: at,
         deleted_at: None,
+        archived_at: None,
     };
     let applied = device
         .apply_remote("custom:account", &remote, None)

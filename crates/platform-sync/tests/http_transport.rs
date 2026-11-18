@@ -230,6 +230,7 @@ async fn the_transport_speaks_the_workspace_api() {
                 id: "a0B1".into(),
                 expected_version: 1,
                 values: serde_json::Map::new(),
+                assistant: None,
             }],
         })
         .await

@@ -194,6 +194,16 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
             patch(handlers::update_quick_action::<H>).delete(handlers::delete_quick_action::<H>),
         )
         .route(
+            "/api/v1/workspaces/:workspace_id/objects/assistant-policy",
+            get(handlers::workspace_assistant_policy::<H>)
+                .patch(handlers::update_assistant_settings::<H>),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/assistant-policy",
+            get(handlers::object_assistant_policy::<H>)
+                .patch(handlers::update_object_assistant_policy::<H>),
+        )
+        .route(
             "/api/v1/workspaces/:workspace_id/reports",
             get(handlers::list_reports::<H>).post(handlers::create_report::<H>),
         )
@@ -272,6 +282,14 @@ pub fn routes<H: ObjectsHost>() -> Router<H> {
         .route(
             "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/undelete",
             post(handlers::undelete_record::<H>),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/archive",
+            post(handlers::archive_record::<H>),
+        )
+        .route(
+            "/api/v1/workspaces/:workspace_id/objects/:object/records/:record/unarchive",
+            post(handlers::unarchive_record::<H>),
         )
         .route(
             "/api/v1/workspaces/:workspace_id/search",

@@ -156,7 +156,8 @@ export default {
             { text: "Quick actions and global New", link: "/adr/0032-quick-actions" },
             { text: "Activities", link: "/adr/0033-activities" },
             { text: "The assistant bridge", link: "/adr/0034-assistant-bridge" },
-            { text: "Contacts on the object engine", link: "/adr/0035-contacts-on-the-object-engine" }
+            { text: "Contacts on the object engine", link: "/adr/0035-contacts-on-the-object-engine" },
+            { text: "Record drafts", link: "/adr/0036-record-drafts" }
           ]
         }
       ],

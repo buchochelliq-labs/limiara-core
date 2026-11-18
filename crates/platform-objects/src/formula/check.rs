@@ -43,9 +43,11 @@ fn related_to_unsupported(name: &str, position: usize) -> FormulaError {
 
 fn standard_type(standard: Standard) -> Type {
     match standard {
-        Standard::CreatedAt | Standard::UpdatedAt | Standard::TouchedAt | Standard::DeletedAt => {
-            Type::DateTime
-        }
+        Standard::CreatedAt
+        | Standard::UpdatedAt
+        | Standard::TouchedAt
+        | Standard::DeletedAt
+        | Standard::ArchivedAt => Type::DateTime,
         Standard::Version => Type::Number,
         Standard::IsDeleted => Type::Boolean,
         _ => Type::Text,

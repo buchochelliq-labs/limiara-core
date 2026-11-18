@@ -3,6 +3,9 @@
 
 #![allow(dead_code)]
 
+pub mod archive;
+pub mod assistant_policy;
+pub mod assistant_policy_replicas;
 pub mod automations;
 pub mod bulk;
 pub mod client_ids;

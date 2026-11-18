@@ -25,6 +25,8 @@ pub struct RemoteRecord {
     pub updated_at: DateTime<Utc>,
     pub updated_by: Option<Uuid>,
     pub touched_at: DateTime<Utc>,
+    /// When the server archived the record (ADR 0035 G1), or `None`.
+    pub archived_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
@@ -55,7 +57,7 @@ pub enum Applied {
 
 impl ObjectService {
     /// Stores a record the server sent in a replica, as the server has it:
-    /// its version, owner, stamps and recycle bin state. Only a replica's
+    /// its version, owner, stamps, archive and recycle bin state. Only a replica's
     /// engine may (`with_replica`). Nothing is validated, automated or
     /// logged, since the server already did all of it. Fields the replica
     /// does not define are dropped, and formula values are computed on
@@ -138,8 +140,8 @@ impl ObjectService {
     }
 
     /// Stores the server's copy of a record as the local one, whatever the
-    /// member changed: its version, owner, stamps, values and recycle bin
-    /// state. The member's changes so far count as part of the copy.
+    /// member changed: its version, owner, stamps, values, archive and
+    /// recycle bin state. The member's changes so far count as part of the copy.
     async fn take_remote(
         &self,
         tx: &mut dyn ObjectTx,
@@ -161,7 +163,7 @@ impl ObjectService {
             updated_at: remote.updated_at,
             updated_by: remote.updated_by,
             touched_at: remote.touched_at,
-            archived_at: existing.and_then(|current| current.archived_at),
+            archived_at: remote.archived_at,
             deleted_at: remote.deleted_at,
         };
         match existing {

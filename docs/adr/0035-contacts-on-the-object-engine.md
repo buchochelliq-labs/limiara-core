@@ -7,8 +7,19 @@ leaves Contacts on its typed store "until it is migrated"), ADR 0033 §2
 (plugin-declared engine objects), ADR 0012 (plugin extensions), ADR 0013
 (storage backends), ADR 0014 (standard record fields), ADR 0016 (sharing),
 ADR 0017 (field history and change sources) and ADR 0011 (UX). This is a
-design only; nothing in it is implemented yet. Delivery slices are in §8 and
-`docs/roadmap/README.md`.
+design; delivery slices are in §8 and `docs/roadmap/README.md`.
+
+Delivered (2026-11-17): gap G1, archiving engine records, on both stores:
+archive and unarchive routes (edits needing edit access), `status=archived`
+and `status=all` on lists, `archived_at` and `include_archived` in the query
+language, `platform.objects.record-archived.v1` and `-unarchived.v1`,
+`archived` and `unarchived` history entries, `updated` change-log entries
+naming `archived_at`, replicas taking the server's archive state, and the
+Archive action on the generic record page. Archived records stay readable
+and editable, and are left out of default lists, queries, global search,
+lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
+Archiving on a synced device offline is not part of it: the bridge answers
+`sync.server_only`. Every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
 

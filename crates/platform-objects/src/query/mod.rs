@@ -51,8 +51,11 @@ pub struct QueryRequest {
     pub q: String,
     pub cursor: Option<String>,
     pub page_size: Option<u16>,
-    /// Include records in the recycle bin.
+    /// Include records in the recycle bin, archived or not.
     pub include_deleted: bool,
+    /// Include archived records (ADR 0035 G1), which queries leave out
+    /// by default as lists do.
+    pub include_archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,6 +88,11 @@ fn fingerprint(request: &QueryRequest) -> String {
     let mut digest = Sha256::new();
     digest.update(request.q.as_bytes());
     digest.update([0, u8::from(request.include_deleted)]);
+    // Only a query that includes archived records hashes the flag, so
+    // cursors issued before it existed stay valid.
+    if request.include_archived {
+        digest.update([1]);
+    }
     digest
         .finalize()
         .iter()
@@ -124,6 +132,7 @@ fn sort_value(record: &Record, leaf: &Leaf) -> Option<Param> {
             Standard::UpdatedAt => Some(Param::Time(micros(record.updated_at))),
             Standard::TouchedAt => Some(Param::Time(micros(record.touched_at))),
             Standard::DeletedAt => record.deleted_at.map(|time| Param::Time(micros(time))),
+            Standard::ArchivedAt => record.archived_at.map(|time| Param::Time(micros(time))),
             Standard::Version => Some(Param::Int(record.version)),
             Standard::IsDeleted => Some(Param::Int(i64::from(record.deleted_at.is_some()))),
             Standard::Owner | Standard::CreatedBy | Standard::UpdatedBy => None,
@@ -191,6 +200,7 @@ fn standard_json(record: &Record, standard: Standard) -> Value {
         Standard::Version => Value::from(record.version),
         Standard::IsDeleted => Value::Bool(record.deleted_at.is_some()),
         Standard::DeletedAt => record.deleted_at.map_or(Value::Null, time_json),
+        Standard::ArchivedAt => record.archived_at.map_or(Value::Null, time_json),
     }
 }
 
@@ -263,7 +273,8 @@ async fn visible_by_public_id(
         let plan = RecordPlan {
             scope: Scope {
                 object_id: hop.object_id,
-                status: RecordStatus::Active,
+                // Archived targets are readable by id, so paths reach them.
+                status: RecordStatus::All,
                 visibility: hop.visibility.clone(),
                 predicate: Some(Predicate::Test {
                     hops: Vec::new(),
@@ -495,6 +506,7 @@ impl ObjectService {
             targets: &targets,
             now: Utc::now(),
             include_deleted: request.include_deleted,
+            include_archived: request.include_archived,
             stored_formulas: &stored_formulas,
         };
         let resolved = plan::resolve(&query, &catalog)?;

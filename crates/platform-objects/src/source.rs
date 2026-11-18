@@ -74,8 +74,10 @@ impl SourceKind {
     }
 }
 
-/// The assistants a device's assistant bridge may name (#232).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The assistants a device's assistant bridge may name (#232), as
+/// `"siri"` and `"gemini"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Assistant {
     Siri,
     Gemini,

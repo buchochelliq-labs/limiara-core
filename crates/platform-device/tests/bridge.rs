@@ -81,11 +81,27 @@ async fn authenticate(mut request: Request, next: Next) -> Response {
     let (Some(user_id), Some(tenant_id)) = (user, tenant) else {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
+    // Tests that act as an administrator, or as a device whose token the
+    // server verified, say so in their own headers.
+    let (permissions, device) = {
+        let header = |name: &str| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let permissions: BTreeSet<String> = header("x-test-permissions")
+            .map(|list| list.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
+        let device = header("x-test-device").and_then(|value| Uuid::parse_str(&value).ok());
+        (permissions, device)
+    };
     request.extensions_mut().insert(Caller {
         tenant_id,
         user_id,
-        permissions: BTreeSet::new(),
-        source: platform_objects::MutationSource::device(None),
+        permissions,
+        source: platform_objects::MutationSource::device(device),
     });
     next.run(request).await
 }
@@ -109,6 +125,8 @@ struct World {
     client: SyncClient<HttpTransport>,
     bridge: Bridge,
     device_files: Arc<SqliteTenantDatabases>,
+    /// The server's routes, for requests the device does not make.
+    server: axum::Router,
 }
 
 impl World {
@@ -232,6 +250,7 @@ impl World {
             .layer(middleware::from_fn(authenticate))
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .with_state(server);
+        let server_app = app.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("port");
@@ -294,7 +313,50 @@ impl World {
             client,
             bridge,
             device_files,
+            server: server_app,
         }
+    }
+
+    /// A request straight to the server, as `user`, with test headers.
+    async fn server_call(
+        &self,
+        user: Uuid,
+        headers: &[(&str, String)],
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (u16, Value) {
+        use tower::ServiceExt;
+        let mut request = http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {user}"));
+        for (name, value) in headers {
+            request = request.header(*name, value);
+        }
+        let body = match body {
+            Some(body) => {
+                request = request.header("content-type", "application/json");
+                axum::body::Body::from(serde_json::to_vec(&body).expect("body"))
+            }
+            None => axum::body::Body::empty(),
+        };
+        let response = self
+            .server
+            .clone()
+            .oneshot(request.body(body).expect("request"))
+            .await
+            .expect("response");
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("JSON response")
+        };
+        (status, value)
     }
 
     fn path(&self, rest: &str) -> String {
@@ -717,4 +779,302 @@ async fn quick_actions_reach_the_device_and_run_offline() {
     );
     let (_, listed) = world.call("GET", &actions_path, None).await;
     assert_eq!(listed["data"].as_array().map(Vec::len), Some(1), "{listed}");
+}
+
+#[tokio::test]
+async fn the_assistant_policy_reaches_the_device_and_guards_pushed_writes() {
+    let world = World::new().await;
+    let member = world.member_id;
+    let admin = Uuid::now_v7();
+    let manage = [("x-test-permissions", OBJECTS_MANAGE_PERMISSION.to_owned())];
+    let workspace_path = world.path("/objects/assistant-policy");
+    let account_path = world.path("/objects/custom:account/assistant-policy");
+
+    // Everything is off; any member reads it, only administrators change it.
+    let (status, policy) = world
+        .server_call(member, &[], "GET", &workspace_path, None)
+        .await;
+    assert_eq!(status, 200, "{policy}");
+    assert_eq!(policy["enabled"], false);
+    assert_eq!(policy["version"], 0);
+    assert_eq!(policy["objects"][0]["object"], ACCOUNT);
+    assert_eq!(policy["objects"][0]["exposed"], false);
+    assert_eq!(policy["objects"][0]["excluded_fields"], json!([]));
+    let (status, refused) = world
+        .server_call(
+            member,
+            &[],
+            "PATCH",
+            &workspace_path,
+            Some(json!({"expected_version": 0, "enabled": true})),
+        )
+        .await;
+    assert_eq!(
+        (status, refused["code"].clone()),
+        (403, json!("auth.permission_denied"))
+    );
+    let (status, refused) = world
+        .server_call(
+            member,
+            &[],
+            "PATCH",
+            &account_path,
+            Some(json!({"expected_version": 0, "exposed": true})),
+        )
+        .await;
+    assert_eq!(
+        (status, refused["code"].clone()),
+        (403, json!("auth.permission_denied"))
+    );
+
+    // The rules answer with stable codes.
+    let (status, refused) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &account_path,
+            Some(json!({"expected_version": 0, "writable": true})),
+        )
+        .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(refused["code"], "validation.failed");
+    assert_eq!(refused["errors"][0]["field"], "writable");
+    assert_eq!(
+        refused["errors"][0]["code"],
+        "assistant_policy.requires_exposed"
+    );
+    let (status, refused) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &account_path,
+            Some(json!({"expected_version": 0, "exposed": "yes"})),
+        )
+        .await;
+    assert_eq!(
+        (status, refused["code"].clone()),
+        (400, json!("validation.failed"))
+    );
+    let (status, _) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &world.path("/objects/custom:missing/assistant-policy"),
+            Some(json!({"expected_version": 0, "exposed": true})),
+        )
+        .await;
+    assert_eq!(status, 404);
+
+    // Turned on, versioned.
+    let (status, switch) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &workspace_path,
+            Some(json!({"expected_version": 0, "enabled": true})),
+        )
+        .await;
+    assert_eq!(status, 200, "{switch}");
+    assert_eq!(
+        (switch["enabled"].clone(), switch["version"].clone()),
+        (json!(true), json!(1))
+    );
+    let (status, stale) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &workspace_path,
+            Some(json!({"expected_version": 0, "enabled": false})),
+        )
+        .await;
+    assert_eq!(
+        (status, stale["code"].clone()),
+        (409, json!("records.version_conflict"))
+    );
+    let (status, account) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &account_path,
+            Some(
+                json!({"expected_version": 0, "exposed": true, "writable": true,
+                        "indexable": true, "excluded_fields": ["custom:notes"]}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 200, "{account}");
+    assert_eq!(account["version"], 1);
+    assert_eq!(account["excluded_fields"], json!(["custom:notes"]));
+    assert_eq!(account["updated_by"]["id"], json!(admin));
+
+    // It moved the metadata version, so the next sync takes it.
+    let report = world.client.sync_once(context()).await.expect("sync");
+    let definitions = report.definitions.expect("definitions refreshed");
+    assert_eq!(
+        definitions.assistant_policy,
+        vec!["workspace", ACCOUNT],
+        "{definitions:?}"
+    );
+    let (status, on_device) = world.call("GET", &account_path, None).await;
+    assert_eq!(status, 200, "{on_device}");
+    assert_eq!(on_device["writable"], true);
+    assert_eq!(on_device["excluded_fields"], json!(["custom:notes"]));
+    let (_, on_device) = world.call("GET", &workspace_path, None).await;
+    assert_eq!(on_device["enabled"], true);
+    // The device takes the policy; it never changes it.
+    let (status, refused) = world
+        .call(
+            "PATCH",
+            &account_path,
+            Some(json!({"expected_version": 1, "exposed": false})),
+        )
+        .await;
+    assert_eq!(
+        (status, refused["code"].clone()),
+        (403, json!("sync.server_only"))
+    );
+    // Nothing on the device, the web view included, can claim an
+    // assistant's write.
+    let marked = json!({"operations": [{
+        "method": "create", "reference": "r0", "object": ACCOUNT,
+        "values": {"name": "Claimed"}, "assistant": {"assistant": "siri"}
+    }]});
+    let (status, answer) = world
+        .call("POST", &world.path("/composite"), Some(marked.clone()))
+        .await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["results"][0]["status"], 400);
+    assert_eq!(
+        answer["results"][0]["body"]["errors"][0]["code"],
+        "assistant.marker_not_accepted"
+    );
+
+    // A pushed assistant write is checked against the server's policy and
+    // recorded as the assistant's.
+    let device = [("x-test-device", Uuid::now_v7().to_string())];
+    let composite = world.path("/composite");
+    let (status, answer) = world
+        .server_call(member, &device, "POST", &composite, Some(marked.clone()))
+        .await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["results"][0]["status"], 201, "{answer}");
+    let created = answer["results"][0]["body"]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let on_server = world
+        .admin
+        .get_record(ACCOUNT, &created, false)
+        .await
+        .expect("created");
+    assert_eq!(on_server.name, "Claimed");
+    // A request no device token authenticated cannot claim one.
+    let (_, answer) = world
+        .server_call(member, &[], "POST", &composite, Some(marked.clone()))
+        .await;
+    assert_eq!(answer["results"][0]["status"], 400, "{answer}");
+
+    // Once the policy no longer allows it, the server refuses the push with
+    // a stable code, which the device keeps like any refused write.
+    let (status, _) = world
+        .server_call(
+            admin,
+            &manage,
+            "PATCH",
+            &account_path,
+            Some(json!({"expected_version": 1, "writable": false})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (_, answer) = world
+        .server_call(member, &device, "POST", &composite, Some(marked))
+        .await;
+    assert_eq!(answer["results"][0]["status"], 403, "{answer}");
+    assert_eq!(
+        answer["results"][0]["body"]["code"],
+        "assistant.not_allowed"
+    );
+    // An unmarked write is not the policy's business.
+    let (_, answer) = world
+        .server_call(
+            member,
+            &device,
+            "POST",
+            &composite,
+            Some(
+                json!({"operations": [{"method": "create", "reference": "r0",
+                "object": ACCOUNT, "values": {"name": "Typed"}}]}),
+            ),
+        )
+        .await;
+    assert_eq!(answer["results"][0]["status"], 201, "{answer}");
+}
+
+#[tokio::test]
+async fn the_replica_follows_the_servers_archive_state() {
+    let world = World::new().await;
+    let acme = world
+        .admin
+        .list_records(ACCOUNT, Default::default())
+        .await
+        .expect("server records")
+        .records
+        .into_iter()
+        .find(|record| record.name == "Acme")
+        .expect("acme");
+    let records = world.path("/objects/custom:account/records");
+    let one = format!("{records}/{}", acme.public_id);
+
+    // Archiving is the server's: the bridge refuses it, as it refuses every
+    // write the sync loop does not push.
+    for action in ["archive", "unarchive"] {
+        let (status, refused) = world
+            .call(
+                "POST",
+                &format!("{one}/{action}?expected_version={}", acme.version),
+                None,
+            )
+            .await;
+        assert_eq!(status, 403, "{action}: {refused}");
+        assert_eq!(refused["code"], "sync.server_only");
+    }
+
+    // The server archives it; the next pull brings the state down.
+    let archived = world
+        .admin
+        .archive_record(ACCOUNT, &acme.public_id, acme.version, context())
+        .await
+        .expect("archive on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, page) = world.call("GET", &records, None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"], json!([]), "default lists leave it out");
+    let (status, page) = world
+        .call("GET", &format!("{records}?status=archived"), None)
+        .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"][0]["name"], "Acme");
+    assert!(page["data"][0]["archived_at"].is_string(), "{page}");
+    let (status, read) = world.call("GET", &one, None).await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["version"], json!(archived.version));
+    assert!(read["archived_at"].is_string(), "{read}");
+
+    // Unarchived on the server, it comes back on the device.
+    world
+        .admin
+        .unarchive_record(ACCOUNT, &acme.public_id, archived.version, context())
+        .await
+        .expect("unarchive on the server");
+    world.client.sync_once(context()).await.expect("sync");
+    let (status, page) = world.call("GET", &records, None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["data"][0]["name"], "Acme");
+    assert!(page["data"][0]["archived_at"].is_null(), "{page}");
 }

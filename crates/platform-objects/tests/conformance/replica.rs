@@ -24,6 +24,7 @@ fn remote(public_id: &str, name: &str, version: i64) -> RemoteRecord {
         updated_at: at,
         updated_by: None,
         touched_at: at,
+        archived_at: None,
         deleted_at: None,
     }
 }

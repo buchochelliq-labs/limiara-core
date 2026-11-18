@@ -144,6 +144,7 @@ impl ObjectService {
             cursor: None,
             page_size: Some(1),
             include_deleted: false,
+            include_archived: false,
         };
         match self.query_in(tx, &access, &request).await {
             Ok(_) => Ok(()),
@@ -183,6 +184,9 @@ impl ObjectService {
             cursor: None,
             page_size: Some(1),
             include_deleted: false,
+            // The filter alone decides: an archived target still counts, as
+            // archiving hides a record from pickers, not from lookups.
+            include_archived: true,
         };
         // The filter is the administrator's condition: it reads every field,
         // and only whether the target meets it reaches the caller (G5).
@@ -287,6 +291,7 @@ impl ObjectService {
             cursor,
             page_size: Some(RELATED_PAGE),
             include_deleted: false,
+            include_archived: false,
         };
         // Candidates are named only; the field's filter reads every field,
         // as when a value is saved (G5).
@@ -380,6 +385,7 @@ impl ObjectService {
             cursor,
             page_size: Some(page_size),
             include_deleted: false,
+            include_archived: false,
         };
         self.query_in(tx, access, &request).await
     }

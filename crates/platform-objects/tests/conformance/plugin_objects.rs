@@ -70,6 +70,7 @@ async fn query(who: &ObjectService, q: &str) -> Result<QueryResult, ObjectError>
         cursor: None,
         page_size: None,
         include_deleted: false,
+        include_archived: false,
     })
     .await
 }
