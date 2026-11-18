@@ -22,6 +22,9 @@ pub const RECORD_UNDELETED_V1: &str = "platform.objects.record-undeleted.v1";
 /// A record was archived or came back from the archive (ADR 0035 G1).
 pub const RECORD_ARCHIVED_V1: &str = "platform.objects.record-archived.v1";
 pub const RECORD_UNARCHIVED_V1: &str = "platform.objects.record-unarchived.v1";
+/// The recycle-bin purge removed a record for good (ADR 0035 G2), one event
+/// per record. It names the record, never its values.
+pub const RECORD_PURGED_V1: &str = "platform.objects.record-purged.v1";
 pub const RECORD_OWNER_CHANGED_V1: &str = "platform.objects.record-owner-changed.v1";
 pub const RECORD_SHARING_CHANGED_V1: &str = "platform.objects.record-sharing-changed.v1";
 pub const VALIDATION_RULE_CREATED_V1: &str = "platform.objects.validation-rule-created.v1";
@@ -60,7 +63,7 @@ pub const ASSISTANT_POLICY_UPDATED_V1: &str = "platform.objects.assistant-policy
 /// themselves never leave the member's browser and have no events.
 pub const DRAFT_SETTINGS_UPDATED_V1: &str = "platform.objects.draft-settings-updated.v1";
 
-pub const ENGINE_EVENT_TYPES: [&str; 35] = [
+pub const ENGINE_EVENT_TYPES: [&str; 36] = [
     OBJECT_CREATED_V1,
     OBJECT_UPDATED_V1,
     OBJECT_DELETED_V1,
@@ -74,6 +77,7 @@ pub const ENGINE_EVENT_TYPES: [&str; 35] = [
     RECORD_UNDELETED_V1,
     RECORD_ARCHIVED_V1,
     RECORD_UNARCHIVED_V1,
+    RECORD_PURGED_V1,
     RECORD_OWNER_CHANGED_V1,
     RECORD_SHARING_CHANGED_V1,
     VALIDATION_RULE_CREATED_V1,
@@ -105,7 +109,8 @@ pub const ARCHIVED_AT: &str = "archived_at";
 #[derive(Debug, Clone, Copy)]
 pub struct EvidenceContext {
     pub tenant_id: Uuid,
-    pub actor_id: Uuid,
+    /// The member who made the change; `None` for the platform itself.
+    pub actor_id: Option<Uuid>,
     pub correlation_id: Uuid,
     pub causation_id: Option<Uuid>,
     /// The automation that made the change; named in the event and audit.
@@ -539,7 +544,7 @@ impl Change<'_> {
             event_type,
             ENGINE_CONTEXT,
             context.tenant_id,
-            Some(context.actor_id),
+            context.actor_id,
             context.correlation_id,
             context.causation_id,
             payload.clone(),
@@ -554,7 +559,7 @@ impl Change<'_> {
         }
         let mut audit = AuditEvent::with_context(
             Some(context.tenant_id),
-            Some(context.actor_id),
+            context.actor_id,
             context.correlation_id,
             context.causation_id,
             action,
@@ -734,7 +739,7 @@ pub fn workspace_event(
         WORKSPACE_EVENT_V1,
         ENGINE_CONTEXT,
         context.tenant_id,
-        Some(context.actor_id),
+        context.actor_id,
         context.correlation_id,
         context.causation_id,
         payload,
@@ -749,7 +754,7 @@ pub fn workspace_event(
     insert_source(&mut metadata, context.source);
     let mut audit = AuditEvent::with_context(
         Some(context.tenant_id),
-        Some(context.actor_id),
+        context.actor_id,
         context.correlation_id,
         context.causation_id,
         "objects.workspace_event.published",

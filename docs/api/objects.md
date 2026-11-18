@@ -316,7 +316,9 @@ whose summary changed.
 Lookup values are record ids. Setting a lookup needs read access to the target
 object; an unreadable target is reported like a missing one
 (`records.reference_not_found`). Deleting a target clears referencing lookups
-or, for `restrict` lookups, fails with `409 records.delete_restricted`. A
+or, for `restrict` lookups, fails with `409 records.delete_restricted`;
+undeleting it puts the cleared values back where they were not changed since
+(see [Recycle bin](#recycle-bin)). A
 record in the recycle bin releases its unique values; undeleting it fails with
 `409 records.duplicate_value` if another record took one meanwhile.
 
@@ -469,6 +471,63 @@ archiving and unarchiving are made on the server: the command bridge
 answers `403 sync.server_only`, and the replica takes the server's
 `archived_at` with each record it pulls.
 
+### Recycle bin
+
+A deleted record stays in the recycle bin for 15 days (ADR 0014 §5, ADR
+0035 G2), archived or not, and can be undeleted until then. The window is
+an engine constant with no workspace setting. After it, the worker's purge
+removes the record for good, workspace by workspace, as the platform rather
+than as a member: the record, its index and search terms, its shares, its
+history, its change-log entries and the cleared lookups kept for it (below).
+It runs hourly, in bounded batches of 100 records per transaction and about
+30 seconds per workspace per pass, so a large bin empties over several
+passes; a pass with nothing due changes nothing. A record undeleted before
+the purge reaches it is never purged: each record is claimed with a write
+that checks it is still in the bin.
+
+What the purge leaves and adds:
+
+- Audit entries and published events of the record's life stay, as all
+  evidence does. Each purge transaction writes one audit entry for the
+  workspace, `records.recycle_bin.purged`, with no actor, the `system`
+  source, the records it removed by object, the cut-off and
+  `retention_days`, and one `platform.objects.record-purged.v1` event per
+  record (see [Events](events.md)).
+- A record elsewhere still pointing at a purged record (one undeleted while
+  its target stayed in the bin) loses the value, as an update with the
+  `system` source, no `updated_by`, a history entry and an `updated` change.
+  Details of a purged master are purged with it, since they could never be
+  restored.
+- `GET /objects/changes` pages carry `purges`, the number of purge
+  transactions that removed records in the workspace. A purged record leaves
+  no change behind, so a synced device that sees `purges` move asks for its
+  revocation set, which now includes the records in its recycle bin (see
+  [Device sync](#device-sync)).
+
+Deleting a record clears the lookups and related-to values that point to it,
+each as an update of the referencing record, as before. Undeleting it puts
+each cleared value back (ADR 0035 G3, as Salesforce does) where the
+referencing record is out of the recycle bin and has not written that field
+since: setting the field to anything, clearing it again included, counts as
+a change. Each restore is an update of its own with the next version, a
+history entry with the `system` source, an `updated` change naming the
+field and a `record-updated` event; validation rules, lookup filters, field
+permissions and automations do not apply, as they do not to the clear. A
+cleared value is skipped when the referencing record changed the field
+(`changed`), is in the recycle bin (`deleted`), or the field or its object
+is no longer in service (`field_removed`); skipped values are named, with
+their reason, in a `records.lookups.restore_skipped` audit entry. Details
+undeleted with their master get their cleared values back the same way.
+What was kept for a record is forgotten once it is undeleted, whether each
+value came back or not, or when it is purged.
+
+`POST .../records/{id}/undelete` answers with the record and
+`lookups_restored`: `{"restored": 2, "skipped": 1, "skipped_by_reason":
+{"changed": 1}}`. These are counts only, since the member may not be able
+to read the records involved. A synced device's own undelete answers
+without it; the server restores the values when the undelete is pushed and
+the device takes them with the next pull.
+
 ## Change data capture
 
 `GET /objects/changes` returns the workspace's change log after `after`
@@ -509,8 +568,12 @@ tell a device to drop them. `POST /sync/revocations` takes the records a
 device holds, `{"records": {"custom:deal": ["a0B…", …]}}`, and returns
 those the caller can no longer read: `{"revoked": {"custom:deal": […]}}`.
 A record is revoked when its object is gone or no longer readable, or when
-the record is deleted, missing or no longer shared with the caller (ADR
-0024 §4). Records are read as the caller through the query language, so
+the record is missing (never made, or purged from the recycle bin) or no
+longer shared with the caller (ADR 0024 §4). A record in the server's
+recycle bin is not revoked: the device takes its deletion from the change
+log, and keeps it in its own bin until the purge removes it. A device names
+the records in its recycle bin too, and asks again whenever a change page's
+`purges` moves (ADR 0035 G2). Records are read as the caller through the query language, so
 sharing and object permissions apply as they do to a query. Objects with
 nothing revoked are left out. A request names at most 1,000 record ids
 (`400 sync.manifest_too_large`), so a device with more sends its replica in
@@ -1293,7 +1356,10 @@ the codes for refused plugin installations are listed in
 Every mutation writes an audit record and a `platform.objects.*.v1` event in
 the same transaction: object, field and object-permission changes, record
 created, updated, deleted, undeleted, archived and unarchived
-(`record-archived`, `record-unarchived`, with the record payload), and reports created, updated and
+(`record-archived`, `record-unarchived`, with the record payload), records
+purged from the recycle bin (`record-purged`, one per record, with one
+`records.recycle_bin.purged` audit entry per purge transaction rather than
+one per record), and reports created, updated and
 deleted (`report-created`, `report-updated`, `report-deleted`, naming the
 report, chart and visibility but not the query), the record draft expiry
 (`platform.objects.draft-settings-updated.v1`, naming the old and new number

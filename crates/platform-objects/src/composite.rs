@@ -415,7 +415,7 @@ impl ObjectService {
                             &mut run,
                         )
                         .await
-                        .map(|found| (found, false)),
+                        .map(|(object, record, _)| ((object, record), false)),
                     Err(error) => Err(error),
                 },
                 CompositeOperation::ChangeOwner {

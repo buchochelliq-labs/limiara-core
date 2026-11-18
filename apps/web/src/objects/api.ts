@@ -251,6 +251,15 @@ export type ObjectRecord = {
 
 export type RecordPage = {records: ObjectRecord[]; nextCursor: string | null};
 
+/** What an undelete did with the lookups the deletion cleared on other records (ADR 0035 G3): counts only. */
+export type LookupRestore = {restored: number; skipped: number};
+
+/** An undeleted record, with what became of the lookups its deletion cleared; null when the server does not say. */
+export type RestoredRecord = ObjectRecord & {lookupsRestored: LookupRestore | null};
+
+/** How long a deleted engine record stays in the recycle bin before it is removed for good (ADR 0035 G2). */
+export const RECYCLE_BIN_RETENTION_DAYS = 15;
+
 /** Which records a list shows: live ones not archived (the default), archived ones, both, or the recycle bin. */
 export type RecordListStatus = 'active' | 'archived' | 'all' | 'deleted';
 
@@ -394,7 +403,7 @@ export type ObjectsClient = {
   createRecord(apiName: string, values: Record<string, unknown>): Promise<ObjectRecord>;
   updateRecord(apiName: string, id: string, version: number, values: Record<string, unknown>): Promise<ObjectRecord>;
   deleteRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
-  undeleteRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
+  undeleteRecord(apiName: string, id: string, version: number): Promise<RestoredRecord>;
   /** Archives a record (ADR 0035 G1); an edit, so it needs edit access. */
   archiveRecord(apiName: string, id: string, version: number): Promise<ObjectRecord>;
   /** Brings an archived record back to default lists. */
@@ -449,7 +458,7 @@ type ApiObject = {api_name: string; label: string; plural_label: string; descrip
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
 type ApiRecord = Record<string, unknown> & {id: string; name: string; owner: UserReference; created_at: string; created_by: UserReference; updated_at: string; updated_by: UserReference; version: number; is_deleted: boolean; related?: Record<string, string>; access?: RecordRights};
 
-const standardKeys = new Set(['id', 'object', 'name', 'owner', 'created_at', 'created_by', 'updated_at', 'updated_by', 'touched_at', 'version', 'archived_at', 'is_deleted', 'deleted_at', 'related', 'related_objects', 'access']);
+const standardKeys = new Set(['id', 'object', 'name', 'owner', 'created_at', 'created_by', 'updated_at', 'updated_by', 'touched_at', 'version', 'archived_at', 'is_deleted', 'deleted_at', 'related', 'related_objects', 'access', 'lookups_restored']);
 
 type ApiRule = {name: string; description: string | null; condition: string; message: string; error_field: string | null; active: boolean; version: number};
 export function ruleFromApi(rule: ApiRule): ValidationRule {
@@ -523,6 +532,12 @@ export function timelineFromApi(body: {sources?: unknown; open?: unknown; open_m
 
 function reportFromApi(report: ApiReport): Report {
   return {id: report.id, name: report.name, description: report.description ?? null, query: report.query, chart: report.chart, labelColumn: report.label_column ?? null, valueColumn: report.value_column ?? null, visibility: report.visibility, owner: report.owner ?? null, version: report.version, updatedAt: report.updated_at, canEdit: report.can_edit === true};
+}
+
+function lookupRestoreFromApi(value: unknown): LookupRestore | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const {restored, skipped} = value as Record<string, unknown>;
+  return typeof restored === 'number' && typeof skipped === 'number' ? {restored, skipped} : null;
 }
 
 export function recordFromApi(record: ApiRecord): ObjectRecord {
@@ -619,7 +634,8 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
       return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}?expected_version=${version}`, {method: 'DELETE'}));
     },
     async undeleteRecord(apiName, id, version) {
-      return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/undelete?expected_version=${version}`, {method: 'POST'}));
+      const body = await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/undelete?expected_version=${version}`, {method: 'POST'});
+      return {...recordFromApi(body), lookupsRestored: lookupRestoreFromApi((body as Record<string, unknown>).lookups_restored)};
     },
     async archiveRecord(apiName, id, version) {
       return recordFromApi(await request<ApiRecord>(`${object(apiName)}/records/${encodeURIComponent(id)}/archive?expected_version=${version}`, {method: 'POST'}));
@@ -910,7 +926,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       const found = record(apiName, id);
       if (found.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
       stamp(found, {isDeleted: false});
-      return structuredClone(found);
+      return {...structuredClone(found), lookupsRestored: {restored: 0, skipped: 0}};
     },
     async archiveRecord(apiName, id, version) {
       const found = record(apiName, id);

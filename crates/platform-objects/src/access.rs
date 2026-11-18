@@ -24,6 +24,8 @@ pub struct ObjectCaller {
     reports: Vec<Uuid>,
     /// The plugin whose installation this caller performs (ADR 0033 §2).
     installer: Option<String>,
+    /// The platform itself, acting for no member (the recycle-bin purge).
+    system: bool,
 }
 
 impl ObjectCaller {
@@ -40,7 +42,32 @@ impl ObjectCaller {
             role_ids,
             reports: Vec::new(),
             installer: None,
+            system: false,
         }
+    }
+
+    /// The platform itself in one workspace, acting for no member: the
+    /// recycle-bin purge (ADR 0035 G2). It holds no permissions and no
+    /// roles, so it can read nothing through the member paths; it is used
+    /// only by engine jobs that work on the store directly. Its changes name
+    /// no actor in history, audit or events. Built by the kernel's jobs,
+    /// never from request input.
+    pub fn system(tenant_id: Uuid) -> Self {
+        Self {
+            tenant_id,
+            user_id: Uuid::nil(),
+            system_permissions: BTreeSet::new(),
+            role_ids: Vec::new(),
+            reports: Vec::new(),
+            installer: None,
+            system: true,
+        }
+    }
+
+    /// Who the evidence of this caller's changes names: the member, or
+    /// nobody for the platform itself.
+    pub fn actor(&self) -> Option<Uuid> {
+        (!self.system).then_some(self.user_id)
     }
 
     /// The kernel installing, upgrading, suspending or resuming a plugin's
@@ -58,6 +85,7 @@ impl ObjectCaller {
             role_ids: Vec::new(),
             reports: Vec::new(),
             installer: Some(plugin_id.into()),
+            system: false,
         }
     }
 

@@ -691,3 +691,82 @@ async fn sqlite_store_keeps_field_permissions_in_a_replica() {
     let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
     conformance::field_permissions::replica(store).await;
 }
+
+#[tokio::test]
+async fn sqlite_store_passes_the_recycle_bin_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::recycle_bin::run(store, tenant).await;
+
+    // Nothing of a purged record is left: no row in any table naming it.
+    let pool = databases.pool(tenant).await.expect("pool");
+    for id in &report.purged {
+        for (table, column) in [
+            ("records", "id"),
+            ("record_index", "record_id"),
+            ("record_unique", "record_id"),
+            ("record_references", "record_id"),
+            ("record_references", "target_id"),
+            ("record_search_terms", "record_id"),
+            ("record_shares", "record_id"),
+            ("record_history", "record_id"),
+            ("record_changes", "record_id"),
+            ("record_cleared_lookups", "record_id"),
+            ("record_cleared_lookups", "deleted_record_id"),
+        ] {
+            let left: i64 =
+                sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {column} = ?1"))
+                    .bind(id.to_string())
+                    .fetch_one(&pool)
+                    .await
+                    .expect(table);
+            assert_eq!(left, 0, "{table}.{column} for {id}");
+        }
+    }
+    let survivor: i64 = sqlx::query_scalar("SELECT count(*) FROM records WHERE id = ?1")
+        .bind(report.survivor.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("survivor");
+    assert_eq!(survivor, 1);
+
+    // One event per purged record, and one audit entry per batch; the
+    // record's earlier evidence stays.
+    let events: Vec<String> = sqlx::query_scalar(
+        "SELECT envelope FROM outbox WHERE event_type = 'platform.objects.record-purged.v1'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("events");
+    let purged_events: Vec<serde_json::Value> = events
+        .iter()
+        .map(|text| serde_json::from_str(text).expect("envelope"))
+        .collect();
+    for public_id in &report.purged_public {
+        let event = purged_events
+            .iter()
+            .find(|event| event["payload"]["entity_id"] == *public_id.as_str())
+            .unwrap_or_else(|| panic!("event for {public_id}"));
+        assert_eq!(event["payload"]["source"], "system");
+        assert!(event["payload"]["deleted_at"].is_string());
+    }
+    let batches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'records.recycle_bin.purged'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert!(batches >= i64::from(report.batches), "{batches}");
+    let deleted_evidence: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'records.record.deleted'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert!(deleted_evidence >= report.purged.len() as i64);
+}

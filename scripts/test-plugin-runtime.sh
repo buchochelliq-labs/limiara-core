@@ -29,7 +29,7 @@ if [[ -z "${PLATFORM_TEST_NATS_URL:-}" ]]; then
 fi
 
 eval "$(bash scripts/local-postgres.sh start)"
-cargo test -p worker --locked --test plugin_runtime_postgres --test contacts_worker_postgres --test extension_retention_postgres --test automation_jobs_postgres --test bulk_jobs_postgres --test device_notifications_postgres -- --ignored --test-threads=1 --nocapture
+cargo test -p worker --locked --test plugin_runtime_postgres --test contacts_worker_postgres --test extension_retention_postgres --test automation_jobs_postgres --test bulk_jobs_postgres --test recycle_bin_postgres --test device_notifications_postgres -- --ignored --test-threads=1 --nocapture
 cargo test -p platform-db --locked --test identity_postgres -- --ignored --test-threads=1 --nocapture
 cargo test -p contacts-plugin --locked --test extensions_postgres -- --ignored --test-threads=1 --nocapture
 cargo test -p platform-objects --locked --test store_postgres -- --ignored --test-threads=1 --nocapture

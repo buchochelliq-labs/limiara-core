@@ -80,6 +80,11 @@ pub struct SyncClient<T: SyncTransport> {
     /// Whether the next sync asks for the revocation set: after start and
     /// after each reconnect.
     revoke: AtomicBool,
+    /// The server's purge count when this client last looked (ADR 0035
+    /// G2). A purge leaves no change in the log, so when the count moves
+    /// the next sync asks for the revocation set, which names the purged
+    /// records the replica still holds.
+    purges: std::sync::Mutex<Option<i64>>,
     /// Signalled by [`SyncClient::local_change`].
     changed: Notify,
     push_pause: Duration,
@@ -101,6 +106,7 @@ impl<T: SyncTransport> SyncClient<T> {
             engine,
             transport,
             revoke: AtomicBool::new(true),
+            purges: std::sync::Mutex::new(None),
             changed: Notify::new(),
             push_pause: PUSH_PAUSE,
             renew_every: RENEW_EVERY,
@@ -169,6 +175,7 @@ impl<T: SyncTransport> SyncClient<T> {
                 .await?;
             metadata_version = Some(probe.metadata_version);
         }
+        self.note_purges(probe.purges);
         // Members and roles change without the metadata version moving, so
         // every sync takes them again: two small reads.
         let directory = self.net(self.transport.directory()).await?;
@@ -224,6 +231,17 @@ impl<T: SyncTransport> SyncClient<T> {
         // so later syncs run without a budget.
         let _clear = ClearDeadline(self);
         self.sync_steps(context).await
+    }
+
+    /// Asks for the revocation set at the next opportunity when the
+    /// server purged records since this client last looked.
+    fn note_purges(&self, purges: i64) {
+        if let Ok(mut seen) = self.purges.lock() {
+            if seen.is_some_and(|seen| seen != purges) {
+                self.revoke.store(true, Ordering::Relaxed);
+            }
+            *seen = Some(purges);
+        }
     }
 
     fn set_deadline(&self, deadline: Option<tokio::time::Instant>) {

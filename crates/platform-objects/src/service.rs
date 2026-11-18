@@ -258,7 +258,7 @@ impl ObjectService {
     pub(crate) fn evidence(&self, context: MutationContext) -> EvidenceContext {
         EvidenceContext {
             tenant_id: self.caller.tenant_id(),
-            actor_id: self.caller.user_id(),
+            actor_id: self.caller.actor(),
             correlation_id: context.correlation_id,
             causation_id: context.causation_id,
             automation_id: context.automation_id,
@@ -296,6 +296,10 @@ impl ObjectService {
             tx.bump_metadata_version().await?;
         }
         if let Some((object, record, kind, fields)) = change.record_change() {
+            if kind == crate::ChangeKind::Updated {
+                self.note_reference_writes(tx, object, record, &fields)
+                    .await?;
+            }
             let position = tx
                 .append_change(&RecordChange {
                     position: 0,
@@ -305,7 +309,7 @@ impl ObjectService {
                     kind,
                     fields,
                     changed_at: record.touched_at,
-                    changed_by: Some(self.caller.user_id()),
+                    changed_by: self.caller.actor(),
                     correlation_id: Some(context.correlation_id),
                 })
                 .await?;
@@ -2140,7 +2144,7 @@ impl ObjectService {
         Ok(())
     }
 
-    async fn track(
+    pub(crate) async fn track(
         &self,
         tx: &mut dyn ObjectTx,
         object: &ObjectDefinition,
@@ -2167,7 +2171,7 @@ impl ObjectService {
             old_value,
             new_value,
             changed_at: after.updated_at,
-            changed_by: Some(self.caller.user_id()),
+            changed_by: self.caller.actor(),
             correlation_id: Some(context.correlation_id),
             source: self.source(context),
         };
@@ -2216,11 +2220,11 @@ impl ObjectService {
     }
 
     /// A member's edit: the next version and every stamp (ADR 0014).
-    fn stamp(&self, record: &mut Record) {
+    pub(crate) fn stamp(&self, record: &mut Record) {
         let now = Utc::now();
         record.version += 1;
         record.updated_at = now;
-        record.updated_by = Some(self.caller.user_id());
+        record.updated_by = self.caller.actor();
         record.touched_at = now;
     }
 
@@ -2500,11 +2504,21 @@ impl ObjectService {
             if field.delete_behaviour == Some(crate::DeleteBehaviour::Restrict) {
                 return Err(ObjectError::Conflict("records.delete_restricted"));
             }
-            clears.push((child, field.api_name.clone()));
+            clears.push((child, field.id, field.api_name.clone()));
         }
-        for (child, field_api) in clears {
+        for (child, field_id, field_api) in clears {
             let owner = owners.get(&child.object_id).ok_or(ObjectError::Invariant)?;
-            self.clear_reference(tx, owner, child, field_api, context)
+            // Read again: an earlier clear may have moved the record when
+            // two of its fields point to `record`.
+            let child = tx
+                .record_by_id(child.id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            let cleared = self
+                .clear_reference(tx, owner, child, field_api, context)
+                .await?;
+            // Kept so undeleting `record` can put it back (ADR 0035 G3).
+            self.keep_cleared_lookup(tx, record, &cleared, field_id)
                 .await?;
         }
         let mut found = Vec::new();
@@ -2531,40 +2545,12 @@ impl ObjectService {
         &self,
         tx: &mut dyn ObjectTx,
         owner: &ObjectDefinition,
-        mut child: Record,
+        child: Record,
         field_api: String,
         context: MutationContext,
-    ) -> Result<(), ObjectError> {
-        let child_before = child.clone();
-        let child_version = child.version;
-        child.values.remove(&field_api);
-        self.stamp(&mut child);
-        if !tx.update_record(&child, child_version).await? {
-            return Err(ObjectError::VersionConflict);
-        }
-        let child_references = current_references(tx, owner, &child).await?;
-        tx.replace_index(
-            child.id,
-            &stored_index(
-                owner,
-                &child,
-                &child_references,
-                &crate::formula_fields::stored_formulas(owner),
-            ),
-        )
-        .await?;
-        let changed = [field_api];
-        self.record_change(tx, context, Change::RecordUpdated(owner, &child, &changed))
-            .await?;
-        self.track(
-            tx,
-            owner,
-            Some(&child_before),
-            &child,
-            HistoryKind::Changed,
-            context,
-        )
-        .await
+    ) -> Result<Record, ObjectError> {
+        self.write_reference(tx, owner, child, &field_api, None, context)
+            .await
     }
 
     /// Takes a deleted object out of a related-to field's allowlist, and
@@ -2691,6 +2677,23 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
     ) -> Result<Record, ObjectError> {
+        Ok(self
+            .undelete_record_with_lookups(api_name, public_id, expected_version, context)
+            .await?
+            .0)
+    }
+
+    /// Undeletes a record and says what became of the lookups its deletion
+    /// cleared on other records (ADR 0035 G3): how many were put back, and
+    /// how many were left because the referencing record changed the field
+    /// or is in the recycle bin itself.
+    pub async fn undelete_record_with_lookups(
+        &self,
+        api_name: &str,
+        public_id: &str,
+        expected_version: i64,
+        context: MutationContext,
+    ) -> Result<(Record, crate::recycle_bin::LookupRestore), ObjectError> {
         let mut run = Run::default();
         let result = self
             .undelete_record_in(api_name, public_id, expected_version, context, &mut run)
@@ -2705,10 +2708,10 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
         run: &mut Run,
-    ) -> Result<Record, ObjectError> {
+    ) -> Result<(Record, crate::recycle_bin::LookupRestore), ObjectError> {
         let mut tx = self.begin().await?;
         let access = self.access(tx.as_mut()).await?;
-        let (object, record) = self
+        let (object, record, lookups) = self
             .undelete_record_tx(
                 tx.as_mut(),
                 &access,
@@ -2720,8 +2723,10 @@ impl ObjectService {
             )
             .await?;
         tx.commit().await?;
-        self.with_formula(&object, Self::project(&object, record))
-            .await
+        let record = self
+            .with_formula(&object, Self::project(&object, record))
+            .await?;
+        Ok((record, lookups))
     }
 
     /// The undelete record step inside a caller's transaction, for
@@ -2736,7 +2741,7 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
         run: &mut Run,
-    ) -> Result<(ObjectDefinition, Record), ObjectError> {
+    ) -> Result<(ObjectDefinition, Record, crate::recycle_bin::LookupRestore), ObjectError> {
         let object = self.active_object(tx, api_name).await?;
         let flags = access.for_object(object.id);
         if !flags.read {
@@ -2782,7 +2787,8 @@ impl ObjectService {
             .await?;
         self.track(tx, &object, None, &record, HistoryKind::Undeleted, context)
             .await?;
-        self.restore_details(tx, record.id, context).await?;
+        let mut lookups = self.restore_details(tx, record.id, context).await?;
+        lookups.add(self.restore_cleared_lookups(tx, &record, context).await?);
         self.refresh_rollups(tx, &object, &record, None, context)
             .await?;
         // Its own roll-ups count what came back with it.
@@ -2805,7 +2811,7 @@ impl ObjectService {
             run,
         )
         .await?;
-        Ok((object, record))
+        Ok((object, record, lookups))
     }
 
     /// Archives a record (ADR 0035 G1): it leaves default lists, queries,
@@ -2923,7 +2929,8 @@ impl ObjectService {
         tx: &mut dyn ObjectTx,
         root: Uuid,
         context: MutationContext,
-    ) -> Result<(), ObjectError> {
+    ) -> Result<crate::recycle_bin::LookupRestore, ObjectError> {
+        let mut lookups = crate::recycle_bin::LookupRestore::default();
         let mut objects: BTreeMap<Uuid, ObjectDefinition> = BTreeMap::new();
         for id in tx.deleted_with(root).await? {
             let Some(mut record) = tx.record_by_id(id).await? else {
@@ -2977,8 +2984,9 @@ impl ObjectService {
             let object = object.clone();
             self.refresh_rollups(tx, &object, &record, Some(root), context)
                 .await?;
+            lookups.add(self.restore_cleared_lookups(tx, &record, context).await?);
         }
-        Ok(())
+        Ok(lookups)
     }
 
     /// The record's manual shares and what the caller may do with it.
@@ -3422,12 +3430,14 @@ impl ObjectService {
         // Read after the changes, so it is never older than the definitions
         // any change on this page was made under.
         let metadata_version = tx.metadata_version().await?;
+        let purges = tx.purge_count().await?;
         tx.commit().await?;
         Ok(ChangePage {
             changes,
             next_after,
             head,
             metadata_version,
+            purges,
         })
     }
 
@@ -3948,7 +3958,7 @@ fn default_value(
 }
 
 /// The lookup targets a record's stored values resolve to now.
-async fn current_references(
+pub(crate) async fn current_references(
     tx: &mut dyn ObjectTx,
     object: &ObjectDefinition,
     record: &Record,

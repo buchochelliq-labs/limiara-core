@@ -16,10 +16,12 @@ pub const MANIFEST_MAX: usize = 1_000;
 impl ObjectService {
     /// The records of `manifest`, by object API name and public ID, that
     /// the caller can no longer read: the object is gone or no longer
-    /// readable, or the record is deleted, missing or no longer shared with
-    /// them. Every record is read through the query language as the caller,
-    /// so sharing and object permissions apply exactly as they do to a
-    /// query.
+    /// readable, or the record is missing (never made, or purged from the
+    /// recycle bin, ADR 0035 G2) or no longer shared with them. A record in
+    /// the recycle bin is still held: its deletion reaches the device with
+    /// the change log, and it goes once the purge removes it. Every record
+    /// is read through the query language as the caller, so sharing and
+    /// object permissions apply exactly as they do to a query.
     pub async fn revocations(
         &self,
         manifest: &BTreeMap<String, Vec<String>>,
@@ -57,7 +59,8 @@ impl ObjectService {
                         ),
                         cursor: None,
                         page_size: Some(IN_VALUES as u16),
-                        include_deleted: false,
+                        // The recycle bin stays held until it is purged.
+                        include_deleted: true,
                         // Archiving hides a record from lists, not from
                         // the member, so an archived record stays held.
                         include_archived: true,

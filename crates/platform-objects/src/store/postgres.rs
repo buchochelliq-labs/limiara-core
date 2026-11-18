@@ -2911,6 +2911,188 @@ impl ObjectTx for PostgresObjectTx {
         Ok(())
     }
 
+    async fn purge_candidates(
+        &mut self,
+        before: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<Uuid>, ObjectError> {
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM records WHERE tenant_id = $1 AND deleted_at IS NOT NULL \
+             AND deleted_at < $2 ORDER BY deleted_at, id LIMIT $3",
+        )
+        .bind(self.tenant_id)
+        .bind(before)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *self.tx)
+        .await?)
+    }
+
+    async fn claim_purge(
+        &mut self,
+        record_id: Uuid,
+        before: Option<DateTime<Utc>>,
+    ) -> Result<bool, ObjectError> {
+        // The row lock this write takes is held until commit; under READ
+        // COMMITTED the condition is checked again on the row as an undelete
+        // that committed meanwhile left it.
+        let claimed = sqlx::query(
+            "UPDATE records SET version = version WHERE tenant_id = $1 AND id = $2 \
+             AND deleted_at IS NOT NULL AND ($3::timestamptz IS NULL OR deleted_at < $3)",
+        )
+        .bind(self.tenant_id)
+        .bind(record_id)
+        .bind(before)
+        .execute(&mut *self.tx)
+        .await?
+        .rows_affected();
+        Ok(claimed == 1)
+    }
+
+    async fn referencing_all(&mut self, target_id: Uuid) -> Result<Vec<(Uuid, Uuid)>, ObjectError> {
+        Ok(sqlx::query_as(
+            "SELECT field_id, record_id FROM record_references \
+             WHERE tenant_id = $1 AND target_id = $2 ORDER BY record_id, field_id",
+        )
+        .bind(self.tenant_id)
+        .bind(target_id)
+        .fetch_all(&mut *self.tx)
+        .await?)
+    }
+
+    async fn purge_records(&mut self, ids: &[Uuid]) -> Result<u64, ObjectError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        // Other records' pivots first (the reference to a record has no
+        // cascade), then the change log while the records are still in the
+        // bin (its removal policy asks), then the records, which cascade to
+        // pivots, search terms, shares, history and kept cleared lookups.
+        sqlx::query("DELETE FROM record_references WHERE tenant_id = $1 AND target_id = ANY($2)")
+            .bind(self.tenant_id)
+            .bind(ids)
+            .execute(&mut *self.tx)
+            .await?;
+        sqlx::query("DELETE FROM record_changes WHERE tenant_id = $1 AND record_id = ANY($2)")
+            .bind(self.tenant_id)
+            .bind(ids)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(sqlx::query(
+            "DELETE FROM records WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NOT NULL",
+        )
+        .bind(self.tenant_id)
+        .bind(ids)
+        .execute(&mut *self.tx)
+        .await?
+        .rows_affected())
+    }
+
+    async fn append_event(&mut self, event: &EventEnvelope) -> Result<(), ObjectError> {
+        platform_outbox::append_in_transaction(&mut self.tx, event).await?;
+        Ok(())
+    }
+
+    async fn note_purge(&mut self) -> Result<i64, ObjectError> {
+        Ok(sqlx::query_scalar(
+            "INSERT INTO change_counters (tenant_id, purges) VALUES ($1, 1) \
+             ON CONFLICT (tenant_id) DO UPDATE SET purges = change_counters.purges + 1 \
+             RETURNING purges",
+        )
+        .bind(self.tenant_id)
+        .fetch_one(&mut *self.tx)
+        .await?)
+    }
+
+    async fn purge_count(&mut self) -> Result<i64, ObjectError> {
+        let count: Option<i64> =
+            sqlx::query_scalar("SELECT purges FROM change_counters WHERE tenant_id = $1")
+                .bind(self.tenant_id)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+        Ok(count.unwrap_or(0))
+    }
+
+    async fn put_cleared_lookup(
+        &mut self,
+        lookup: &crate::recycle_bin::ClearedLookup,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO record_cleared_lookups (tenant_id, deleted_record_id, record_id, field_id, \
+               value, cleared_version, changed, cleared_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+             ON CONFLICT (tenant_id, deleted_record_id, record_id, field_id) DO UPDATE \
+             SET value = EXCLUDED.value, cleared_version = EXCLUDED.cleared_version, \
+                 changed = EXCLUDED.changed, cleared_at = EXCLUDED.cleared_at",
+        )
+        .bind(self.tenant_id)
+        .bind(lookup.deleted_record_id)
+        .bind(lookup.record_id)
+        .bind(lookup.field_id)
+        .bind(&lookup.value)
+        .bind(lookup.cleared_version)
+        .bind(lookup.changed)
+        .bind(lookup.cleared_at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn cleared_lookups(
+        &mut self,
+        deleted_record_id: Uuid,
+    ) -> Result<Vec<crate::recycle_bin::ClearedLookup>, ObjectError> {
+        let rows = sqlx::query(
+            "SELECT record_id, field_id, value, cleared_version, changed, cleared_at \
+             FROM record_cleared_lookups WHERE tenant_id = $1 AND deleted_record_id = $2 \
+             ORDER BY record_id, field_id",
+        )
+        .bind(self.tenant_id)
+        .bind(deleted_record_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::recycle_bin::ClearedLookup {
+                    deleted_record_id,
+                    record_id: row.try_get("record_id")?,
+                    field_id: row.try_get("field_id")?,
+                    value: row.try_get("value")?,
+                    cleared_version: row.try_get("cleared_version")?,
+                    changed: row.try_get("changed")?,
+                    cleared_at: row.try_get("cleared_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn forget_cleared_lookups(&mut self, deleted_record_id: Uuid) -> Result<(), ObjectError> {
+        sqlx::query(
+            "DELETE FROM record_cleared_lookups WHERE tenant_id = $1 AND deleted_record_id = $2",
+        )
+        .bind(self.tenant_id)
+        .bind(deleted_record_id)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_cleared_lookups_changed(
+        &mut self,
+        record_id: Uuid,
+        field_ids: &[Uuid],
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "UPDATE record_cleared_lookups SET changed = true WHERE tenant_id = $1 \
+             AND record_id = $2 AND field_id = ANY($3) AND NOT changed",
+        )
+        .bind(self.tenant_id)
+        .bind(record_id)
+        .bind(field_ids)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     // Replicas live on devices, which use SQLite (ADR 0024 §1).
     async fn remote_version(&mut self, _: Uuid) -> Result<Option<RemoteVersion>, ObjectError> {
         Err(ObjectError::Conflict("replica.unsupported"))

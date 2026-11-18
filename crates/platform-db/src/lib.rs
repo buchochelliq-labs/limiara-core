@@ -17,7 +17,7 @@ pub use devices::*;
 pub use draft_keys::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0044_record_drafts.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0045_recycle_bin.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]
@@ -1115,6 +1115,22 @@ pub async fn due_bulk_jobs(
     limit: i32,
 ) -> Result<Vec<(Uuid, Uuid)>, sqlx::Error> {
     sqlx::query_as("SELECT tenant_id, id FROM platform_due_bulk_jobs($1)")
+        .bind(limit)
+        .fetch_all(worker_pool)
+        .await
+}
+
+/// Workspaces with engine records in the recycle bin since before `before`
+/// (ADR 0035 G2). Only the bounded `platform_due_recycle_bin_purges`
+/// routine crosses tenants; each workspace is then purged under its own
+/// row-level security.
+pub async fn due_recycle_bin_purges(
+    worker_pool: &PgPool,
+    before: chrono::DateTime<chrono::Utc>,
+    limit: i32,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT tenant_id FROM platform_due_recycle_bin_purges($1, $2)")
+        .bind(before)
         .bind(limit)
         .fetch_all(worker_pool)
         .await

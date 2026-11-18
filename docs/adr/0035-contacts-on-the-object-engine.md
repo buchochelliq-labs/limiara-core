@@ -19,7 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. Every other gap and slice is still to do.
+`sync.server_only`. G2, G3 and G5 are delivered too (below); every other gap
+and slice is still to do.
 
 Decided in review (2026-11-10):
 
@@ -50,6 +51,29 @@ Delivered:
   rules and lookup filters) bypasses the check, as it bypasses sharing. The
   check is one function that role-based field-level security (#316) extends.
   See [Field permissions](../api/objects.md#field-permissions).
+- G2, the recycle-bin purge (2026-11-18). Records 15 days in the bin (an
+  engine constant, as ADR 0014 §5) are removed for good by a per-workspace
+  worker job that runs as the platform through the store, under the
+  workspace's row-level security, in bounded batches: the record with its
+  pivots, search terms, shares, history, change-log rows and kept cleared
+  lookups. Audit and published events stay; each batch writes one
+  `records.recycle_bin.purged` audit entry and one
+  `platform.objects.record-purged.v1` event per record. A record undeleted
+  meanwhile is never purged. Values on other records pointing at a purged
+  record are cleared as system updates, and details go with their master.
+  Synced devices hold their recycle bin in the revocation manifest, and a
+  record in the server's bin is no longer revoked; change pages carry a
+  `purges` count, and a device that sees it move asks for revocations,
+  which name the purged records.
+- G3, restoring cleared lookups (2026-11-18). Deleting a record keeps each
+  lookup value it clears, with the referencing record's version, in a
+  tenant-scoped table with forced row-level security; a write to that field
+  marks it changed. Undeleting the record puts back each value whose
+  referencing record is live and unchanged, as a system update with its own
+  version, history, change and `record-updated` event, without validation
+  rules or automations, and counts restored and skipped links on the
+  undelete response. The clear itself is unchanged (the accepted change).
+  See [Recycle bin](../api/objects.md#recycle-bin).
 
 ## Context
 

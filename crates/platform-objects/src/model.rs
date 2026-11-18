@@ -1025,6 +1025,10 @@ pub struct ChangePage {
     /// When it moves, a synced device fetches definitions again before it
     /// applies the page's records.
     pub metadata_version: i64,
+    /// How many recycle-bin purge passes have removed records (ADR 0035
+    /// G2). When it moves, a synced device asks which of the records it
+    /// holds are gone, since a purged record leaves no change behind.
+    pub purges: i64,
 }
 
 /// A validation rule (ADR 0021): when its condition is true, a save is
