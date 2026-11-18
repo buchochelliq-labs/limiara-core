@@ -764,8 +764,13 @@ Built (2026-11-18), slice 4:
   alone can miss a change: the device numbers its own unsent edits, and a
   push answer followed by a colleague's change can bring a record back to
   the same version number with other content. A token is now bound to the
-  record as the member read it as well, and such a commit is
-  `assistant.confirmation_stale`.
+  record's stored content as the member read it as well (name, owner,
+  version, archive and delete state, and the readable stored fields), and
+  such a commit is `assistant.confirmation_stale`. Values worked out at
+  read time are left out: formulas, which may follow the clock (`NOW()`),
+  and roll-ups, which summarise detail records the member does not
+  confirm and the write does not set; a recalculation that moves the
+  version is still caught by the version.
 - **Native plugins** replay the suite: `assistant-harness export` writes
   the contract file, the scripts and a transcript per script and
   assistant with the exact request bytes and answers, and

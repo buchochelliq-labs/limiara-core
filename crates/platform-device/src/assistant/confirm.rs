@@ -73,10 +73,11 @@ pub(crate) struct Prepared {
     pub record: Option<String>,
     /// That record's version when the change was prepared.
     pub record_version: Option<i64>,
-    /// That record as the member read it then. A version alone does not
-    /// show that a record is unchanged: the device numbers its own edits,
-    /// and the server's answer to their push can bring a record back to a
-    /// version it had before with other content.
+    /// That record's stored content as the member read it then, without
+    /// values computed at read time (`stored_content` in the bridge). A
+    /// version alone does not show that a record is unchanged: the device
+    /// numbers its own edits, and the server's answer to their push can
+    /// bring a record back to a version it had before with other content.
     pub record_read: Option<Map<String, Value>>,
     pub metadata_version: i64,
     /// The exact values the commit sends.

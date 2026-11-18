@@ -360,6 +360,44 @@ fn name_field(object: &ObjectMeta) -> FieldMeta {
     }
 }
 
+/// What a confirmation binds of the record it is about: the content the
+/// engine stores and the member reads (name, owner, version, archive and
+/// delete state, and each readable stored field), not what is worked out
+/// at read time.
+///
+/// - **Formulas** are computed at every read and may follow the clock
+///   (`NOW()`, `TODAY()`), so they would make every token stale; they
+///   follow from the stored values, which are bound.
+/// - **Roll-ups** summarise other records (the details of this one). They
+///   are left out too: the confirmation lists only the fields the request
+///   sets, so a member never confirms a roll-up's value; the write never
+///   sets one; and a detail added or changed by sync or another member is
+///   a change to that record, not to the one confirmed, which the server's
+///   save path checks again on push. Where a roll-up's recalculation moves
+///   the record's version, the version binding still catches it.
+/// - **Timestamps and related names** (`updated_at`, `touched_at`, the
+///   lookups' names) are left out: a change of content moves the version,
+///   which is bound, and a looked-up record's new name is not a change to
+///   this one.
+fn stored_content(meta: &ObjectMeta, record: &Map<String, Value>) -> Map<String, Value> {
+    let mut content = Map::new();
+    let stored = ["name", "owner", "version", "archived_at", "is_deleted"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(
+            meta.fields
+                .iter()
+                .filter(|field| !field.computed())
+                .map(|field| field.api_name.clone()),
+        );
+    for key in stored {
+        if let Some(value) = record.get(&key) {
+            content.insert(key, value.clone());
+        }
+    }
+    content
+}
+
 /// Escapes text for a query-language string literal (ADR 0019 §1); with
 /// `like`, also its wildcards. Control characters other than newline and
 /// tab are refused.
@@ -1186,7 +1224,7 @@ impl Session<'_> {
         self.confirmation(
             PreparedWrite::Update,
             &meta,
-            Some((id, version, found.clone())),
+            Some((id, version, stored_content(&meta, &found))),
             Some(text_of(&Value::Object(found), "name")),
             None,
             values,
@@ -1274,7 +1312,7 @@ impl Session<'_> {
                 creates: action.kind == QuickActionKind::Create,
             },
             &target,
-            Some((id, version, found.clone())),
+            Some((id, version, stored_content(&meta, &found))),
             Some(text_of(&Value::Object(found), "name")),
             Some(action.label.clone()),
             values,
@@ -1321,11 +1359,19 @@ impl Session<'_> {
         };
         if let (Some(record), Some(version)) = (&prepared.record, prepared.record_version) {
             let found = self.reader.record(&action_object, record).await?;
+            let record_meta = self
+                .reader
+                .object(&action_object)
+                .await?
+                .ok_or_else(stale)?;
+            let content = found
+                .as_ref()
+                .map(|found| stored_content(&record_meta, found));
             if found
                 .as_ref()
                 .and_then(|found| found.get("version").and_then(Value::as_i64))
                 != Some(version)
-                || found.as_ref() != prepared.record_read.as_ref()
+                || content.as_ref() != prepared.record_read.as_ref()
             {
                 return Err(stale());
             }

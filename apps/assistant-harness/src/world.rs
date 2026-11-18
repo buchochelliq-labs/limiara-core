@@ -16,7 +16,8 @@
 //!   `won` "Closed won"), `custom:parent` (lookup to accounts),
 //!   `custom:salary` (text the member cannot read), `custom:rating`
 //!   (number the member cannot change), `custom:summary` (long text, not
-//!   indexed), `custom:code` (unique text). A validation rule refuses a
+//!   indexed), `custom:code` (unique text), `custom:seen_at` (a formula,
+//!   `NOW()`, computed again at every read). A validation rule refuses a
 //!   negative amount with "Amount can't be negative.". Quick actions:
 //!   `note` (update, fields notes and stage, preset stage `won`, offered),
 //!   `add_branch` (create an account under this one, field name, preset
@@ -283,6 +284,8 @@ impl World {
                    "write_permission": WRITE}),
             json!({"name": "summary", "label": "Summary", "field_type": "long_text"}),
             json!({"name": "code", "label": "Code", "field_type": "text", "unique": true}),
+            json!({"name": "seen_at", "label": "Seen at", "field_type": "formula",
+                   "formula": "NOW()", "formula_type": "date_time"}),
         ] {
             admin
                 .create_field(ACCOUNT, field(definition)?, context())
