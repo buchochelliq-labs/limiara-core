@@ -47,9 +47,10 @@ jobs:
     name: docs-zensical-publish-build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
     env:
       DOCS_DEPLOYMENT_ENV: ${{ github.event_name == 'pull_request' && 'preview' || (github.event_name == 'workflow_dispatch' && inputs.deployment_environment || 'production') }}
-      DOCS_SOURCE_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,10 +63,14 @@ jobs:
           cache-dependency-path: apps/docs-zensical/requirements.txt
       - run: pip install -r apps/docs-zensical/requirements.txt
       - run: apps/docs-zensical/build.sh
-      - run: python3 apps/docs-zensical/scripts/prepare_deployment.py "$DOCS_DEPLOYMENT_ENV" "$DOCS_SOURCE_REVISION"
+      # The commit actually built, not the ref asked for: a manual run's
+      # source_ref can be a branch or tag, and a rollback needs the SHA.
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - run: python3 apps/docs-zensical/scripts/prepare_deployment.py "$DOCS_DEPLOYMENT_ENV" "${{ steps.revision.outputs.sha }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: docs-zensical-site-${{ github.sha }}
+          name: docs-zensical-site-${{ steps.revision.outputs.sha }}
           path: apps/docs-zensical/build/site
           if-no-files-found: error
           retention-days: 90
@@ -87,7 +92,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: docs-zensical-site-${{ github.sha }}
+          name: docs-zensical-site-${{ needs.build.outputs.revision }}
           path: site
       - id: deploy
         uses: cloudflare/wrangler-action@v3
@@ -115,7 +120,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: docs-zensical-site-${{ github.sha }}
+          name: docs-zensical-site-${{ needs.build.outputs.revision }}
           path: site
       - id: deploy
         uses: cloudflare/wrangler-action@v3
