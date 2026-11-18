@@ -24,7 +24,9 @@ server's re-check of pushed assistant writes with the push marker of §6
 (`assistant.not_allowed`, and `assistant.marker_not_accepted` for a marker
 from anything but a device's push). A marked quick action is named by its
 object and API name, since action names are unique only per object.
-Slices 2 to 4 are not implemented yet.
+Slice 2, the replica change feed and the current-route context (#235), is
+delivered (2026-11-17), as described under "Built" at the end of §9. The
+bridge operations and the harness are still to come.
 
 Decided in review (2026-11-10):
 
@@ -448,6 +450,73 @@ declared. Neither needs an OS permission; the assistant integrations that
 do (none on iOS today, the agent's `EXECUTE_APP_FUNCTIONS` on Android,
 held by the agent rather than the app) are the OS's business.
 
+Built (2026-11-17), slice 2:
+
+- **The feed** is `platform_device::feed`. `ReplicaFeed` keeps the latest
+  1,024 events (`DEFAULT_CAPACITY`) and numbers each one as it is
+  published, under one lock, so every subscriber sees the same events in
+  the same order. A subscriber that falls further behind than the buffer
+  gets `rebuild` (`fell_behind`) and continues after it; a new one starts
+  with `rebuild` (`subscribed`). Every subscriber also gets `rebuild`
+  (`opened`) when a workspace opens, at launch or after a sign-in, so a
+  plugin that outlives one workspace rebuilds for the next. Each event
+  names its workspace.
+- **Where events come from.** The member's own writes are read from the
+  device's change log, which every write already fills: the bridge reads
+  it after each write before it answers, and the controller after each
+  sync step, whose settled conflicts and held-back edits are the member's
+  changes too. What the server's side of sync commits leaves no entry in
+  that log, so the replica engine reports it through an observer
+  (`platform_objects::ReplicaObserver`), after each commit: records a pull,
+  a push answer or a settled conflict stored (`upserted`, or `removed` with
+  `deleted` for a record in the recycle bin), records the revocation set
+  forgot (`removed` with `access_lost`), objects the definitions retired
+  (`object_removed`), and the metadata version the replica follows
+  (`definitions_changed`, when it moves). The lease is reported when a
+  sync changes it and, since time rather than a commit locks a replica,
+  from a reader that checks it when it is due to run out and at least
+  every minute.
+- **Object removal reasons** are `left_replica` and `plugin_suspended`. The
+  server hides a suspended plugin's objects from every read, so the device
+  sees a plugin object stop being described, not why. A plugin-declared
+  object that leaves is reported as `plugin_suspended`, a workspace object
+  as `left_replica`; a plugin that consumes the feed drops the object's
+  entries either way.
+- **Sign-out and wipe** publish `workspace_cleared` (`signed_out` or
+  `wiped`) as soon as the workspace closes, before its files and key are
+  deleted, and drop whatever the closing workspace's engine still reports.
+  The demonstration workspace has no server, sync or lease, and reports
+  nothing to the feed.
+- **The route context** is `platform_device::route`. The bridge's UI
+  contributions carry `route_context: true` only when the host takes route
+  messages; the web shell then sends `{route, object?, record_id?}` on
+  navigation, where `route` is one of `home`, `object`, `new_record`,
+  `record`, `search`, `settings` and `other`. The bridge accepts only that
+  shape, at most 1 KiB of `application/json`, an object API name the
+  member reads in the replica, and a record id of that object's
+  (`route.invalid`, `route.object_not_found`, `route.record_id_invalid`).
+  Subscribers hold the latest route, not a queue: a slow plugin sees where
+  the shell is now. The web shell sends one message at a time, the latest
+  waiting, and the bridge keeps the latest message it received over an
+  earlier one still being checked, so the route never steps back. When the
+  shell stops showing a workspace page (every feature disabled, or
+  navigation that cannot be loaded), it sends `other`. The route message is the one device-local write the
+  bridge accepts; it never reaches the server or the sync queue.
+- **Capabilities** are `platform_device::capabilities`.
+  `device.replica_changes` and `device.route_context` are the two local
+  capabilities so far. A plugin's `PluginDeclaration` names the ones it
+  uses, and an unknown name refuses the whole declaration
+  (`device.capability_unknown`). `Controller::grant` hands back a
+  `PluginGrant` that holds only what was declared, and each subscription
+  is checked against it (`device.capability_not_granted`). No route of the
+  bridge serves the feed. `device.assistant` comes with slice 3.
+- **The route probe** (`apps/device-shell/src-tauri/route-probe`) is a
+  debug-build test plugin that declares `device.route_context` only, with
+  Swift and Kotlin halves in the `device-push` pattern. The desktop tests
+  drive a route through the `limiara://` scheme to it; the `ios` and
+  `android` workflows ask a debug build for a simulated route and check
+  that the native half recorded it as ids.
+
 ### 10. Errors are stable and safe to speak
 
 Every bridge answer is a result or an error with a stable code and a
@@ -522,6 +591,7 @@ Delivery is sliced:
    route message from the web shell through the bridge; the
    `device.replica_changes` and `device.route_context` capabilities; and a
    test plugin that receives route changes on desktop, iOS and Android.
+   Delivered (2026-11-17); see "Built" at the end of §9.
 3. **The bridge operations, with conformance tests (#232).** The
    operations, the policy checks, the two-step writes, the source and the
    push marker, the error table and the index stream, tested over the

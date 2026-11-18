@@ -25,8 +25,19 @@
 //! saved reports and bulk jobs are made on the server, and the bridge answers `403 sync.server_only`
 //! for them. Running a quick action is a record change (ADR 0032 §3), and
 //! the replica lists the actions it took with its definitions.
+//!
+//! Two shell services sit beside the routes for native plugins (ADR 0034
+//! §9), behind local-only capabilities ([`capabilities`]): the replica
+//! change feed ([`feed`]), which no route serves, and the current-route
+//! context ([`route`]), which the web shell sets with
+//! `POST /api/v1/workspaces/{id}/ui/route` when the contributions say the
+//! host accepts it. The route message is the one device-local write; it
+//! never reaches the server.
 
 pub mod app;
+pub mod capabilities;
+pub mod feed;
+pub mod route;
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -34,7 +45,7 @@ use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use platform_objects::{MutationSource, ObjectService, ReplicaDirectory};
 use platform_objects_http::{name_users, referenced_users, Caller, ObjectsHost};
@@ -95,6 +106,10 @@ struct Inner {
     caller: Caller,
     member: Member,
     workspace: Workspace,
+    /// Where the member's writes are reported to the change feed.
+    feed: Option<feed::FeedTap>,
+    /// Where the web shell's route messages go.
+    routes: Option<route::RouteContext>,
 }
 
 /// An [`ObjectsHost`] over the device's replica: every request gets the
@@ -120,7 +135,28 @@ impl DeviceHost {
             caller,
             member,
             workspace,
+            feed: None,
+            routes: None,
         }))
+    }
+
+    /// Reports the member's writes through the bridge to the replica change
+    /// feed (ADR 0034 §9).
+    pub fn with_feed(mut self, tap: feed::FeedTap) -> Self {
+        Arc::make_mut(&mut self.0).feed = Some(tap);
+        self
+    }
+
+    /// Accepts the web shell's route messages into `routes` (ADR 0034 §9),
+    /// and says so in the UI contributions.
+    pub fn with_route_context(mut self, routes: route::RouteContext) -> Self {
+        Arc::make_mut(&mut self.0).routes = Some(routes);
+        self
+    }
+
+    /// The replica engine the bridge answers from.
+    pub fn engine(&self) -> &ObjectService {
+        &self.0.engine
     }
 
     /// Names the signed-in device, as the server's token response did, as
@@ -270,6 +306,8 @@ fn reaches_the_server(method: &Method, path: &str) -> bool {
         | (&Method::POST, ["objects", _, "records", _, "undelete" | "owner"]) => true,
         // A read with a body: which held records the member may no longer see.
         (&Method::POST, ["sync", "revocations"]) => true,
+        // The web shell's route message, kept on the device (ADR 0034 §9).
+        (&Method::POST, ["ui", "route"]) => true,
         _ => false,
     }
 }
@@ -381,11 +419,95 @@ async fn ui(State(host): State<DeviceHost>) -> Json<Value> {
         "device.{:016x}",
         stable_hash(&json!([navigation, permissions]).to_string())
     );
-    Json(json!({
+    let mut contributions = json!({
         "navigation": navigation,
         "permissions": permissions,
         "revision": revision,
-    }))
+    });
+    // Only a host that takes route messages says so; the server's
+    // contributions never do, so the web shell sends none there.
+    if host.0.routes.is_some() {
+        contributions["route_context"] = Value::Bool(true);
+    }
+    Json(contributions)
+}
+
+/// `POST .../ui/route`: the route the web shell now shows (ADR 0034 §9).
+/// The message is untrusted: only its shape is accepted, its object must
+/// be one the member reads in the replica, and its record id one of that
+/// object's. It is passed on as data and never run or rendered.
+async fn route_message(State(host): State<DeviceHost>, request: Request) -> Response {
+    let Some(routes) = host.0.routes.clone() else {
+        return problem(
+            StatusCode::NOT_FOUND,
+            "resource.unavailable",
+            "the requested resource is unavailable",
+        );
+    };
+    // Taken on arrival: a later message that needs no lookup must not be
+    // overwritten by this one once its lookup finishes.
+    let ticket = routes.ticket();
+    let json = request
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+        });
+    let refused = |error: route::RouteError| {
+        let status = match error {
+            route::RouteError::ObjectNotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        problem(status, error.code(), &error.to_string())
+    };
+    if !json {
+        return refused(route::RouteError::Invalid(
+            "the route message is application/json",
+        ));
+    }
+    let Ok(body) = axum::body::to_bytes(request.into_body(), route::MESSAGE_LIMIT).await else {
+        return refused(route::RouteError::Invalid("the route message is too large"));
+    };
+    let message = match route::RouteMessage::parse(&body) {
+        Ok(message) => message,
+        Err(error) => return refused(error),
+    };
+    if let Some(object) = &message.object {
+        match host.0.engine.describe(object).await {
+            Ok((definition, _)) => {
+                if !message.record_matches(&definition.key_prefix) {
+                    return refused(route::RouteError::RecordIdInvalid);
+                }
+            }
+            Err(platform_objects::ObjectError::NotFound) => {
+                return refused(route::RouteError::ObjectNotFound)
+            }
+            Err(platform_objects::ObjectError::Conflict(code)) => {
+                return problem(
+                    StatusCode::CONFLICT,
+                    code,
+                    "the device must reach the server before this workspace opens again",
+                )
+            }
+            Err(_) => return offline(),
+        }
+    }
+    // A message that was overtaken is answered as taken: the shell already
+    // sent the page it shows now.
+    routes.set(
+        ticket,
+        route::CurrentRoute {
+            workspace: host.0.caller.tenant_id,
+            route: message.route,
+            object: message.object,
+            record_id: message.record_id,
+        },
+    );
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// FNV-1a, as the server's revision uses.
@@ -399,6 +521,7 @@ fn stable_hash(value: &str) -> u64 {
 #[derive(Clone)]
 pub struct Bridge {
     router: Router,
+    host: DeviceHost,
 }
 
 impl Bridge {
@@ -407,17 +530,40 @@ impl Bridge {
             .route("/api/v1/me", get(me))
             .route("/api/v1/workspaces", get(workspaces))
             .route("/api/v1/workspaces/:workspace_id/ui/contributions", get(ui))
+            .route(
+                "/api/v1/workspaces/:workspace_id/ui/route",
+                post(route_message),
+            )
             .route("/api/v1/workspaces/:workspace_id/users", get(users))
             .route("/api/v1/workspaces/:workspace_id/roles", get(roles))
             .merge(platform_objects_http::routes::<DeviceHost>())
             .layer(middleware::from_fn_with_state(host.clone(), boundary))
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-            .with_state(host);
-        Self { router }
+            .with_state(host.clone());
+        Self { router, host }
     }
 
-    /// Answers one request as the server would.
+    /// Answers one request as the server would. After a write, the
+    /// member's changes it committed are reported to the change feed
+    /// before the answer returns.
     pub async fn handle(&self, request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
+        let writes = !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        ) && !request.uri().path().ends_with("/ui/route");
+        let response = self.answer(request).await;
+        if writes {
+            if let Some(tap) = &self.host.0.feed {
+                if let Err(error) = tap.local_writes(&self.host.0.engine).await {
+                    // Read again after the next write or sync step.
+                    tracing::warn!(%error, "the change log could not be read for the feed");
+                }
+            }
+        }
+        response
+    }
+
+    async fn answer(&self, request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
         let request = request.map(Body::from);
         let response = match self.router.clone().oneshot(request).await {
             Ok(response) => response,

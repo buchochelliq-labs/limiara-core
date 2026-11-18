@@ -54,15 +54,23 @@ export async function loadShellContext(signal?: AbortSignal): Promise<{workspace
   }
 }
 
-export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string; drafts: DraftsContribution | null};
+/**
+ * What the contribution endpoint activates. `routeContext` is true only
+ * when the host takes the shell's route messages (ADR 0034 §9); the
+ * server's contributions never say so, so it is left out there.
+ */
+export type WorkspaceActivation = {navigation: NavigationContribution[]; permissions: string[]; revision: string; routeContext?: true; drafts: DraftsContribution | null};
+
+type ContributionResponse = {navigation: NavigationContribution[]; permissions: string[]; revision: string; route_context?: unknown; drafts?: unknown};
 
 export async function loadWorkspaceNavigation(workspaceId: string, signal?: AbortSignal): Promise<WorkspaceActivation> {
-  const result = await api<Omit<WorkspaceActivation, 'drafts'> & {drafts?: unknown}>(`/workspaces/${workspaceId}/ui/contributions`, signal);
+  const result = await api<ContributionResponse>(`/workspaces/${workspaceId}/ui/contributions`, signal);
   return {
     navigation: result.navigation.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     permissions: [...result.permissions].sort(),
     revision: result.revision,
     drafts: draftsContributionFromApi(result.drafts),
+    ...(result.route_context === true ? {routeContext: true as const} : {}),
   };
 }
 

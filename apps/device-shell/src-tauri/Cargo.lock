@@ -850,6 +850,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-route-probe"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "device-shell"
 version = "0.1.0"
 dependencies = [
@@ -857,6 +867,7 @@ dependencies = [
  "device-browser",
  "device-keystore",
  "device-push",
+ "device-route-probe",
  "http",
  "keyring",
  "open",
@@ -3097,6 +3108,7 @@ dependencies = [
  "axum",
  "chrono",
  "http",
+ "platform-id",
  "platform-objects",
  "platform-objects-http",
  "platform-storage",

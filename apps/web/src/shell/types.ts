@@ -29,4 +29,6 @@ export type ShellViewModel = {
   message?: string;
   /** Where this host keeps record drafts (ADR 0036 §3); absent when it keeps none. */
   drafts?: DraftsContribution | null;
+  /** Whether the host takes route messages (ADR 0034 §9). */
+  routeContext?: boolean;
 };

@@ -342,6 +342,7 @@ impl ObjectService {
         }
         let described: BTreeSet<&str> = objects.iter().map(|o| o.api_name.as_str()).collect();
         let mut undescribed = Vec::new();
+        let mut retired_objects = Vec::new();
         for local in tx.list_objects().await? {
             if !described.contains(local.api_name.as_str()) {
                 undescribed.push(local.clone());
@@ -353,6 +354,10 @@ impl ObjectService {
                 if !tx.update_object(&retired, local.version).await? {
                     return Err(ObjectError::VersionConflict);
                 }
+                retired_objects.push(crate::RetiredObject {
+                    api_name: local.api_name.clone(),
+                    owner_plugin: local.owner_plugin.clone(),
+                });
                 applied.objects.push(local.api_name);
             }
         }
@@ -472,6 +477,11 @@ impl ObjectService {
             }
         }
         tx.commit().await?;
+        if !retired_objects.is_empty() {
+            self.observe(crate::ReplicaEvent::ObjectsRetired {
+                objects: retired_objects,
+            });
+        }
         Ok(applied)
     }
 }

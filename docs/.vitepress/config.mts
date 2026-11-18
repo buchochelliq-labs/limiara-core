@@ -168,6 +168,7 @@ export default {
             { text: "Native plugins", link: "/plugins/native-plugin" },
             { text: "Extending other plugins", link: "/plugins/extensions" },
             { text: "Declaring objects", link: "/plugins/objects" },
+            { text: "Device plugins", link: "/plugins/device-plugins" },
             { text: "Wasm contract", link: "/plugins/wasm" },
             { text: "Supply chain", link: "/plugins/supply-chain" }
           ]
