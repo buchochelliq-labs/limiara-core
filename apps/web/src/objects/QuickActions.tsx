@@ -42,7 +42,7 @@ function useTargets(client: Client, apiName: string): {status: 'loading' | 'read
 }
 
 /** Quick actions (ADR 0032): record-page shortcuts that update chosen fields or create a related record. */
-export function QuickActions({client, object, onNotice}: {client: Client; object: ObjectDescription; onNotice: (message: string) => void}) {
+export function QuickActions({client, object, onNotice, onChanged}: {client: Client; object: ObjectDescription; onNotice: (message: string) => void; onChanged?: () => void}) {
   const [load, setLoad] = useState<ActionLoad>({status: 'loading'});
   const [attempt, setAttempt] = useState(0);
   const [editing, setEditing] = useState<QuickAction | 'new' | null>(null);
@@ -55,7 +55,7 @@ export function QuickActions({client, object, onNotice}: {client: Client; object
       .catch(() => { if (!controller.signal.aborted) setLoad({status: 'failed'}); });
     return () => controller.abort();
   }, [client, object.apiName, attempt]);
-  const reload = (message: string) => { setEditing(null); onNotice(message); setAttempt(value => value + 1); };
+  const reload = (message: string) => { setEditing(null); onNotice(message); setAttempt(value => value + 1); onChanged?.(); };
   const remove = async (action: QuickAction) => {
     try {
       await client.deleteQuickAction(object.apiName, action.name, action.version);

@@ -510,6 +510,74 @@ async fn sqlite_store_passes_the_change_source_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_assistant_policy_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::assistant_policy::run(store.clone(), tenant).await;
+    conformance::assistant_policy::run_plugin_objects(store, uuid::Uuid::now_v7()).await;
+
+    // Every policy change left its event and audit entry, by API names.
+    let pool = databases.pool(tenant).await.expect("pool");
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outbox WHERE event_type = 'platform.objects.assistant-policy-updated.v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("events");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action IN \
+         ('objects.assistant_settings.updated', 'objects.assistant_policy.updated')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert!(events >= 6, "{events}");
+    assert_eq!(events, audited);
+
+    // The assistant's write names the assistant as its source, and the
+    // device that pushed it in the audit entry only.
+    let metadata: String = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'records.record.created' AND target = ?1",
+    )
+    .bind(format!("record:{}", report.assistant_record))
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).expect("metadata");
+    assert_eq!(
+        metadata["source"],
+        serde_json::json!({"kind": "assistant", "detail": "siri"})
+    );
+    assert_eq!(metadata["device_id"], report.device.to_string());
+    let envelope: String = sqlx::query_scalar(
+        "SELECT envelope FROM outbox WHERE event_type = 'platform.objects.record-created.v1' \
+         AND json_extract(envelope, '$.payload.entity_id') = ?1",
+    )
+    .bind(&report.assistant_record)
+    .fetch_one(&pool)
+    .await
+    .expect("event");
+    assert!(envelope.contains("\"source\":\"assistant\""));
+    assert!(!envelope.contains(&report.device.to_string()));
+}
+
+#[tokio::test]
+async fn sqlite_store_keeps_the_assistant_policy_in_a_replica() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::assistant_policy_replicas::run(store).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_archive_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

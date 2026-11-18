@@ -6,9 +6,9 @@ use crate::transport::{ChangeEntry, ChangesPage};
 use crate::SyncError;
 use chrono::{DateTime, Utc};
 use platform_objects::{
-    AccessFlags, DeleteBehaviour, FieldType, Origin, PicklistOption, QuickActionKind, RemoteField,
-    RemoteObject, RemoteQuickAction, RemoteRecord, RemoteRollup, RemoteRule, RollupFunction,
-    SharingModel,
+    AccessFlags, DeleteBehaviour, FieldType, Origin, PicklistOption, QuickActionKind,
+    RemoteAssistantPolicy, RemoteAssistantSettings, RemoteField, RemoteObject, RemoteQuickAction,
+    RemoteRecord, RemoteRollup, RemoteRule, RollupFunction, SharingModel,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -305,7 +305,74 @@ pub fn remote_object(
             .collect(),
         rules,
         quick_actions,
+        assistant: None,
     })
+}
+
+#[derive(Deserialize)]
+struct AssistantPolicyBody {
+    object: String,
+    #[serde(default)]
+    exposed: bool,
+    #[serde(default)]
+    writable: bool,
+    #[serde(default)]
+    indexable: bool,
+    #[serde(default)]
+    excluded_fields: Vec<String>,
+    #[serde(default)]
+    offered_actions: Vec<String>,
+    #[serde(default)]
+    version: i64,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceAssistantPolicyBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    version: i64,
+    #[serde(default)]
+    objects: Vec<AssistantPolicyBody>,
+}
+
+/// The workspace's assistant policy as `GET /objects/assistant-policy`
+/// lists it (ADR 0034 §4): the switch, and each object's policy by API name.
+pub fn assistant_policy(
+    body: &Value,
+) -> Result<
+    (
+        RemoteAssistantSettings,
+        BTreeMap<String, RemoteAssistantPolicy>,
+    ),
+    SyncError,
+> {
+    let body: WorkspaceAssistantPolicyBody = serde_json::from_value(body.clone())
+        .map_err(|error| SyncError::protocol(format!("an assistant policy: {error}")))?;
+    let objects = body
+        .objects
+        .into_iter()
+        .map(|policy| {
+            (
+                policy.object,
+                RemoteAssistantPolicy {
+                    exposed: policy.exposed,
+                    writable: policy.writable,
+                    indexable: policy.indexable,
+                    excluded_fields: policy.excluded_fields,
+                    offered_actions: policy.offered_actions,
+                    version: policy.version,
+                },
+            )
+        })
+        .collect();
+    Ok((
+        RemoteAssistantSettings {
+            enabled: body.enabled,
+            version: body.version,
+        },
+        objects,
+    ))
 }
 
 #[derive(Deserialize)]
