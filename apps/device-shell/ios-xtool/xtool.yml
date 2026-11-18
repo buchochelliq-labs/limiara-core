@@ -1,0 +1,7 @@
+version: 1
+# A separate bundle identifier, so a sideloaded build never replaces the
+# TestFlight build (app.limiara.shell) on the same phone.
+bundleID: app.limiara.shell.xtool
+product: LimiaraShell
+infoPath: Info.plist
+iconPath: ../src-tauri/icons/icon.png
