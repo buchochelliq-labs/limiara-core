@@ -256,7 +256,9 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         .expect("tenant");
     }
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
-    let report = conformance::run(store, tenant_a, tenant_b).await;
+    // Boxed: the suite's future outgrows a test thread's stack in debug
+    // builds once it is polled on it.
+    let report = Box::pin(conformance::run(store, tenant_a, tenant_b)).await;
 
     for table in ["audit_log", "outbox"] {
         let count: i64 = sqlx::query_scalar(&format!(

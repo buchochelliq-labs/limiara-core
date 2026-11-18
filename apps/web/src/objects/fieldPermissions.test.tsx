@@ -48,7 +48,7 @@ describe('field-level permissions (G5)', () => {
   });
 
   it('leaves unreadable fields out of forms and shows unwritable ones read-only', () => {
-    const record = {id: '0000000000000001', name: 'Apollo', owner: null, createdAt: '2026-09-01T09:00:00Z', createdBy: null, updatedAt: '2026-09-01T09:00:00Z', updatedBy: null, version: 1, isDeleted: false, values: {'custom:code': 'AP-1', 'custom:budget': 1250}, related: {}};
+    const record = {id: '0000000000000001', name: 'Apollo', owner: null, createdAt: '2026-09-01T09:00:00Z', createdBy: null, updatedAt: '2026-09-01T09:00:00Z', updatedBy: null, version: 1, isDeleted: false, archivedAt: null, values: {'custom:code': 'AP-1', 'custom:budget': 1250}, related: {}};
     const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={project} record={record} onCancel={noop} onSaved={noop} />);
     expect(markup).not.toContain('Salary');
     expect(markup).toContain('Budget');
