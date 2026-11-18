@@ -517,7 +517,10 @@ cleared value is skipped when the referencing record changed the field
 (`changed`), is in the recycle bin (`deleted`), or the field or its object
 is no longer in service (`field_removed`); skipped values are named, with
 their reason, in a `records.lookups.restore_skipped` audit entry. Details
-undeleted with their master get their cleared values back the same way.
+undeleted with their master get their cleared values back the same way:
+the master and every detail coming back with it are restored first, and the
+cleared values after, so links between them (a detail to another detail or
+to its master, the master to a detail) survive.
 What was kept for a record is forgotten once it is undeleted, whether each
 value came back or not, or when it is purged.
 

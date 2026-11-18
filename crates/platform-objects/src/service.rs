@@ -2292,7 +2292,7 @@ impl ObjectService {
         if !flags.delete {
             return Err(ObjectError::PermissionDenied);
         }
-        let mut record = tx
+        let record = tx
             .record(object.id, public_id)
             .await?
             .filter(|record| record.deleted_at.is_none())
@@ -2310,10 +2310,17 @@ impl ObjectService {
             self.trash_detail(tx, &detail_object, detail, record.id, context)
                 .await?;
         }
+        // Releasing a detail clears the record's own lookups to it, as an
+        // edit of the record, so it is read again (the lock above holds it).
+        let mut record = tx
+            .record_by_id(record.id)
+            .await?
+            .ok_or(ObjectError::Invariant)?;
+        let current_version = record.version;
         let before_delete = record.clone();
         self.stamp(&mut record);
         record.deleted_at = Some(record.updated_at);
-        if !tx.update_record(&record, expected_version).await? {
+        if !tx.update_record(&record, current_version).await? {
             return Err(ObjectError::VersionConflict);
         }
         // A record in the recycle bin releases its unique values.
@@ -2787,8 +2794,22 @@ impl ObjectService {
             .await?;
         self.track(tx, &object, None, &record, HistoryKind::Undeleted, context)
             .await?;
-        let mut lookups = self.restore_details(tx, record.id, context).await?;
-        lookups.add(self.restore_cleared_lookups(tx, &record, context).await?);
+        // Every record coming back is restored before any cleared lookup is
+        // put back (ADR 0035 G3), so links between the master and its
+        // details, and between details, find their records live; a record
+        // that stays in the bin is skipped as deleted.
+        let details = self.restore_details(tx, record.id, context).await?;
+        let mut lookups = self.restore_cleared_lookups(tx, &record, context).await?;
+        for detail in &details {
+            lookups.add(self.restore_cleared_lookups(tx, detail, context).await?);
+        }
+        if lookups.restored > 0 {
+            // A restore may have been an edit of the master itself.
+            record = tx
+                .record_by_id(record.id)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+        }
         self.refresh_rollups(tx, &object, &record, None, context)
             .await?;
         // Its own roll-ups count what came back with it.
@@ -2921,16 +2942,17 @@ impl ObjectService {
             .await
     }
 
-    /// Brings back the details deleted with `root` (ADR 0025). A junction
-    /// record whose other master is still in the recycle bin stays there,
-    /// and comes back when that master does.
+    /// Brings back the details deleted with `root` (ADR 0025) and returns
+    /// them; their cleared lookups are put back by the caller once every
+    /// record is back. A junction record whose other master is still in the
+    /// recycle bin stays there, and comes back when that master does.
     async fn restore_details(
         &self,
         tx: &mut dyn ObjectTx,
         root: Uuid,
         context: MutationContext,
-    ) -> Result<crate::recycle_bin::LookupRestore, ObjectError> {
-        let mut lookups = crate::recycle_bin::LookupRestore::default();
+    ) -> Result<Vec<Record>, ObjectError> {
+        let mut restored = Vec::new();
         let mut objects: BTreeMap<Uuid, ObjectDefinition> = BTreeMap::new();
         for id in tx.deleted_with(root).await? {
             let Some(mut record) = tx.record_by_id(id).await? else {
@@ -2984,9 +3006,9 @@ impl ObjectService {
             let object = object.clone();
             self.refresh_rollups(tx, &object, &record, Some(root), context)
                 .await?;
-            lookups.add(self.restore_cleared_lookups(tx, &record, context).await?);
+            restored.push(record);
         }
-        Ok(lookups)
+        Ok(restored)
     }
 
     /// The record's manual shares and what the caller may do with it.

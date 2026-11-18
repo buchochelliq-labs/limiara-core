@@ -242,6 +242,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> RecycleBinReport 
     let batches = past.batches + bulk.batches + cut.batches + rest.batches;
 
     lookups(&store, tenant, &admin).await;
+    cascaded_links(&admin).await;
     relationships(&store, tenant, &admin).await;
 
     RecycleBinReport {
@@ -613,4 +614,161 @@ async fn relationships(store: &Arc<dyn ObjectStore>, tenant: Uuid, admin: &Objec
     assert_eq!(value(&ticket_now, "custom:project"), None);
     assert!(ticket_now.version > ticket.version);
     assert_eq!(ticket_now.updated_by, None, "the platform made the change");
+}
+
+/// G3 across a cascade: undeleting a master restores it and every detail
+/// deleted with it before any cleared lookup is put back, so links between
+/// records that come back together survive (a detail to an earlier
+/// detail, a detail to its master, the master to a detail, an outside
+/// record to a detail), and a record that stays in the bin is still skipped.
+async fn cascaded_links(admin: &ObjectService) {
+    admin
+        .create_object(object("trip", "Trip"), context())
+        .await
+        .expect("trip");
+    admin
+        .create_object(object("stop", "Stop"), context())
+        .await
+        .expect("stop");
+    admin
+        .create_object(object("memo", "Memo"), context())
+        .await
+        .expect("memo");
+    let mut master = field("trip", FieldType::MasterDetail);
+    master.reference_object = Some("custom:trip".into());
+    admin
+        .create_field("custom:stop", master, context())
+        .await
+        .expect("master-detail");
+    for (object, name, target) in [
+        ("custom:stop", "after", "custom:stop"),
+        ("custom:stop", "leader", "custom:trip"),
+        ("custom:trip", "highlight", "custom:stop"),
+        ("custom:memo", "stop", "custom:stop"),
+    ] {
+        let mut lookup = field(name, FieldType::Lookup);
+        lookup.reference_object = Some(target.into());
+        admin
+            .create_field(object, lookup, context())
+            .await
+            .expect("lookup");
+    }
+    let create = |object: &'static str, values: Value| {
+        let admin = admin.clone();
+        async move {
+            admin
+                .create_record(object, &body(values), context())
+                .await
+                .expect("record")
+        }
+    };
+    let read = |object: &'static str, id: String| {
+        let admin = admin.clone();
+        async move { admin.get_record(object, &id, true).await.expect("record") }
+    };
+    let trip = create("custom:trip", json!({"name": "Grand tour"})).await;
+    // A is created before B, so the cascade restores A first.
+    let first = create(
+        "custom:stop",
+        json!({"name": "A", "custom:trip": trip.public_id}),
+    )
+    .await;
+    let second = create(
+        "custom:stop",
+        json!({
+            "name": "B",
+            "custom:trip": trip.public_id,
+            "custom:after": first.public_id,
+            "custom:leader": trip.public_id,
+        }),
+    )
+    .await;
+    let trip = read("custom:trip", trip.public_id.clone()).await;
+    let trip = admin
+        .update_record(
+            "custom:trip",
+            &trip.public_id,
+            trip.version,
+            &body(json!({"custom:highlight": second.public_id})),
+            context(),
+        )
+        .await
+        .expect("highlight");
+    let memo = create(
+        "custom:memo",
+        json!({"name": "Kept", "custom:stop": first.public_id}),
+    )
+    .await;
+    let binned = create(
+        "custom:memo",
+        json!({"name": "Binned", "custom:stop": first.public_id}),
+    )
+    .await;
+
+    let trip = read("custom:trip", trip.public_id.clone()).await;
+    let deleted = admin
+        .delete_record("custom:trip", &trip.public_id, trip.version, context())
+        .await
+        .expect("delete trip");
+    // The cascade cleared every link to the records going to the bin.
+    let second_binned = read("custom:stop", second.public_id.clone()).await;
+    assert_eq!(value(&second_binned, "custom:after"), None);
+    assert_eq!(value(&second_binned, "custom:leader"), None);
+    assert_eq!(value(&deleted, "custom:highlight"), None);
+    assert_eq!(
+        value(
+            &read("custom:memo", memo.public_id.clone()).await,
+            "custom:stop"
+        ),
+        None
+    );
+    // One linking record stays in the bin.
+    let binned = read("custom:memo", binned.public_id.clone()).await;
+    admin
+        .delete_record("custom:memo", &binned.public_id, binned.version, context())
+        .await
+        .expect("delete memo");
+
+    let (restored, report) = admin
+        .undelete_record_with_lookups("custom:trip", &trip.public_id, deleted.version, context())
+        .await
+        .expect("undelete trip");
+    assert_eq!(report.restored, 4, "{report:?}");
+    assert_eq!(
+        report.skipped.get(&SkipReason::Deleted),
+        Some(&1),
+        "{report:?}"
+    );
+    assert_eq!(report.skipped_total(), 1, "{report:?}");
+    // The undelete answers with the master as it now is.
+    assert_eq!(
+        value(&restored, "custom:highlight"),
+        Some(&json!(second.public_id))
+    );
+    let current = read("custom:trip", trip.public_id.clone()).await;
+    assert_eq!(restored.version, current.version);
+    let second_now = read("custom:stop", second.public_id.clone()).await;
+    assert!(second_now.deleted_at.is_none());
+    assert_eq!(
+        value(&second_now, "custom:after"),
+        Some(&json!(first.public_id))
+    );
+    assert_eq!(
+        value(&second_now, "custom:leader"),
+        Some(&json!(trip.public_id))
+    );
+    assert_eq!(
+        value(
+            &read("custom:memo", memo.public_id.clone()).await,
+            "custom:stop"
+        ),
+        Some(&json!(first.public_id))
+    );
+    assert_eq!(
+        value(
+            &read("custom:memo", binned.public_id.clone()).await,
+            "custom:stop"
+        ),
+        None
+    );
 }
