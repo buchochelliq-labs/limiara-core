@@ -257,7 +257,8 @@ impl World {
         }
         for action in [
             json!({"name": "note", "label": "Add a note", "kind": "update",
-                   "fields": ["custom:notes"], "presets": {"custom:stage": "won"}}),
+                   "fields": ["custom:notes", "custom:stage"],
+                   "presets": {"custom:stage": "won"}}),
             json!({"name": "add_branch", "label": "Add branch", "kind": "create",
                    "target_object": ACCOUNT, "target_field": "custom:parent",
                    "fields": ["name"], "presets": {"custom:notes": "branch office"}}),
@@ -1789,5 +1790,153 @@ async fn the_index_stream_follows_policy_access_and_the_device() {
         [IndexUpdate::RemoveWorkspace {
             workspace: world.workspace
         }]
+    );
+}
+
+#[tokio::test]
+async fn an_update_action_on_a_record_not_pushed_yet_still_syncs() {
+    let world = World::new().await;
+    let run_note = |record: String| Operation::RunAction {
+        object: ACCOUNT.into(),
+        action: "note".into(),
+        record,
+        values: values(json!({"custom:notes": "Called"})),
+    };
+    // Made on the device, and changed by an assistant's update action
+    // before its first push: its changes push as one create.
+    let (status, fresh) = world
+        .web(
+            "POST",
+            &format!("/objects/{ACCOUNT}/records"),
+            Some(json!({"name": "Fresh"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{fresh}");
+    let fresh = fresh["id"].as_str().expect("id").to_owned();
+    let confirmation = world.prepare(run_note(fresh.clone())).await;
+    world.commit(&confirmation.token).await.expect("noted");
+    let batch = world.engine.push_queue().await.expect("queue");
+    let operation = &batch.request().operations[0];
+    assert!(
+        matches!(
+            operation,
+            platform_objects::composite::CompositeOperation::Create { .. }
+        ),
+        "{operation:?}"
+    );
+    // Marked as an assistant's create, without the update action the
+    // server would never see run.
+    assert_eq!(
+        operation.assistant(),
+        Some(&AssistantMarker {
+            assistant: Assistant::Siri,
+            quick_action: None
+        })
+    );
+    let report = world.sync().await;
+    assert!(
+        report.pushed.iter().all(|pushed| pushed.failed.is_empty()),
+        "{report:?}"
+    );
+    let on_server = world
+        .admin
+        .get_record(ACCOUNT, &fresh, false)
+        .await
+        .expect("synced");
+    assert_eq!(on_server.values.get("custom:notes"), Some(&json!("Called")));
+    assert_eq!(on_server.values.get("custom:stage"), Some(&json!("won")));
+    let (history, _) = world
+        .admin
+        .record_history(ACCOUNT, &fresh, None, None)
+        .await
+        .expect("history");
+    assert!(history
+        .entries
+        .iter()
+        .all(|entry| entry.source == Some(MutationSource::assistant(Assistant::Siri))));
+
+    // The server still re-checks the create against its current policy.
+    let (_, second) = world
+        .web(
+            "POST",
+            &format!("/objects/{ACCOUNT}/records"),
+            Some(json!({"name": "Second"})),
+        )
+        .await;
+    let second = second["id"].as_str().expect("id").to_owned();
+    let confirmation = world.prepare(run_note(second.clone())).await;
+    world.commit(&confirmation.token).await.expect("noted");
+    world
+        .set_policy(json!({"writable": false, "offered_actions": []}))
+        .await;
+    let report = world.sync().await;
+    let failed: Vec<(&str, &str)> = report
+        .pushed
+        .iter()
+        .flat_map(|pushed| {
+            pushed
+                .failed
+                .iter()
+                .map(|(_, id, code)| (id.as_str(), code.as_str()))
+        })
+        .collect();
+    assert_eq!(
+        failed,
+        [(second.as_str(), "assistant.not_allowed")],
+        "{report:?}"
+    );
+    assert!(world
+        .admin
+        .get_record(ACCOUNT, &second, false)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn supplied_action_values_override_editable_presets() {
+    let world = World::new().await;
+    let run = |supplied: Value| Operation::RunAction {
+        object: ACCOUNT.into(),
+        action: "note".into(),
+        record: world.acme.clone(),
+        values: values(supplied),
+    };
+    let stage = |confirmation: &Confirmation| {
+        confirmation
+            .changes
+            .iter()
+            .find(|change| change.field == "custom:stage")
+            .map(|change| (change.value.clone(), change.display.clone()))
+    };
+    // Not supplied: the preset applies.
+    let confirmation = world.prepare(run(json!({"custom:notes": "a"}))).await;
+    assert_eq!(
+        stage(&confirmation),
+        Some((json!("won"), "Closed won".into()))
+    );
+    // Supplied: the member's value wins over the preset.
+    let confirmation = world
+        .prepare(run(json!({"custom:notes": "b", "custom:stage": "open"})))
+        .await;
+    assert_eq!(stage(&confirmation), Some((json!("open"), "Open".into())));
+    world.commit(&confirmation.token).await.expect("kept");
+    assert_eq!(
+        world.device_record(&world.acme).await["custom:stage"],
+        "open"
+    );
+    // Cleared: the member's empty value wins too.
+    let confirmation = world
+        .prepare(run(json!({"custom:notes": "c", "custom:stage": null})))
+        .await;
+    assert_eq!(stage(&confirmation), Some((Value::Null, String::new())));
+    world.commit(&confirmation.token).await.expect("cleared");
+    assert_eq!(
+        world
+            .device_record(&world.acme)
+            .await
+            .get("custom:stage")
+            .cloned()
+            .unwrap_or(Value::Null),
+        Value::Null
     );
 }

@@ -1249,10 +1249,14 @@ impl Session<'_> {
             }
         };
         Self::check_values(&target, &values, Some(&action.fields))?;
-        let mut values = values;
-        for (key, value) in &action.presets {
-            values.insert(key.clone(), value.clone());
-        }
+        // Presets are the form's defaults: a value the member gave for a
+        // field the form asks for wins, a cleared one included, as in the
+        // web's quick-action form.
+        let mut values = {
+            let mut merged = action.presets.clone();
+            merged.extend(values);
+            merged
+        };
         if let (QuickActionKind::Create, Some(field)) = (action.kind, &action.target_field) {
             values.insert(field.clone(), Value::String(id.clone()));
         }

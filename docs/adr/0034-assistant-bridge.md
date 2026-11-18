@@ -602,7 +602,14 @@ Built (2026-11-18), slice 3:
   record with such a change unsent, with the quick action's object and
   name, and forgets the marks once pushed. A record that also has the
   member's own unsent edits is marked as a whole: the marker only adds
-  checks.
+  checks. A record not on the server yet pushes as one create, so its
+  marker keeps a quick action only when that is a create action making
+  records of its object; an update action run on it before its first push
+  leaves a plain assistant create, which the server still checks against
+  the workspace switch and the object's exposed and writable settings.
+  A quick action's presets are the form's defaults: a value the member
+  gives for a field the form asks for wins, a cleared one included, as in
+  the web's form.
 - **The member's setting** is `DeviceAssistantSettings`
   (`assistant_access`, on by default, and `indexing`, off by default),
   kept with the stored session.
