@@ -244,6 +244,19 @@ export type NewQuickAction = {name: string; label: string; kind: QuickActionKind
 export type QuickActionChanges = {label?: string; position?: number; fields?: string[]; presets?: Record<string, unknown>};
 /** Quick actions per object (ADR 0032 §2). */
 export const quickActionsMax = 10;
+/** The workspace's assistant switch (ADR 0034 §4): off, at version 0, until an administrator turns it on. */
+export type AssistantSettings = {enabled: boolean; version: number};
+/** One object's assistant policy. Writable, indexable and offered actions each require exposed; `name` in `excludedFields` is the record name. */
+export type AssistantPolicy = {object: string; exposed: boolean; writable: boolean; indexable: boolean; excludedFields: string[]; offeredActions: string[]; version: number};
+export type AssistantPolicyChanges = {exposed?: boolean; writable?: boolean; indexable?: boolean; excluded_fields?: string[]; offered_actions?: string[]};
+type ApiAssistantPolicy = {object: string; exposed?: unknown; writable?: unknown; indexable?: unknown; excluded_fields?: unknown; offered_actions?: unknown; version?: unknown};
+const stringList = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+export function assistantPolicyFromApi(policy: ApiAssistantPolicy): AssistantPolicy {
+  return {object: policy.object, exposed: policy.exposed === true, writable: policy.writable === true, indexable: policy.indexable === true, excludedFields: stringList(policy.excluded_fields), offeredActions: stringList(policy.offered_actions), version: typeof policy.version === 'number' ? policy.version : 0};
+}
+export function assistantSettingsFromApi(settings: {enabled?: unknown; version?: unknown}): AssistantSettings {
+  return {enabled: settings.enabled === true, version: typeof settings.version === 'number' ? settings.version : 0};
+}
 /** Record-triggered automations (ADR 0022). */
 export type AutomationTrigger = 'create' | 'update' | 'create_or_update' | 'delete' | 'undelete';
 export type AutomationTiming = 'before_save' | 'after_save' | 'async' | 'scheduled';
@@ -357,6 +370,12 @@ export type ObjectsClient = {
   createQuickAction(apiName: string, input: NewQuickAction): Promise<QuickAction>;
   updateQuickAction(apiName: string, name: string, version: number, changes: QuickActionChanges): Promise<QuickAction>;
   deleteQuickAction(apiName: string, name: string, version: number): Promise<void>;
+  /** The workspace's assistant switch (ADR 0034 §4). */
+  assistantSettings(signal?: AbortSignal): Promise<AssistantSettings>;
+  updateAssistantSettings(version: number, enabled: boolean): Promise<AssistantSettings>;
+  /** One object's assistant policy; every setting is off until turned on. */
+  assistantPolicy(apiName: string, signal?: AbortSignal): Promise<AssistantPolicy>;
+  updateAssistantPolicy(apiName: string, version: number, changes: AssistantPolicyChanges): Promise<AssistantPolicy>;
   automations(apiName: string, signal?: AbortSignal): Promise<Automation[]>;
   createAutomation(apiName: string, input: NewAutomation): Promise<Automation>;
   updateAutomation(apiName: string, name: string, version: number, changes: AutomationChanges): Promise<Automation>;
@@ -624,6 +643,18 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     async deleteQuickAction(apiName, name, version) {
       await request<unknown>(`${object(apiName)}/quick-actions/${encodeURIComponent(name)}?expected_version=${version}`, {method: 'DELETE'});
     },
+    async assistantSettings(signal) {
+      return assistantSettingsFromApi(await request<{enabled?: unknown; version?: unknown}>(`${base}/assistant-policy`, {signal}));
+    },
+    async updateAssistantSettings(version, enabled) {
+      return assistantSettingsFromApi(await request<{enabled?: unknown; version?: unknown}>(`${base}/assistant-policy`, {method: 'PATCH', json: {enabled, expected_version: version}}));
+    },
+    async assistantPolicy(apiName, signal) {
+      return assistantPolicyFromApi(await request<ApiAssistantPolicy>(`${object(apiName)}/assistant-policy`, {signal}));
+    },
+    async updateAssistantPolicy(apiName, version, changes) {
+      return assistantPolicyFromApi(await request<ApiAssistantPolicy>(`${object(apiName)}/assistant-policy`, {method: 'PATCH', json: {...changes, expected_version: version}}));
+    },
     async automations(apiName, signal) {
       const body = await request<{data: ApiAutomation[]}>(`${object(apiName)}/automations`, {signal});
       return body.data.map(automationFromApi);
@@ -730,6 +761,9 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
   const rules: Record<string, ValidationRule[]> = {};
   const automations: Record<string, Automation[]> = {};
   const quickActions: Record<string, QuickAction[]> = {};
+  let assistant: AssistantSettings = {enabled: false, version: 0};
+  const policies: Record<string, AssistantPolicy> = {};
+  const offPolicy = (apiName: string): AssistantPolicy => ({object: apiName, exposed: false, writable: false, indexable: false, excludedFields: [], offeredActions: [], version: 0});
   const byPosition = (left: QuickAction, right: QuickAction) => left.position - right.position || left.name.localeCompare(right.name);
   const fullRights: RecordRights = {read: true, edit: true, delete: true, share: true, transfer: true};
   const find = (apiName: string) => {
@@ -942,6 +976,43 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       return structuredClone(rule);
     },
     async deleteValidationRule(apiName, name) { rules[apiName] = (rules[apiName] ?? []).filter(rule => rule.name !== name); },
+    async assistantSettings() { return {...assistant}; },
+    async updateAssistantSettings(version, enabled) {
+      if (assistant.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      assistant = {enabled, version: version + 1};
+      return {...assistant};
+    },
+    async assistantPolicy(apiName) {
+      find(apiName);
+      return structuredClone(policies[apiName] ?? offPolicy(apiName));
+    },
+    async updateAssistantPolicy(apiName, version, changes) {
+      const object = find(apiName);
+      const current = policies[apiName] ?? offPolicy(apiName);
+      if (current.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
+      const next: AssistantPolicy = {
+        ...current,
+        ...(changes.exposed !== undefined ? {exposed: changes.exposed} : {}),
+        ...(changes.writable !== undefined ? {writable: changes.writable} : {}),
+        ...(changes.indexable !== undefined ? {indexable: changes.indexable} : {}),
+        ...(changes.excluded_fields !== undefined ? {excludedFields: [...changes.excluded_fields]} : {}),
+        ...(changes.offered_actions !== undefined ? {offeredActions: [...changes.offered_actions]} : {}),
+        version: version + 1,
+      };
+      const issues: ValidationIssue[] = [];
+      for (const setting of ['writable', 'indexable'] as const) if (next[setting] && !next.exposed) issues.push({field: setting, code: 'assistant_policy.requires_exposed', detail: `expose ${object.label} to assistants first`});
+      for (const apiName of next.excludedFields) if (apiName !== 'name' && !object.fields.some(item => item.apiName === apiName)) issues.push({field: `excluded_fields.${apiName}`, code: 'assistant_policy.field_unknown', detail: `${object.apiName} has no field ${apiName}`});
+      for (const name of next.offeredActions) {
+        const action = (quickActions[apiName] ?? []).find(item => item.name === name);
+        if (!action) { issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.action_unknown', detail: `${object.apiName} has no quick action ${name}`}); continue; }
+        if (!next.exposed) { issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.requires_exposed', detail: `expose ${object.label} to assistants first`}); continue; }
+        const writes = action.kind === 'update' ? next : action.targetObject === apiName ? next : policies[action.targetObject ?? ''];
+        if (!writes?.writable) issues.push({field: `offered_actions.${name}`, code: 'assistant_policy.action_not_writable', detail: 'let assistants write that object first'});
+      }
+      if (issues.length) throw new ObjectsApiError('invalid', 'validation.failed', issues);
+      policies[apiName] = next;
+      return structuredClone(next);
+    },
     async quickActions(apiName) { find(apiName); return structuredClone(quickActions[apiName] ?? []); },
     async createQuickAction(apiName, input) {
       find(apiName);

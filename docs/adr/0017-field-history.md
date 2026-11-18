@@ -80,7 +80,10 @@ adds provenance to existing evidence without moving a platform boundary.
    the device says widens what the server records.
    [ADR 0034](0034-assistant-bridge.md) §6 amends this for one case: a
    pushed operation may say it came from the assistant bridge, a claim that
-   only adds the server's policy re-check.
+   only adds the server's policy re-check. The server accepts it only on a
+   request a device's token authenticated, records the source as
+   `assistant` with the assistant's name, and keeps the verified device id
+   as `device_id` in the audit entry (ADR 0034 slice 1).
 4. **Details are ids and names, never free text.** A detail is at most 64
    plain ASCII characters. Audit metadata keeps the whole source; outbox
    events carry only its kind, so a device or client id is not routed with

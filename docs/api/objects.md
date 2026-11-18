@@ -457,8 +457,8 @@ nothing revoked are left out. A request names at most 1,000 record ids
 several requests.
 
 A synced device takes its definitions from the routes above: `GET
-/objects`, then `GET /objects/{api_name}`, its validation rules and its
-quick actions for each object, whenever a change page's `metadata_version` is newer than the one it
+/objects/assistant-policy`, `GET /objects`, then `GET /objects/{api_name}`,
+its validation rules and its quick actions for each object, whenever a change page's `metadata_version` is newer than the one it
 applied. It reads each changed record with `include_deleted=true`, and pushes
 its queued changes as composite requests (ADR 0024). A related-to field
 keeps, on the device, only the objects of its allowlist the device holds.
@@ -633,6 +633,100 @@ nothing: running it uses the normal record create and update APIs.
   action on the device is the ordinary local create or update as the
   member, which the server checks again when it is pushed.
 
+## Assistant policy
+
+What a device's assistant bridge (ADR 0034, #234) may reach is object
+metadata. Every setting is off until an administrator turns it on, and the
+policy only narrows: assistants act as the member, after the member's
+permissions and sharing, and the policy grants nothing.
+
+- `GET /objects/assistant-policy` returns the workspace switch with the
+  policy of every object the caller can read (every object for holders of
+  `objects.manage`):
+
+  ```json
+  {"enabled": true, "version": 2, "updated_at": "…", "updated_by": {"id": "…", "name": "…"},
+   "objects": [{"object": "custom:deal", "exposed": true, "writable": true, "indexable": true,
+                "excluded_fields": ["custom:amount"], "offered_actions": ["close"],
+                "version": 3, "updated_at": "…", "updated_by": {"id": "…", "name": "…"}}]}
+  ```
+
+  A workspace or object that never had a policy reads as everything off
+  with `version: 0` and `updated_at: null`.
+- `PATCH /objects/assistant-policy` with `{"expected_version": 2,
+  "enabled": false}` turns assistant access on or off for the workspace.
+- `GET /objects/{object}/assistant-policy` returns one object's policy to
+  anyone who can read the object; to anyone else the object is unknown.
+  `PATCH` with `expected_version` changes any of `exposed`, `writable`,
+  `indexable`, `excluded_fields` and `offered_actions`; what it leaves out
+  stays as it is.
+- `exposed`: assistants may find and read the object's records, as the
+  member. `writable`: they may create and update them, each change confirmed
+  by the member; it requires `exposed`. `indexable`: devices may put the
+  records into the phone's search index; it requires `exposed`.
+  `excluded_fields` lists the fields, the record name as `name`, whose values
+  never enter that index; they apply to the index only, never to assistant
+  reads, which field-level security decides. `offered_actions` lists the
+  quick actions offered to assistants, at most 10: each requires `exposed`,
+  and the object it writes (this object for an update action, the target
+  object for a create action) must be `writable`.
+- Changes need `objects.manage`, otherwise `403 auth.permission_denied`. A
+  plugin's installation never sets the policy, so a plugin object follows the
+  workspace's like its sharing model and starts off; a suspended plugin
+  object is unknown here too. Problems are `400` with
+  `assistant_policy.requires_exposed` (on `writable`, `indexable` or
+  `offered_actions.{name}`), `assistant_policy.field_unknown` and
+  `assistant_policy.field_duplicate` (on `excluded_fields.{field}`),
+  `assistant_policy.action_unknown`, `assistant_policy.action_duplicate` and
+  `assistant_policy.action_not_writable` (on `offered_actions.{name}`), and
+  `assistant_policy.actions_invalid`; a stale `expected_version` is `409
+  records.version_conflict`.
+- Fields and actions are kept by id: a deleted field or action leaves the
+  policy, and one made again under the same name is not excluded or offered.
+  Turning `writable` off takes the create actions of other objects that make
+  its records out of their objects' `offered_actions`, each as its own change.
+- Each change is audited (`objects.assistant_settings.updated`,
+  `objects.assistant_policy.updated`) and publishes
+  `platform.objects.assistant-policy-updated.v1` with `scope` (`workspace` or
+  `object`) and the settings by API names in the same transaction, and moves
+  the workspace `metadata_version`.
+- A synced device reads `GET /objects/assistant-policy` with its other
+  definitions and keeps each object's policy against its own fields and
+  quick actions; names it does not hold are left out, and a server that does
+  not answer leaves assistant access off on the device. A device answers both
+  `GET` routes from its replica and refuses `PATCH` with `403
+  sync.server_only`.
+
+### Assistant writes on push
+
+A create or update in a composite request may carry an assistant marker
+(ADR 0034 §6, ADR 0017 "Change source" rule 3 as amended), which only a
+synced device's push sends for a change its assistant bridge made:
+
+```json
+{"method": "update", "reference": "r0", "object": "custom:deal", "id": "a0B…",
+ "expected_version": 4, "values": {"custom:stage": "won"},
+ "assistant": {"assistant": "siri", "quick_action": {"object": "custom:deal", "name": "close"}}}
+```
+
+- `assistant` is `siri` or `gemini`; any other name makes the request
+  invalid. `quick_action`, when the assistant ran one, names the action by
+  its object and API name.
+- The marker only adds checks. The operation first passes every check it
+  would pass unmarked; then, in the same transaction, the server checks its
+  current policy: assistant access on, the written object exposed and
+  writable, and a named quick action offered on an exposed object and
+  writing this object this way (an update action updates its own object, a
+  create action creates its target object). Otherwise the operation fails
+  with `403 assistant.not_allowed`, and the device keeps the change like any
+  write the server refuses.
+- Only a request a device's token authenticated may carry it; anything else,
+  a device's own command bridge included, fails the operation with `400
+  assistant.marker_not_accepted`.
+- The change's source is `{"kind": "assistant", "detail": "siri"}` in
+  history and audit, and the audit entry keeps the verified device id as
+  `device_id` beside it. Events carry only the kind.
+
 ## Record drafts
 
 Record forms keep the member's unfinished input as a draft (ADR 0036). A
@@ -786,6 +880,9 @@ this field is `409 objects.field_in_use`.
   single-record route would return.
 - Problems with the request itself are `composite.operations_invalid`
   (1 to 25 operations) and `composite.reference_invalid`.
+- A create or update a device pushes for its assistant bridge carries an
+  `assistant` marker, checked against the assistant policy
+  ([Assistant writes on push](#assistant-writes-on-push)).
 
 ## API clients
 
@@ -1121,6 +1218,10 @@ follows the objects.
 Errors use the problem format with a stable `code`. Validation failures
 return `400 validation.failed` with an `errors` list of `{field, code,
 detail}`. Version mismatches return `409 records.version_conflict`.
+A pushed assistant write the workspace's assistant policy does not allow
+returns `403 assistant.not_allowed`, and an assistant marker on anything but
+a device's push `400 assistant.marker_not_accepted` (see
+[Assistant policy](#assistant-policy)).
 Changing or deleting what a plugin owns returns `409 objects.plugin_owned`;
 the codes for refused plugin installations are listed in
 [Declaring objects](../plugins/objects.md#enabling-upgrading-and-disabling).
@@ -1137,7 +1238,8 @@ report, chart and visibility but not the query), the record draft expiry
 of days), and quick actions created,
 updated and deleted (`platform.objects.quick-action-created.v1`,
 `-updated.v1`, `-deleted.v1`, naming the object, the action, its kind and
-target, its fields and the fields it presets, never the preset values). Payloads name the object, record and
+target, its fields and the fields it presets, never the preset values), and
+assistant policy changes (`platform.objects.assistant-policy-updated.v1`). Payloads name the object, record and
 changed fields, never field values; lookup and related-to values, which
 are record ids, are no exception. Changes a plugin's installation makes
 also carry `"plugin": "<plugin id>"`, with the member who changed the

@@ -1021,6 +1021,7 @@ impl ObjectService {
         let context = MutationContext {
             automation_id: Some(automation.id),
             source: Some(crate::MutationSource::automation(&automation.name)),
+            assistant_device: None,
             ..context
         };
         let mut saves = 0;
@@ -1154,6 +1155,7 @@ impl ObjectService {
             causation_id: Some(job.id),
             automation_id: None,
             source: Some(crate::MutationSource::automation(&automation.name)),
+            assistant_device: None,
         };
         // The condition held when the job was queued and is not checked
         // again; the values are those of the record now.
@@ -1358,6 +1360,7 @@ impl ObjectService {
         let context = MutationContext {
             automation_id: Some(automation.id),
             source: Some(crate::MutationSource::automation(&automation.name)),
+            assistant_device: None,
             ..context
         };
         let (audit, event) = crate::events::workspace_event(

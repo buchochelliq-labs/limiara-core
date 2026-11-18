@@ -299,6 +299,28 @@ pub trait ObjectTx: Send {
         action_id: Uuid,
         expected_version: i64,
     ) -> Result<bool, ObjectError>;
+    /// The workspace's assistant switch (ADR 0034 §4); `None` before it
+    /// was ever set.
+    async fn assistant_settings(&mut self)
+        -> Result<Option<crate::AssistantSettings>, ObjectError>;
+    /// Writes the switch if it is still at `expected_version`, inserting it
+    /// when that is 0; false otherwise.
+    async fn put_assistant_settings(
+        &mut self,
+        settings: &crate::AssistantSettings,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError>;
+    /// Every object's stored assistant policy, deleted objects' included.
+    async fn assistant_policies(
+        &mut self,
+    ) -> Result<Vec<crate::StoredAssistantPolicy>, ObjectError>;
+    /// Writes an object's policy if it is still at `expected_version`,
+    /// inserting it when that is 0; false otherwise.
+    async fn put_assistant_policy(
+        &mut self,
+        policy: &crate::StoredAssistantPolicy,
+        expected_version: i64,
+    ) -> Result<bool, ObjectError>;
     /// The related actions a plugin object declares, by field then name
     /// (ADR 0033 §3).
     async fn related_actions(

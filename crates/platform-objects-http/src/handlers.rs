@@ -14,11 +14,12 @@ use axum::{
 use platform_objects::composite::{CompositeOperation, CompositeOutcome, CompositeRequest};
 use platform_objects::service::ListRecords;
 use platform_objects::{
-    AccessFlags, Automation, CreateAutomation, CreateField, CreateObject, CreateQuickAction,
-    CreateValidationRule, FieldDefinition, FieldType, GranteeKind, MutationContext,
-    ObjectDefinition, ObjectError, ObjectService, QuickAction, Record, RecordSort, RecordStatus,
-    ShareAccess, SortDirection, UpdateAutomation, UpdateField, UpdateObject, UpdateQuickAction,
-    UpdateValidationRule, ValidationIssue, ValidationRule,
+    AccessFlags, AssistantPolicy, AssistantSettings, Automation, CreateAutomation, CreateField,
+    CreateObject, CreateQuickAction, CreateValidationRule, FieldDefinition, FieldType, GranteeKind,
+    MutationContext, ObjectDefinition, ObjectError, ObjectService, QuickAction, Record, RecordSort,
+    RecordStatus, ShareAccess, SortDirection, UpdateAssistantPolicy, UpdateAssistantSettings,
+    UpdateAutomation, UpdateField, UpdateObject, UpdateQuickAction, UpdateValidationRule,
+    ValidationIssue, ValidationRule,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -99,6 +100,14 @@ fn error_problem(
             "the query took too long; filter on more selective indexed fields",
             Vec::new(),
         ),
+        ObjectError::Conflict(code @ platform_objects::assistant_policy::ASSISTANT_NOT_ALLOWED) => {
+            (
+                StatusCode::FORBIDDEN,
+                code,
+                "the workspace's assistant policy does not allow this change",
+                Vec::new(),
+            )
+        }
         ObjectError::Conflict(code) => (
             StatusCode::CONFLICT,
             code,
@@ -677,6 +686,115 @@ pub async fn delete_validation_rule<H: ObjectsHost>(
         .await
     {
         Ok(rule) => Json(rule_json(&rule)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+// --- Assistant policy (ADR 0034 §4) ------------------------------------------
+
+fn assistant_settings_json(settings: &AssistantSettings) -> Value {
+    json!({
+        "enabled": settings.enabled,
+        "version": settings.version,
+        "updated_at": settings.updated_at,
+        "updated_by": crate::user_reference(settings.updated_by),
+    })
+}
+
+fn assistant_policy_json(policy: &AssistantPolicy) -> Value {
+    json!({
+        "object": policy.object,
+        "exposed": policy.exposed,
+        "writable": policy.writable,
+        "indexable": policy.indexable,
+        "excluded_fields": policy.excluded_fields,
+        "offered_actions": policy.offered_actions,
+        "version": policy.version,
+        "updated_at": policy.updated_at,
+        "updated_by": crate::user_reference(policy.updated_by),
+    })
+}
+
+/// The workspace switch with every readable object's policy.
+pub async fn workspace_assistant_policy<H: ObjectsHost>(
+    State(state): State<H>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service.assistant_policy().await {
+        Ok(policy) => {
+            let mut body = assistant_settings_json(&policy.settings);
+            if let Some(map) = body.as_object_mut() {
+                map.insert(
+                    "objects".into(),
+                    Value::Array(policy.objects.iter().map(assistant_policy_json).collect()),
+                );
+            }
+            Json(body).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn update_assistant_settings<H: ObjectsHost>(
+    State(state): State<H>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Json<UpdateAssistantSettings>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return invalid_body();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .update_assistant_settings(input, context(&request_id, &caller))
+        .await
+    {
+        Ok(settings) => Json(assistant_settings_json(&settings)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn object_assistant_policy<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object)): Path<(Uuid, String)>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service.object_assistant_policy(&object).await {
+        Ok(policy) => Json(assistant_policy_json(&policy)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+pub async fn update_object_assistant_policy<H: ObjectsHost>(
+    State(state): State<H>,
+    Path((_workspace, object)): Path<(Uuid, String)>,
+    Extension(caller): Extension<Caller>,
+    Extension(request_id): Extension<RequestId>,
+    body: Result<Json<UpdateAssistantPolicy>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return invalid_body();
+    };
+    let service = match service(&state, &caller).await {
+        Ok(service) => service,
+        Err(response) => return response,
+    };
+    match service
+        .update_object_assistant_policy(&object, input, context(&request_id, &caller))
+        .await
+    {
+        Ok(policy) => Json(assistant_policy_json(&policy)).into_response(),
         Err(error) => error_response(error),
     }
 }

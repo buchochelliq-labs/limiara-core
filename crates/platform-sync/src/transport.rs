@@ -84,6 +84,12 @@ pub trait SyncTransport: Send + Sync {
     /// when the object is gone or no longer readable.
     async fn quick_actions(&self, api_name: &str) -> Result<Option<Vec<Value>>, SyncError>;
 
+    /// `GET /objects/assistant-policy`: the workspace's assistant switch
+    /// and the policy of each object the member can read (ADR 0034 §4), or
+    /// `None` when the server does not show it, which the replica takes as
+    /// assistant access off.
+    async fn assistant_policy(&self) -> Result<Option<Value>, SyncError>;
+
     /// `POST /composite`, with each operation's result in order.
     async fn composite(
         &self,
