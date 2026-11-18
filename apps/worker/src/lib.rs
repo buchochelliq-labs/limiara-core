@@ -7,6 +7,7 @@ pub mod draft_keys;
 pub mod extension_retention;
 pub mod outbox_publisher;
 pub mod plugin_runtime;
+pub mod recycle_bin;
 
 use plugin_runtime_native::{NativeExtensionHost, NativeWorkerPlugin};
 use std::sync::Arc;

@@ -4,7 +4,7 @@ import {AppShell} from '../shell/AppShell';
 import {shellFixture} from '../shell/data';
 import {createFixtureObjectsClient, createObjectsApiClient, formatValue, sourceFromApi, ObjectsApiError, quickActionFromApi, recordFromApi, type ObjectDescription, type QuickAction} from './api';
 import {AllowlistForm, allowlistChoices, AssistantAccess, AssistantPolicyForm, AssistantSwitch, indexFields, LookupFilterForm, suggestName, ValidationRules} from './ObjectManager';
-import {ArchivedNotice, archiveProblem, RecordForm, RecordModal, RelatedLists, valuesToSend} from './ObjectPages';
+import {ArchivedNotice, archiveProblem, describeLookupRestore, RecordForm, RecordModal, RecycleBinNotice, RelatedLists, valuesToSend} from './ObjectPages';
 import {creatable, GlobalNew} from './GlobalNew';
 import {SharingPanel} from './SharingPanel';
 import {actionFields, actionTargets, QuickActionForm, QuickActions, targetLabel} from './QuickActions';
@@ -113,6 +113,27 @@ describe('workspace objects client', () => {
 });
 
 describe('archiving records (ADR 0035 G1)', () => {
+  it('reads what an undelete did with the cleared lookups (ADR 0035 G3)', async () => {
+    const fetcher = respond(200, {...recordFromApiShape(), lookups_restored: {restored: 2, skipped: 1, skipped_by_reason: {changed: 1}}});
+    const restored = await createObjectsApiClient(workspace, fetcher).undeleteRecord('custom:project', '000abc', 4);
+    expect(vi.mocked(fetcher).mock.calls[0]?.[0]).toBe(`/api/v1/workspaces/${workspace}/objects/custom%3Aproject/records/000abc/undelete?expected_version=4`);
+    expect(restored.lookupsRestored).toEqual({restored: 2, skipped: 1});
+    expect(restored.values).toEqual({});
+    const older = await createObjectsApiClient(workspace, respond(200, recordFromApiShape())).undeleteRecord('custom:project', '000abc', 4);
+    expect(older.lookupsRestored).toBeNull();
+  });
+
+  it('tells the member how many links an undelete restored', () => {
+    expect(describeLookupRestore(null)).toBe('');
+    expect(describeLookupRestore({restored: 0, skipped: 0})).toBe('');
+    expect(describeLookupRestore({restored: 1, skipped: 0})).toBe(' 1 link to it was restored.');
+    expect(describeLookupRestore({restored: 3, skipped: 2})).toBe(' 3 links to it were restored. 2 links were not restored because the linking record changed or is in the recycle bin.');
+  });
+
+  it('states the recycle bin retention (ADR 0035 G2)', () => {
+    expect(renderToStaticMarkup(<RecycleBinNotice />)).toContain('Deleted records are permanently removed after 15 days');
+  });
+
   it('posts archive and unarchive with the version and reads archived_at', async () => {
     const shape = {...recordFromApiShape(), archived_at: '2026-11-02T10:00:00Z'};
     const fetcher = respond(200, shape);

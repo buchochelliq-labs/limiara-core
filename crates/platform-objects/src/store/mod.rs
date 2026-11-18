@@ -514,6 +514,63 @@ pub trait ObjectTx: Send {
     /// just rebuilt.
     async fn mark_formulas_indexed(&mut self, object_id: Uuid) -> Result<(), ObjectError>;
 
+    /// Ids of records in the recycle bin since before `before`, oldest
+    /// deletion first (ADR 0035 G2).
+    async fn purge_candidates(
+        &mut self,
+        before: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> Result<Vec<Uuid>, ObjectError>;
+    /// Holds a record for purging until the transaction ends, if it is
+    /// still in the recycle bin and, with `before`, went there before that
+    /// moment. False when it was undeleted meanwhile or is gone: an
+    /// undelete that committed first wins, and one that comes later waits
+    /// and then finds the record gone.
+    async fn claim_purge(
+        &mut self,
+        record_id: Uuid,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<bool, ObjectError>;
+    /// `(field id, record id)` for every record whose reference points to
+    /// `target_id`, records in the recycle bin included.
+    async fn referencing_all(&mut self, target_id: Uuid) -> Result<Vec<(Uuid, Uuid)>, ObjectError>;
+    /// Removes claimed recycle-bin records for good, with their pivots,
+    /// search terms, shares, history, change-log rows and cleared-lookup
+    /// rows, and the pivot rows of other records pointing to them. Returns
+    /// how many records went.
+    async fn purge_records(&mut self, ids: &[Uuid]) -> Result<u64, ObjectError>;
+    /// Appends an outbox event whose audit evidence is a batch entry
+    /// written separately (the purge's).
+    async fn append_event(&mut self, event: &EventEnvelope) -> Result<(), ObjectError>;
+    /// Counts a purge pass that removed records and returns the new count,
+    /// which change pages carry so synced devices ask which records they
+    /// hold are gone.
+    async fn note_purge(&mut self) -> Result<i64, ObjectError>;
+    /// How many purge passes removed records; 0 before any did.
+    async fn purge_count(&mut self) -> Result<i64, ObjectError>;
+    /// Remembers a lookup value that deleting a record cleared (ADR 0035
+    /// G3), replacing what was kept for the same record, referencing record
+    /// and field.
+    async fn put_cleared_lookup(
+        &mut self,
+        lookup: &crate::recycle_bin::ClearedLookup,
+    ) -> Result<(), ObjectError>;
+    /// The lookup values deleting `deleted_record_id` cleared, by
+    /// referencing record and field.
+    async fn cleared_lookups(
+        &mut self,
+        deleted_record_id: Uuid,
+    ) -> Result<Vec<crate::recycle_bin::ClearedLookup>, ObjectError>;
+    /// Forgets the lookup values deleting `deleted_record_id` cleared.
+    async fn forget_cleared_lookups(&mut self, deleted_record_id: Uuid) -> Result<(), ObjectError>;
+    /// Marks the cleared values kept for `record_id`'s `field_ids` as
+    /// changed since, so undeleting their target leaves them alone.
+    async fn mark_cleared_lookups_changed(
+        &mut self,
+        record_id: Uuid,
+        field_ids: &[Uuid],
+    ) -> Result<(), ObjectError>;
+
     async fn append_evidence(
         &mut self,
         audit: &AuditEvent,
@@ -574,9 +631,10 @@ pub trait ObjectTx: Send {
         directory: &ReplicaDirectory,
     ) -> Result<(), ObjectError>;
 
-    /// The live records a replica holds as the server sent them, as
-    /// `(object API name, public id)`, oldest first: what a device asks the
-    /// server about for its revocation set (ADR 0024 §4). Records made on the
+    /// The records a replica holds as the server sent them, recycle bin
+    /// included, as `(object API name, public id)`, oldest first: what a
+    /// device asks the server about for its revocation set (ADR 0024 §4),
+    /// so records the server purged from its bin go too (ADR 0035 G2). Records made on the
     /// device and not pushed yet are left out; records of objects the
     /// replica retired are kept in, so losing access to a whole object
     /// erases its records too.

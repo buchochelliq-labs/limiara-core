@@ -1183,3 +1183,220 @@ async fn postgres_store_passes_the_field_permission_conformance_suite() {
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
     conformance::field_permissions::run(store, tenant).await;
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_recycle_bin_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    let other = Uuid::now_v7();
+    for (id, name) in [(tenant, "Recycle bin"), (other, "Recycle bin, other")] {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
+    let report = conformance::recycle_bin::run(store.clone(), tenant).await;
+
+    // Nothing of a purged record is left, cascades and the change log
+    // included, read past row-level security.
+    for (table, column) in [
+        ("records", "id"),
+        ("record_index", "record_id"),
+        ("record_unique", "record_id"),
+        ("record_references", "record_id"),
+        ("record_references", "target_id"),
+        ("record_search_terms", "record_id"),
+        ("record_shares", "record_id"),
+        ("record_history", "record_id"),
+        ("record_changes", "record_id"),
+        ("record_cleared_lookups", "record_id"),
+        ("record_cleared_lookups", "deleted_record_id"),
+    ] {
+        let left: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM {table} WHERE tenant_id = $1 AND {column} = ANY($2)"
+        ))
+        .bind(tenant)
+        .bind(&report.purged)
+        .fetch_one(&migrator)
+        .await
+        .expect(table);
+        assert_eq!(left, 0, "{table}.{column}");
+    }
+    let survivor: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM records WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant)
+            .bind(report.survivor)
+            .fetch_one(&migrator)
+            .await
+            .expect("survivor");
+    assert_eq!(survivor, 1);
+    // One event per record and one audit entry per batch, as the platform;
+    // the records' earlier evidence stays.
+    let events: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT envelope FROM outbox WHERE tenant_id = $1 \
+         AND event_type = 'platform.objects.record-purged.v1'",
+    )
+    .bind(tenant)
+    .fetch_all(&migrator)
+    .await
+    .expect("events");
+    for public_id in &report.purged_public {
+        let event = events
+            .iter()
+            .find(|event| event["payload"]["entity_id"] == *public_id.as_str())
+            .unwrap_or_else(|| panic!("event for {public_id}"));
+        assert_eq!(event["payload"]["source"], "system");
+        assert!(event["actor_id"].is_null(), "{event}");
+    }
+    let audits: Vec<(Option<Uuid>, serde_json::Value)> = sqlx::query_as(
+        "SELECT actor_id, metadata FROM audit_log WHERE tenant_id = $1 \
+         AND action = 'records.recycle_bin.purged'",
+    )
+    .bind(tenant)
+    .fetch_all(&migrator)
+    .await
+    .expect("audit");
+    assert!(audits.len() >= report.batches as usize);
+    assert!(audits.iter().all(|(actor, metadata)| actor.is_none()
+        && metadata["retention_days"] == 15
+        && metadata["source"]["kind"] == "system"));
+    let deleted_evidence: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'records.record.deleted'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert!(deleted_evidence >= report.purged.len() as i64);
+
+    // Live change-log rows stay append-only: the purge's removal policy
+    // covers records in the bin only.
+    let live: Option<Uuid> = sqlx::query_scalar(
+        "SELECT c.record_id FROM record_changes c JOIN records r \
+           ON r.tenant_id = c.tenant_id AND r.id = c.record_id \
+         WHERE c.tenant_id = $1 AND r.deleted_at IS NULL LIMIT 1",
+    )
+    .bind(tenant)
+    .fetch_optional(&migrator)
+    .await
+    .expect("live change");
+    let live = live.expect("a live record's change");
+    let mut tx = platform_db::begin_tenant_tx(&app, tenant)
+        .await
+        .expect("own");
+    let removed = sqlx::query("DELETE FROM record_changes WHERE tenant_id = $1 AND record_id = $2")
+        .bind(tenant)
+        .bind(live)
+        .execute(&mut *tx)
+        .await
+        .expect("delete")
+        .rows_affected();
+    assert_eq!(removed, 0, "a live record's change log is not removable");
+    drop(tx);
+
+    // The cleared-lookup table: forced RLS with both policies, no rows
+    // without a workspace context, none of another workspace's, and no
+    // writes into another workspace.
+    let admin = platform_objects::ObjectService::new(
+        store.clone(),
+        platform_objects::ObjectCaller::new(
+            tenant,
+            Uuid::now_v7(),
+            [
+                platform_objects::OBJECTS_MANAGE_PERMISSION,
+                platform_objects::RECORDS_MODIFY_ALL_PERMISSION,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            Vec::new(),
+        ),
+    );
+    let context = || platform_objects::MutationContext::new(Uuid::now_v7());
+    let org = admin
+        .create_record(
+            "custom:org",
+            &serde_json::json!({"name": "Kept"})
+                .as_object()
+                .cloned()
+                .expect("body"),
+            context(),
+        )
+        .await
+        .expect("org");
+    admin
+        .create_record(
+            "custom:person",
+            &serde_json::json!({"name": "Pat", "custom:employer": org.public_id})
+                .as_object()
+                .cloned()
+                .expect("body"),
+            context(),
+        )
+        .await
+        .expect("person");
+    admin
+        .delete_record("custom:org", &org.public_id, org.version, context())
+        .await
+        .expect("delete org");
+    let forced: (bool, bool) = sqlx::query_as(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'record_cleared_lookups'",
+    )
+    .fetch_one(&migrator)
+    .await
+    .expect("rls flags");
+    assert_eq!(forced, (true, true));
+    let policies: Vec<String> = sqlx::query_scalar(
+        "SELECT policyname::text FROM pg_policies WHERE tablename = 'record_cleared_lookups' ORDER BY 1",
+    )
+    .fetch_all(&migrator)
+    .await
+    .expect("policies");
+    assert_eq!(
+        policies,
+        [
+            "record_cleared_lookups_migrator_management",
+            "record_cleared_lookups_tenant_isolation"
+        ]
+    );
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM record_cleared_lookups")
+        .fetch_one(&app)
+        .await
+        .expect("no context");
+    assert_eq!(visible, 0, "record_cleared_lookups without app.tenant_id");
+    let mut tx = platform_db::begin_tenant_tx(&app, tenant)
+        .await
+        .expect("own");
+    let own: i64 = sqlx::query_scalar("SELECT count(*) FROM record_cleared_lookups")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("own");
+    assert_eq!(own, 1);
+    drop(tx);
+    let mut tx = platform_db::begin_tenant_tx(&app, other)
+        .await
+        .expect("other");
+    let foreign: i64 = sqlx::query_scalar("SELECT count(*) FROM record_cleared_lookups")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("foreign");
+    assert_eq!(foreign, 0, "another workspace cannot read them");
+    let smuggled = sqlx::query(
+        "INSERT INTO record_cleared_lookups (tenant_id, deleted_record_id, record_id, field_id, \
+           value, cleared_version, cleared_at) \
+         SELECT $1, deleted_record_id, record_id, field_id, value, cleared_version, now() \
+         FROM (SELECT $2::uuid AS deleted_record_id, $2::uuid AS record_id, $2::uuid AS field_id, \
+               '\"x\"'::jsonb AS value, 1::bigint AS cleared_version) AS row",
+    )
+    .bind(tenant)
+    .bind(org.id)
+    .execute(&mut *tx)
+    .await;
+    assert!(smuggled.is_err(), "another workspace cannot write them");
+    drop(tx);
+}

@@ -102,7 +102,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Runs queued background and scheduled automations (ADR 0022 §6), bulk
-/// jobs (ADR 0023 §2) and device notifications (ADR 0030 §3) through the
+/// jobs (ADR 0023 §2), the recycle-bin purge (ADR 0035 G2) and device
+/// notifications (ADR 0030 §3) through the
 /// RLS-bound tenant role. Without it, jobs wait in their workspaces and
 /// devices sync on their own schedule.
 fn start_automation_jobs(
@@ -111,7 +112,7 @@ fn start_automation_jobs(
 ) -> anyhow::Result<()> {
     let Some(tenant_url) = settings.platform.worker.tenant_database_url.as_deref() else {
         tracing::warn!(
-            "platform.worker.tenant_database_url is not configured; background and scheduled automations, bulk jobs and device notifications will not run"
+            "platform.worker.tenant_database_url is not configured; background and scheduled automations, bulk jobs, the recycle-bin purge and device notifications will not run"
         );
         return Ok(());
     };
@@ -129,6 +130,13 @@ fn start_automation_jobs(
         worker_pool.clone(),
         tenant_pool.clone(),
         Duration::from_secs(5),
+    ));
+    // Engine records 15 days in the recycle bin (ADR 0035 G2). Hourly is
+    // ample for a 15-day window; a pass is cheap when nothing is due.
+    tokio::spawn(worker::recycle_bin::run(
+        worker_pool.clone(),
+        tenant_pool.clone(),
+        Duration::from_secs(60 * 60),
     ));
     let push = &settings.platform.devices.push;
     let notifiers = worker::device_notifications::push_notifiers(push)?;

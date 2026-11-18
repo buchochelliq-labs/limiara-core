@@ -28,6 +28,9 @@ pub struct ChangesPage {
     pub next_after: i64,
     pub head: i64,
     pub metadata_version: i64,
+    /// How many recycle-bin purges removed records on the server; 0 from a
+    /// server that does not say (ADR 0035 G2).
+    pub purges: i64,
 }
 
 /// One event of `GET /objects/changes/stream`.

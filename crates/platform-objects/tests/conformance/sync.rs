@@ -102,8 +102,9 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         manifest(&[("custom:contact", &["it's') OR (true", "zzz000000000000"])])
     );
 
-    // An unshared record, a deleted one and an object Ana can no longer
-    // read are all revoked; an object that does not exist is too.
+    // An unshared record and an object Ana can no longer read are revoked;
+    // an object that does not exist is too. A record in the recycle bin is
+    // still held until the purge removes it (ADR 0035 G2).
     ben.unshare_record(
         "custom:contact",
         &shared.public_id,
@@ -131,12 +132,25 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         ("custom:empty", &[]),
     ]);
     let revoked = ana.revocations(&held).await.expect("revocations");
-    let mut lost = vec![own.public_id.clone(), shared.public_id.clone()];
-    lost.sort();
     assert_eq!(revoked.len(), 3);
     assert_eq!(revoked["custom:account"], vec![account.public_id.clone()]);
-    assert_eq!(revoked["custom:contact"], lost);
+    assert_eq!(revoked["custom:contact"], vec![shared.public_id.clone()]);
     assert_eq!(revoked["custom:gone"], vec!["abc".to_owned()]);
+
+    // Once purged, the deleted record is revoked too.
+    let purged = purge_recycle_bin(
+        store.clone(),
+        tenant,
+        chrono::Utc::now() + RECYCLE_BIN_RETENTION + chrono::TimeDelta::hours(1),
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("purge");
+    assert!(purged.purged >= 1, "{purged:?}");
+    let revoked = ana.revocations(&held).await.expect("revocations");
+    let mut lost = vec![own.public_id.clone(), shared.public_id.clone()];
+    lost.sort();
+    assert_eq!(revoked["custom:contact"], lost);
 
     // More than one request's worth of ids is refused.
     let many: Vec<String> = (0..=sync::MANIFEST_MAX).map(|n| format!("id{n}")).collect();

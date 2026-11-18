@@ -728,7 +728,7 @@ audited=$(sql --command="SELECT string_agg(action || ':' || coalesce(metadata->>
 [[ "$audited" == "devices.device.registered:,devices.device.revoked:refresh_reused,devices.device.registered:,devices.device.revoked:revoked,devices.device.registered:,devices.device.revoked:signed_out" ]] || fail "device evidence: $audited"
 
 log "forced RLS: the application role sees no engine rows without tenant context"
-for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources assistant_settings assistant_object_policies record_draft_settings; do
+for table in object_definitions field_definitions object_permissions records record_index record_unique record_references record_shares reporting_lines record_history record_changes change_counters record_search_terms validation_rules quick_actions field_reference_objects automations automation_runs automation_jobs bulk_jobs bulk_job_rows api_clients api_client_tokens formula_index_marks devices device_tokens timeline_sources assistant_settings assistant_object_policies record_draft_settings record_cleared_lookups; do
   rows=$(app_sql --command="SELECT count(*) FROM $table;")
   [[ "$rows" == 0 ]] || fail "$table leaks $rows rows without tenant context"
   forced=$(sql --command="SELECT relforcerowsecurity FROM pg_class WHERE relname = '$table';")
@@ -1248,4 +1248,40 @@ expect 200 "$(call "$member_cookie" DELETE "$regions/$south?expected_version=3")
 expect 409 "$(call "$member_cookie" POST "$regions/$south/archive?expected_version=4")" "archive a deleted record"
 [[ "$(field '.code')" == records.deleted ]] || fail "deleted code: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, record drafts, RLS, evidence and the browser pages\n'
+log "recycle bin (ADR 0035 G2, G3): undelete restores cleared lookups; the purge finds due workspaces"
+expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:region/fields" \
+  '{"name":"parent","label":"Parent","field_type":"lookup","reference_object":"custom:region"}')" "a lookup between regions"
+expect 201 "$(call "$member_cookie" POST "$regions" '{"name":"West"}')" "a parent region"
+west=$(field '.id')
+expect 201 "$(call "$member_cookie" POST "$regions" "{\"name\":\"East\",\"custom:parent\":\"$west\"}")" "a child region"
+east=$(field '.id')
+expect 201 "$(call "$member_cookie" POST "$regions" "{\"name\":\"Central\",\"custom:parent\":\"$west\"}")" "another child region"
+central=$(field '.id')
+expect 200 "$(call "$member_cookie" DELETE "$regions/$west?expected_version=1")" "delete the parent"
+west_version=$(field '.version')
+expect 200 "$(call "$member_cookie" GET "$regions/$east")" "the child after the delete"
+[[ "$(field '."custom:parent"')" == null && "$(field '.version')" == 2 ]] || fail "the delete clears the lookup as an edit: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$regions/$central")" "the other child"
+expect 200 "$(call "$member_cookie" PATCH "$regions/$central" "{\"expected_version\":$(field '.version'),\"custom:parent\":\"$east\"}")" "the other child moves"
+west_kept="SELECT count(*) FROM record_cleared_lookups WHERE tenant_id = '$tenant' AND deleted_record_id = (SELECT id FROM records WHERE tenant_id = '$tenant' AND public_id = '$west');"
+[[ "$(sql --command="$west_kept")" == 2 ]] || fail "both cleared values are kept"
+[[ "$(app_sql --command="SELECT count(*) FROM record_cleared_lookups;")" == 0 ]] || fail "record_cleared_lookups without app.tenant_id"
+expect 200 "$(call "$member_cookie" POST "$regions/$west/undelete?expected_version=$west_version")" "undelete the parent"
+[[ "$(field '.lookups_restored.restored')" == 1 && "$(field '.lookups_restored.skipped')" == 1 && "$(field '.lookups_restored.skipped_by_reason.changed')" == 1 ]] || fail "the undelete reports links: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$regions/$east")" "the child after the undelete"
+[[ "$(field '."custom:parent"')" == "$west" && "$(field '.version')" == 3 ]] || fail "the lookup is restored as a new version: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$regions/$central")" "the moved child"
+[[ "$(field '."custom:parent"')" == "$east" ]] || fail "a changed field is left alone: $(cat "$body")"
+[[ "$(sql --command="$west_kept")" == 0 ]] || fail "kept values go with the undelete"
+[[ "$(sql --command="SELECT count(*) FROM outbox WHERE tenant_id = '$tenant' AND event_type = 'platform.objects.record-updated.v1' AND envelope->'payload'->>'entity_id' = '$east' AND envelope->'payload'->>'source' = 'system';")" == 1 ]] || fail "the restore's event"
+[[ "$(sql --command="SELECT count(*) FROM audit_log WHERE tenant_id = '$tenant' AND action = 'records.lookups.restore_skipped' AND target = 'record:$west';")" == 1 ]] || fail "the skipped link is audited"
+# The purge is due 15 days after deletion: South, deleted above, is moved
+# back in time, and the worker's bounded discovery routine finds the
+# workspace; the purge itself runs in the worker (apps/worker tests).
+[[ "$(psql "$PLATFORM_TEST_WORKER_DATABASE_URL" --no-psqlrc --tuples-only --no-align --quiet --command="SELECT count(*) FROM platform_due_recycle_bin_purges(now() - interval '15 days', 500) WHERE tenant_id = '$tenant';")" == 0 ]] || fail "nothing is due before 15 days"
+sql --command="UPDATE records SET deleted_at = now() - interval '16 days' WHERE tenant_id = '$tenant' AND public_id = '$south';" >/dev/null
+[[ "$(psql "$PLATFORM_TEST_WORKER_DATABASE_URL" --no-psqlrc --tuples-only --no-align --quiet --command="SELECT count(*) FROM platform_due_recycle_bin_purges(now() - interval '15 days', 500) WHERE tenant_id = '$tenant';")" == 1 ]] || fail "the worker's discovery finds the due workspace"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/changes?limit=1")" "a change page"
+[[ "$(field '.purges')" == 0 ]] || fail "change pages carry the purge count: $(cat "$body")"
+
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, restored lookups, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, record drafts, RLS, evidence and the browser pages\n'

@@ -370,6 +370,7 @@ impl SyncTransport for LocalTransport {
             next_after: page.next_after,
             head: page.head,
             metadata_version: page.metadata_version,
+            purges: page.purges,
         })
     }
 
