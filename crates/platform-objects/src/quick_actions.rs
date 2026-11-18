@@ -13,8 +13,8 @@ use crate::events::Change;
 use crate::service::{MutationContext, ObjectService};
 use crate::values;
 use crate::{
-    CreateQuickAction, FieldDefinition, FieldType, ObjectDefinition, ObjectError, ObjectTx,
-    QuickAction, QuickActionKind, UpdateQuickAction, ValidationIssue,
+    CreateQuickAction, FieldDefinition, FieldType, ObjectAccess, ObjectDefinition, ObjectError,
+    ObjectTx, QuickAction, QuickActionKind, UpdateQuickAction, ValidationIssue,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -191,32 +191,60 @@ pub(crate) fn check_action(
     issues
 }
 
+/// Whether the caller can complete `action` on the form object `form`
+/// (this object for an update action, the child for a create action): every
+/// field the action sets without asking, its presets and a create action's
+/// reference to the record, is one the caller may change (G5 of ADR 0035).
+/// The engine would refuse the save otherwise, so the action is not offered.
+/// Fields the form asks for need no check: those the caller cannot read are
+/// left out of the form, and those it cannot change are shown read-only.
+pub(crate) fn completable(
+    access: &ObjectAccess,
+    form: &ObjectDefinition,
+    action: &QuickAction,
+) -> bool {
+    action
+        .presets
+        .keys()
+        .map(String::as_str)
+        .chain(action.target_field.as_deref())
+        .all(|api_name| {
+            form.field(api_name)
+                .is_none_or(|field| access.field(field).edit)
+        })
+}
+
 impl ObjectService {
     /// An object's quick actions, by position then name. Anyone who can read
     /// the object sees them (ADR 0032 §3: an action grants nothing); to
-    /// anyone else the object is unknown.
+    /// anyone else the object is unknown. Members see only the actions they
+    /// can complete (see [`completable`]); administrators who manage objects
+    /// see every action, to maintain them.
     pub async fn quick_actions(&self, api_name: &str) -> Result<Vec<QuickAction>, ObjectError> {
         let manage = self.caller().can_manage();
         let mut tx = self.begin().await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
-        if !manage {
-            let access = self.access(tx.as_mut()).await?;
-            if !access.for_object(object.id).read {
-                return Err(ObjectError::NotFound);
-            }
+        let access = self.access(tx.as_mut()).await?;
+        if !manage && !access.for_object(object.id).read {
+            return Err(ObjectError::NotFound);
         }
         let mut actions = Vec::new();
         for action in tx.quick_actions(object.id).await? {
             // A create action whose object is out of service, such as a
             // disabled plugin's (ADR 0033 §2), is hidden with it.
-            if let Some(target) = action.target_object_id {
-                let in_service = tx
-                    .object_by_id(target)
-                    .await?
-                    .is_some_and(|target| target.is_active());
-                if !in_service {
-                    continue;
-                }
+            let target = match action.target_object_id {
+                Some(target) => match tx.object_by_id(target).await? {
+                    Some(target) if target.is_active() => Some(target),
+                    _ => continue,
+                },
+                None => None,
+            };
+            let form = match action.kind {
+                QuickActionKind::Update => Some(&object),
+                QuickActionKind::Create => target.as_ref(),
+            };
+            if !manage && form.is_some_and(|form| !completable(&access, form, &action)) {
+                continue;
             }
             actions.push(action);
         }

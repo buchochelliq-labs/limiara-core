@@ -1,4 +1,4 @@
-import {holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction} from '../objects/api';
+import {canEditField, canReadField, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction} from '../objects/api';
 import {toApiValue, toDraftValue} from '../objects/formValues';
 import type {DraftDocument, DraftField, DraftInput, DraftKey} from './types';
 
@@ -6,18 +6,14 @@ import type {DraftDocument, DraftField, DraftInput, DraftKey} from './types';
 export const NAME = 'name';
 
 /**
- * Field-level access (ADR 0035 G5) for restoring a draft. The describe
- * response on main carries no per-field access yet (it arrives with #246);
- * until it does, every described field can be read, and every field a
- * person types into can be written. When describe names a field's `access`,
- * this one function honours it, and nothing else changes.
+ * Field-level access (ADR 0035 G5) for restoring a draft, from the
+ * member's per-field `access` that describe carries: a field they may not
+ * read is dropped without being named, and one they may read but not
+ * change is dropped and named. Computed fields are never written.
  */
 export function fieldAccess(field: ObjectField): {read: boolean; write: boolean} {
   const computed = field.type === 'formula' || field.type === 'rollup';
-  const declared = (field as ObjectField & {access?: {read?: unknown; write?: unknown}}).access;
-  const read = declared && typeof declared.read === 'boolean' ? declared.read : true;
-  const write = declared && typeof declared.write === 'boolean' ? declared.write : true;
-  return {read, write: read && write && !computed};
+  return {read: canReadField(field), write: canEditField(field) && !computed};
 }
 
 /** The fields a form input differs from where the form started, each with its start value (ADR 0036 §3). */

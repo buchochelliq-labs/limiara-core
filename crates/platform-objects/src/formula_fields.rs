@@ -103,21 +103,28 @@ fn finish(field: &FieldDefinition, value: Value) -> serde_json::Value {
 }
 
 impl ObjectService {
-    /// Computes formula fields for records the caller has just read, in a
-    /// read transaction of its own.
+    /// Records the caller has just read, as they may see them, in a read
+    /// transaction of its own: formula fields computed with full access,
+    /// then every field the caller cannot read removed, including formulas
+    /// and roll-ups that depend on one (G5).
     pub(crate) async fn with_formulas(
         &self,
         object: &ObjectDefinition,
         mut records: Vec<Record>,
     ) -> Result<Vec<Record>, ObjectError> {
-        if !has_formulas(object) || records.is_empty() {
+        if records.is_empty() || (!has_formulas(object) && !crate::field_security::may_hide(object))
+        {
             return Ok(records);
         }
         let mut tx = self.begin().await?;
         let access = self.access(tx.as_mut()).await?;
         self.compute_formulas(tx.as_mut(), &access, object, &mut records)
             .await?;
+        let hidden = self.hidden_fields(tx.as_mut(), &access, object).await?;
         tx.commit().await?;
+        for record in &mut records {
+            crate::field_security::strip(record, &hidden);
+        }
         Ok(records)
     }
 

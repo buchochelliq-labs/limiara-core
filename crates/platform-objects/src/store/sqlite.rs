@@ -833,6 +833,19 @@ CREATE TABLE assistant_object_policies (
 );
 "#,
     },
+    // Field-level permissions (G5 of ADR 0035): the permission a member
+    // needs to read a field's values, and the one they need to change them.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0033_field_permissions",
+        sql: r#"
+ALTER TABLE field_definitions ADD COLUMN read_permission TEXT
+  CHECK (read_permission IS NULL OR length(read_permission) BETWEEN 3 AND 120);
+ALTER TABLE field_definitions ADD COLUMN write_permission TEXT
+  CHECK (write_permission IS NULL OR (length(write_permission) BETWEEN 3 AND 120
+    AND field_type NOT IN ('formula', 'rollup')));
+"#,
+    },
     // Record draft settings (ADR 0036 §9): the workspace's draft expiry.
     // Drafts themselves live in the member's browser or, on a device, in
     // a table of their own (slice 3); none of them is engine data.
@@ -946,7 +959,7 @@ const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.descripti
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
      f.delete_behaviour, f.position, f.status, f.version, f.created_at, f.created_by, \
-     f.updated_at, f.updated_by, f.track_history, f.formula, f.formula_type, f.lookup_filter, \
+     f.updated_at, f.updated_by, f.track_history, f.formula, f.formula_type, f.lookup_filter, f.read_permission, f.write_permission, \
      f.rollup_function, f.rollup_relationship_id, f.rollup_field_id, \
      ro.api_name AS rollup_object, rr.api_name AS rollup_relationship, rf.api_name AS rollup_field, \
      (SELECT json_group_array(json_array(a.object_id, a.api_name)) FROM ( \
@@ -1102,6 +1115,8 @@ fn field_from_row(row: &SqliteRow) -> Result<FieldDefinition, ObjectError> {
             .map(|value| parse(DeleteBehaviour::parse(&value)))
             .transpose()?,
         lookup_filter: row.try_get("lookup_filter")?,
+        read_permission: row.try_get("read_permission")?,
+        write_permission: row.try_get("write_permission")?,
         formula: row.try_get("formula")?,
         formula_type: row
             .try_get::<Option<String>, _>("formula_type")?
@@ -1700,9 +1715,10 @@ impl ObjectTx for SqliteObjectTx {
                field_type, origin, required, unique_value, indexed, searchable, max_length, scale, \
                options, default_value, reference_object_id, delete_behaviour, position, status, \
                version, created_at, created_by, updated_at, updated_by, track_history, formula, formula_type, \
-               rollup_function, rollup_relationship_id, rollup_field_id, lookup_filter) \
+               rollup_function, rollup_relationship_id, rollup_field_id, lookup_filter, \
+               read_permission, write_permission) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-               ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+               ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
         )
         .bind(&self.tenant)
         .bind(field.id.to_string())
@@ -1736,6 +1752,8 @@ impl ObjectTx for SqliteObjectTx {
         .bind(text(field.rollup.as_ref().map(|rollup| rollup.relationship_id)))
         .bind(text(field.rollup.as_ref().and_then(|rollup| rollup.field_id)))
         .bind(&field.lookup_filter)
+        .bind(&field.read_permission)
+        .bind(&field.write_permission)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -1752,6 +1770,7 @@ impl ObjectTx for SqliteObjectTx {
                searchable = ?8, max_length = ?9, options = ?10, default_value = ?11, position = ?12, \
                status = ?13, version = ?14, updated_at = ?15, updated_by = ?16, \
                track_history = ?17, formula = ?18, lookup_filter = ?19, \
+               read_permission = ?20, write_permission = ?21, \
                deleted_at = CASE WHEN ?13 = 'deleted' THEN coalesce(deleted_at, ?15) END \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
         )
@@ -1774,6 +1793,8 @@ impl ObjectTx for SqliteObjectTx {
         .bind(field.track_history)
         .bind(&field.formula)
         .bind(&field.lookup_filter)
+        .bind(&field.read_permission)
+        .bind(&field.write_permission)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();

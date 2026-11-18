@@ -1,11 +1,15 @@
-import type {ObjectDescription, ObjectField} from './api';
+import {canReadField, type ObjectDescription, type ObjectField} from './api';
 
 /** What a form input holds for one field: text, a checkbox, or the chosen values of a multi-select. */
 export type DraftValue = string | boolean | string[];
 
-/** Fields a person can type into; formula fields are computed (ADR 0021). */
+/**
+ * Fields a form shows: stored fields the member may read, since formula
+ * fields are computed (ADR 0021). Those the member may not change are shown
+ * read-only and never sent (G5).
+ */
 export function editableFields(object: ObjectDescription) {
-  return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup');
+  return object.fields.filter(field => field.type !== 'formula' && field.type !== 'rollup' && canReadField(field));
 }
 
 /** An API value as what a form input holds; the reverse of `toApiValue`. */

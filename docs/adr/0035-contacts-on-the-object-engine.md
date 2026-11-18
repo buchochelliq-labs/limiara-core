@@ -34,6 +34,23 @@ Decided in review (2026-11-10):
 - The 30-day rollback window and the six-month deprecation are accepted
   provisionally, to be confirmed before slice 5 ships.
 
+Delivered:
+
+- G5, field-level permissions (2026-11-17). A field names an optional
+  `read_permission` and `write_permission`, set on workspace fields by
+  administrators with `objects.manage` and declared by plugins on their
+  manifest fields, stored in both stores and carried to replicas with the
+  definitions. Without the read permission a field is hidden from records,
+  queries (where it is an unknown field, as ADR 0019 §3 planned), search
+  matching and results, history, the change log, replicas, related lists,
+  timelines and reports; formulas and roll-ups are computed with full
+  access and hidden when they depend on a hidden field. Without the write
+  permission, changes are refused with `records.field_not_writable`. System
+  context (the kernel, the installer, the G4 migrator once it lands, automations, validation
+  rules and lookup filters) bypasses the check, as it bypasses sharing. The
+  check is one function that role-based field-level security (#316) extends.
+  See [Field permissions](../api/objects.md#field-permissions).
+
 ## Context
 
 Contacts (`platform.contacts`) is the last first-party capability with its

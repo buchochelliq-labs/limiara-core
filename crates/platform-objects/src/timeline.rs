@@ -376,6 +376,26 @@ impl ObjectService {
             else {
                 continue;
             };
+            // Fields the viewer cannot read are left out: a source whose
+            // date or open rule needs one is skipped, and details and
+            // through fields are dropped (G5).
+            let hidden = self.hidden_fields(tx, access, &object).await?;
+            let readable = |id: Uuid| {
+                object
+                    .fields
+                    .iter()
+                    .find(|field| field.id == id)
+                    .is_none_or(|field| !hidden.contains(&field.api_name))
+            };
+            if !readable(source.date_field_id) {
+                continue;
+            }
+            if let Some(TimelineOpen::FieldEquals { field_id, .. }) = &source.open {
+                if !readable(*field_id) {
+                    continue;
+                }
+            }
+            let object = crate::field_security::visible(&object, &hidden);
             let by_id = |id: Uuid| {
                 object
                     .fields
@@ -507,13 +527,22 @@ impl ObjectService {
         let in_timeline: BTreeSet<Uuid> = sources.iter().map(|source| source.object.id).collect();
         let mut actions = tx.quick_actions(object.id).await?;
         actions.sort_by(|a, b| (a.position, &a.name).cmp(&(b.position, &b.name)));
+        // Only actions the viewer can complete (G5 of ADR 0035).
         timeline.actions = actions
             .into_iter()
             .filter(|action| {
                 action.kind == QuickActionKind::Create
-                    && action
-                        .target_object_id
-                        .is_some_and(|target| in_timeline.contains(&target))
+                    && action.target_object_id.is_some_and(|target| {
+                        in_timeline.contains(&target)
+                            && sources.iter().any(|source| {
+                                source.object.id == target
+                                    && crate::quick_actions::completable(
+                                        &access,
+                                        &source.object,
+                                        action,
+                                    )
+                            })
+                    })
             })
             .map(|action| action.name)
             .collect();

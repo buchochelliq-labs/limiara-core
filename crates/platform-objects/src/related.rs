@@ -132,7 +132,8 @@ impl ObjectService {
                 "write one condition, as after WHERE, without ORDER BY, GROUP BY or LIMIT",
             ));
         }
-        let access = self.access(tx).await?;
+        // Lookup filters read every field, as validation rules do (G5).
+        let access = self.access(tx).await?.with_system_fields();
         let request = QueryRequest {
             // The shape a filter is enforced in, with the record and the
             // picker's search, so it fits the query's limits when used.
@@ -187,7 +188,12 @@ impl ObjectService {
             // archiving hides a record from pickers, not from lookups.
             include_archived: true,
         };
-        match self.query_in(tx, access, &request).await {
+        // The filter is the administrator's condition: it reads every field,
+        // and only whether the target meets it reaches the caller (G5).
+        match self
+            .query_in(tx, &access.with_system_fields(), &request)
+            .await
+        {
             Ok(result) => Ok(!result.rows.is_empty()),
             Err(ObjectError::Validation(_)) => Err(ObjectError::invalid(
                 field.api_name.clone(),
@@ -231,7 +237,9 @@ impl ObjectService {
         }
         let field = object
             .field(field_api_name)
-            .filter(|field| field.is_active() && field.field_type.holds_reference())
+            .filter(|field| {
+                field.is_active() && field.field_type.holds_reference() && access.field(field).read
+            })
             .ok_or(ObjectError::NotFound)?;
         let not_allowed = || {
             ObjectError::invalid(
@@ -285,7 +293,12 @@ impl ObjectService {
             include_deleted: false,
             include_archived: false,
         };
-        let result = match self.query_in(tx.as_mut(), &access, &request).await {
+        // Candidates are named only; the field's filter reads every field,
+        // as when a value is saved (G5).
+        let result = match self
+            .query_in(tx.as_mut(), &access.with_system_fields(), &request)
+            .await
+        {
             Err(ObjectError::Validation(issues))
                 if issues.iter().any(|issue| issue.field == "q") =>
             {
@@ -316,6 +329,10 @@ impl ObjectService {
             // A related-to field whose allowlist names the object gives
             // a list too (ADR 0033 §1); the store found only those.
             if !field.is_active() || !field.field_type.holds_reference() {
+                continue;
+            }
+            // A field the caller cannot read gives no list (G5).
+            if !access.field(&field).read {
                 continue;
             }
             let Some(child) = tx

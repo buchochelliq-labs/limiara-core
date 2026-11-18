@@ -361,7 +361,9 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         .expect("tenant");
     }
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
-    let report = conformance::run(store, tenant_a, tenant_b).await;
+    // Boxed: the suite's future outgrows a test thread's stack in debug
+    // builds once it is polled on it.
+    let report = Box::pin(conformance::run(store, tenant_a, tenant_b)).await;
 
     for table in ["audit_log", "outbox"] {
         let count: i64 = sqlx::query_scalar(&format!(
@@ -1163,4 +1165,21 @@ async fn postgres_store_passes_the_archive_conformance_suite() {
     .await
     .expect("history");
     assert!(lifecycle >= 4);
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_field_permission_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO tenants (id, display_name) VALUES ($1, 'Field permission conformance')",
+    )
+    .bind(tenant)
+    .execute(&migrator)
+    .await
+    .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::field_permissions::run(store, tenant).await;
 }

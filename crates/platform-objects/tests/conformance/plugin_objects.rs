@@ -51,6 +51,8 @@ fn declared_field(name: &str, kind: ObjectFieldType) -> ObjectFieldDecl {
         reference_object: None,
         reference_objects: Vec::new(),
         delete_behaviour: None,
+        read_permission: None,
+        write_permission: None,
     }
 }
 
@@ -327,6 +329,12 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
     upgrade.objects[1].plural_label = "Work items".into();
     let mut estimate = declared_field("estimate", ObjectFieldType::Number);
     estimate.label = "Estimate".into();
+    // A plugin's field may need one of the plugin's permissions (G5).
+    upgrade.permissions.push(plugin_contract::PermissionDecl {
+        id: "tracker.estimates.read".into(),
+        description: "Read ticket estimates".into(),
+    });
+    estimate.read_permission = Some("tracker.estimates.read".into());
     upgrade.objects[1].fields.push(estimate);
     ticket_field(&mut upgrade, "status").options = vec![
         ObjectFieldOption {
@@ -372,6 +380,30 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         ticket.field("custom:priority").is_some(),
         "custom fields stay"
     );
+    let estimate = ticket.field("example.tracker:estimate").expect("estimate");
+    assert_eq!(
+        estimate.read_permission.as_deref(),
+        Some("tracker.estimates.read")
+    );
+    let mut unhide = update_field(estimate.version);
+    unhide.read_permission = Some(None);
+    assert_eq!(
+        conflict(
+            admin
+                .update_field(TICKET, "example.tracker:estimate", unhide, context())
+                .await
+        ),
+        PLUGIN_OWNED,
+        "a plugin field's permissions are the plugin's"
+    );
+    let mut undeclared = upgrade.clone();
+    ticket_field(&mut undeclared, "estimate").write_permission = Some("objects.manage".into());
+    assert!(matches!(
+        installer
+            .install_plugin_objects(&undeclared, context())
+            .await,
+        Err(ObjectError::Validation(_))
+    ));
     let status = ticket.field("example.tracker:status").expect("status");
     assert_eq!(
         status
@@ -688,6 +720,8 @@ fn update_field(version: i64) -> UpdateField {
         position: None,
         formula: None,
         lookup_filter: None,
+        read_permission: None,
+        write_permission: None,
         reference_objects: None,
     }
 }

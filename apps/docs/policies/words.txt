@@ -32,6 +32,7 @@ Pipedrive
 PKCE
 PostgreSQL
 RLS
+rustls
 SBOM
 scannable
 SCIM

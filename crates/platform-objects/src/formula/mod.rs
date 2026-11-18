@@ -14,6 +14,7 @@ use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, SecondsFormat, Utc
 use parse::{BinaryOp, FormulaError, UnaryOp};
 use serde_json::Value as Json;
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 /// Size limits (ADR 0021 §2).
 pub mod limits {
@@ -271,6 +272,8 @@ pub enum Node {
 pub struct Formula {
     pub node: Node,
     pub ty: Type,
+    /// The formula fields it uses, inlined into `node`, by id.
+    pub uses: Vec<Uuid>,
 }
 
 impl Formula {
@@ -325,7 +328,11 @@ pub fn compile(
             ));
         }
     }
-    Ok(Formula { node, ty })
+    Ok(Formula {
+        node,
+        ty,
+        uses: catalog.used(),
+    })
 }
 
 /// What a formula reads.

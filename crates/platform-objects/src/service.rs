@@ -348,20 +348,59 @@ impl ObjectService {
     }
 
     /// One object with its fields. Unknown and unreadable objects are
-    /// indistinguishable.
+    /// indistinguishable. Fields the caller cannot read are left out (G5),
+    /// unless they manage objects.
     pub async fn describe(
         &self,
         api_name: &str,
     ) -> Result<(ObjectDefinition, AccessFlags), ObjectError> {
+        let (object, flags, _) = self.describe_with_field_access(api_name).await?;
+        Ok((object, flags))
+    }
+
+    /// [`Self::describe`] with what the caller may do with each field it
+    /// lists, by API name. Administrators who manage objects see every
+    /// field, marked unreadable where they lack its permission.
+    pub async fn describe_with_field_access(
+        &self,
+        api_name: &str,
+    ) -> Result<
+        (
+            ObjectDefinition,
+            AccessFlags,
+            BTreeMap<String, crate::FieldAccess>,
+        ),
+        ObjectError,
+    > {
         let mut tx = self.begin().await?;
         let access = self.access(tx.as_mut()).await?;
         let object = self.active_object(tx.as_mut(), api_name).await?;
-        tx.commit().await?;
         let flags = access.for_object(object.id);
         if !flags.read && !self.caller.can_manage() {
             return Err(ObjectError::NotFound);
         }
-        Ok((object, flags))
+        let hidden = self.hidden_fields(tx.as_mut(), &access, &object).await?;
+        tx.commit().await?;
+        let fields = object
+            .fields
+            .iter()
+            .map(|field| {
+                let mut found = access.field(field);
+                if hidden.contains(&field.api_name) {
+                    found = crate::FieldAccess {
+                        read: false,
+                        edit: false,
+                    };
+                }
+                (field.api_name.clone(), found)
+            })
+            .collect();
+        let object = if self.caller.can_manage() {
+            object
+        } else {
+            crate::field_security::visible(&object, &hidden)
+        };
+        Ok((object, flags, fields))
     }
 
     pub async fn create_object(
@@ -664,6 +703,20 @@ impl ObjectService {
                 .map_err(|issue| issues.push(issue))
                 .ok()
                 .flatten();
+        let read_permission = crate::field_security::permission_id(
+            "read_permission",
+            input.read_permission.as_deref(),
+        )
+        .map_err(|issue| issues.push(issue))
+        .ok()
+        .flatten();
+        let write_permission = crate::field_security::permission_id(
+            "write_permission",
+            input.write_permission.as_deref(),
+        )
+        .map_err(|issue| issues.push(issue))
+        .ok()
+        .flatten();
 
         if object.fields.len() >= FIELDS_PER_OBJECT_MAX {
             return Err(ObjectError::Conflict("objects.field_limit_reached"));
@@ -741,6 +794,8 @@ impl ObjectService {
             reference_objects: allowed.into_iter().map(|target| target.api_name).collect(),
             delete_behaviour: shape.delete_behaviour,
             lookup_filter,
+            read_permission,
+            write_permission,
             formula: shape.formula,
             formula_type: rollup
                 .as_ref()
@@ -760,6 +815,8 @@ impl ObjectService {
             updated_by: Some(self.caller.user_id()),
         };
         field.default_value = default_value(&field, input.default_value.as_ref())?;
+        crate::field_security::check_permissions(&field)
+            .map_err(|issue| ObjectError::Validation(vec![issue]))?;
         if let (Some(formula), Some(formula_type)) = (&field.formula, field.formula_type) {
             crate::formula_fields::check_formula(tx, object, formula, formula_type, None).await?;
         }
@@ -849,7 +906,13 @@ impl ObjectService {
         if field.version != input.expected_version {
             return Err(ObjectError::VersionConflict);
         }
-        let reindex_before = (field.is_indexed(), field.searchable, field.options.clone());
+        // Search terms leave out fields with a read permission (G5).
+        let reindex_before = (
+            field.is_indexed(),
+            field.searchable,
+            field.options.clone(),
+            field.read_permission.is_some(),
+        );
         let allowlist_before = field.reference_object_ids.clone();
         let mut issues = Vec::new();
         if let Some(label) = input.label.as_deref() {
@@ -923,6 +986,21 @@ impl ObjectService {
         }
         if let Some(searchable) = input.searchable {
             field.searchable = searchable && field.field_type.is_textual();
+        }
+        if let Some(permission) = input.read_permission {
+            match crate::field_security::permission_id("read_permission", permission.as_deref()) {
+                Ok(permission) => field.read_permission = permission,
+                Err(issue) => issues.push(issue),
+            }
+        }
+        if let Some(permission) = input.write_permission {
+            match crate::field_security::permission_id("write_permission", permission.as_deref()) {
+                Ok(permission) => field.write_permission = permission,
+                Err(issue) => issues.push(issue),
+            }
+        }
+        if let Err(issue) = crate::field_security::check_permissions(&field) {
+            issues.push(issue);
         }
         if let Some(track) = input.track_history {
             field.track_history = track;
@@ -1029,7 +1107,13 @@ impl ObjectService {
             }
         }
         if formula_changed
-            || reindex_before != (field.is_indexed(), field.searchable, field.options.clone())
+            || reindex_before
+                != (
+                    field.is_indexed(),
+                    field.searchable,
+                    field.options.clone(),
+                    field.read_permission.is_some(),
+                )
         {
             let updated = tx
                 .object_by_id(object.id)
@@ -1576,8 +1660,16 @@ impl ObjectService {
         if tx.guarded_field_count(object.id).await? != guarded {
             return Err(ObjectError::Conflict("records.definition_changed"));
         }
+        // Field-level security applies to the member's own values; an
+        // automation writes in system context (G5).
+        if let Some(access) = access {
+            Self::check_readable_input(access, object, body)?;
+        }
         let change =
             apply_values(object, &BTreeMap::new(), body, true).map_err(ObjectError::Validation)?;
+        if let Some(access) = access {
+            Self::check_writable_input(access, object, body, &change.changed, true)?;
+        }
         let public_id = match public_id {
             Some(public_id) => public_id,
             None if self.client_ids => {
@@ -1913,8 +2005,14 @@ impl ObjectService {
         context: MutationContext,
         run: &mut Run,
     ) -> Result<Record, ObjectError> {
+        if let Some(access) = access {
+            Self::check_readable_input(access, object, body)?;
+        }
         let change =
             apply_values(object, &current.values, body, false).map_err(ObjectError::Validation)?;
+        if let Some(access) = access {
+            Self::check_writable_input(access, object, body, &change.changed, false)?;
+        }
         let mut changed = change.changed;
         let mut record = current.clone();
         if let Some(name) = change.name {
@@ -3190,9 +3288,11 @@ impl ObjectService {
         } else {
             None
         };
+        // Entries of fields the caller cannot read are hidden (G5).
+        let hidden = self.hidden_fields(tx.as_mut(), &access, &object).await?;
         entries.retain(|entry| match entry.field.as_deref() {
             None | Some("name") | Some("owner") => true,
-            Some(field) => object.field(field).is_some(),
+            Some(field) => object.field(field).is_some() && !hidden.contains(field),
         });
         let mut names = BTreeMap::new();
         let mut objects = BTreeMap::new();
@@ -3278,8 +3378,9 @@ impl ObjectService {
         let scanned = tx.changes(after, limit).await?;
         let next_after = scanned.last().map_or(after, |change| change.position);
         let mut objects: BTreeMap<Uuid, Option<ObjectDefinition>> = BTreeMap::new();
+        let mut hidden: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
         let mut changes = Vec::new();
-        for change in scanned {
+        for mut change in scanned {
             if only.is_some_and(|only| only != change.object_id) {
                 continue;
             }
@@ -3305,6 +3406,16 @@ impl ObjectService {
                 .await?
                 .read
             {
+                // The change stays, since the record's version moved, but
+                // never names a field the caller cannot read (G5).
+                let fields = match hidden.entry(definition.id) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+                        self.hidden_fields(tx.as_mut(), &access, &definition)
+                            .await?,
+                    ),
+                };
+                change.fields.retain(|field| !fields.contains(field));
                 changes.push((definition.api_name.clone(), change));
             }
         }
@@ -3382,10 +3493,13 @@ impl ObjectService {
         if !flags.read {
             return Err(ObjectError::NotFound);
         }
+        let hidden = self.hidden_fields(tx.as_mut(), &access, &object).await?;
         let mut issues = Vec::new();
         let mut filters = Vec::new();
         for (key, raw) in &request.filters {
-            match object.field(key) {
+            // A field the caller cannot read is filtered on as one the
+            // object does not have (G5).
+            match object.field(key).filter(|_| !hidden.contains(key)) {
                 Some(field) if field.is_indexed() => match filter_value(field, raw) {
                     Ok(value) => filters.push(RecordFilter {
                         field_id: field.id,
@@ -3712,6 +3826,8 @@ fn only_allowlist(field: &FieldDefinition, input: &UpdateField) -> bool {
         formula,
         lookup_filter,
         reference_objects,
+        read_permission,
+        write_permission,
     } = input;
     field.field_type == FieldType::RelatedTo
         && reference_objects.is_some()
@@ -3727,6 +3843,8 @@ fn only_allowlist(field: &FieldDefinition, input: &UpdateField) -> bool {
         && position.is_none()
         && formula.is_none()
         && lookup_filter.is_none()
+        && read_permission.is_none()
+        && write_permission.is_none()
 }
 
 /// The active objects a related-to field's allowlist names, in its order,

@@ -483,9 +483,26 @@ impl ObjectService {
                 crate::service::reindex(&mut *tx, object).await?;
             }
         }
+        // Fields the caller cannot read resolve exactly as unknown ones
+        // (ADR 0019 §3, G5): they cannot be selected, filtered, sorted or
+        // grouped on, here or across a relationship.
+        // Sharing follows the full definition: a hidden master-detail field
+        // still decides who sees a detail.
+        let base_visibility = self.visibility_of(&mut *tx, access, &base).await?;
+        let hidden = self.hidden_fields(&mut *tx, access, &base).await?;
+        let base = crate::field_security::visible(&base, &hidden);
+        let mut projected = BTreeMap::new();
+        for (id, (target, visibility)) in targets {
+            let hidden = self.hidden_fields(&mut *tx, access, &target).await?;
+            projected.insert(
+                id,
+                (crate::field_security::visible(&target, &hidden), visibility),
+            );
+        }
+        let targets = projected;
         let catalog = Catalog {
             base: &base,
-            base_visibility: self.visibility_of(&mut *tx, access, &base).await?,
+            base_visibility,
             targets: &targets,
             now: Utc::now(),
             include_deleted: request.include_deleted,

@@ -28,7 +28,7 @@
 use crate::events::Change;
 use crate::service::{MutationContext, ObjectService};
 use crate::{
-    Assistant, ObjectDefinition, ObjectError, ObjectTx, QuickAction, QuickActionKind,
+    Assistant, ObjectAccess, ObjectDefinition, ObjectError, ObjectTx, QuickAction, QuickActionKind,
     ValidationIssue,
 };
 use chrono::{DateTime, SubsecRound, Utc};
@@ -278,6 +278,9 @@ impl ObjectService {
             let policy = stored
                 .remove(&object.id)
                 .unwrap_or_else(|| StoredAssistantPolicy::off(object.id));
+            let object = self
+                .policy_object(tx.as_mut(), &access, manage, object)
+                .await?;
             objects.push(resolve(&object, &actions, &policy));
         }
         tx.commit().await?;
@@ -299,8 +302,30 @@ impl ObjectService {
         }
         let actions = tx.quick_actions(object.id).await?;
         let stored = stored_policy(tx.as_mut(), object.id).await?;
+        let object = self
+            .policy_object(tx.as_mut(), &access, manage, object)
+            .await?;
         tx.commit().await?;
         Ok(resolve(&object, &actions, &stored))
+    }
+
+    /// The object a policy is resolved against for the caller: to a member
+    /// who does not manage objects, without the fields they cannot read
+    /// (G5 of ADR 0035), so a policy never names a field the member's
+    /// description of the object leaves out. Administrators see every
+    /// field, as `describe` shows them.
+    async fn policy_object(
+        &self,
+        tx: &mut dyn ObjectTx,
+        access: &ObjectAccess,
+        manage: bool,
+        object: ObjectDefinition,
+    ) -> Result<ObjectDefinition, ObjectError> {
+        if manage {
+            return Ok(object);
+        }
+        let hidden = self.hidden_fields(tx, access, &object).await?;
+        Ok(crate::field_security::visible(&object, &hidden))
     }
 
     /// Turns assistant access on or off for the workspace.

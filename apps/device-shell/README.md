@@ -72,6 +72,13 @@ simulator, runs the object engine's conformance suite and the
 launches the app there. The `ios` workflow runs it on a macOS runner when
 the device code changes.
 
+The `testflight` workflow builds the app in release mode, signs it for App
+Store distribution and uploads it to TestFlight, on a manual run or an
+`ios-v*` tag. Its secrets live in the `testflight` GitHub environment;
+`docs/operations/testflight.md` is the runbook for setting them up, and
+`scripts/check-ios-release-build.sh` checks that the release build carries
+no debug-only code before it is uploaded.
+
 ## Android
 
 With the Android SDK, the NDK (`NDK_HOME`), Java 17 and the Tauri CLI:

@@ -1939,6 +1939,22 @@ pub async fn workspace_roles(
     Ok(rows.into_iter().collect())
 }
 
+/// The permission catalog roles are given from, by id with descriptions.
+/// It is the platform's, not a workspace's, so it carries no tenant id; it
+/// is read inside the workspace's transaction like every request.
+pub async fn permission_catalog(
+    pool: &PgPool,
+    tenant_id: Uuid,
+) -> Result<BTreeMap<String, String>, DbError> {
+    let mut tx = begin_tenant_tx(pool, tenant_id).await?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, description FROM permissions ORDER BY id")
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// One member's user record, or `None` when the user is not a member of the
 /// workspace, so a lookup never reveals users outside it. Membership and
 /// roles are read under the workspace's row-level security.

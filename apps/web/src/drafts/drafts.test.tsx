@@ -380,7 +380,7 @@ describe('restoring a draft (ADR 0036 §5, §6)', () => {
     await client.createField('custom:project', {name: 'owner_ref', label: 'Partner', field_type: 'lookup', reference_object: 'custom:project'});
     const secretive: ObjectsClient = {...client, describe: async api => {
       const description = await client.describe(api);
-      return {...description, fields: description.fields.map(field => field.apiName === 'custom:starts_on' ? {...field, access: {read: false, write: false}} as typeof field : field.apiName === 'custom:budget' ? {...field, access: {read: true, write: false}} as typeof field : field)};
+      return {...description, fields: description.fields.map(field => field.apiName === 'custom:starts_on' ? {...field, access: {read: false, edit: false}} : field.apiName === 'custom:budget' ? {...field, access: {read: true, edit: false}} : field)};
     }};
     const plan = await planRestore(secretive, documentFor(createKey(), {
       name: {start: '', value: 'Vega', type: 'text'},
@@ -398,6 +398,23 @@ describe('restoring a draft (ADR 0036 §5, §6)', () => {
     expect(plan.dropped.unnamed).toBe(2);
     expect(plan.dropped.named.sort()).toEqual(['Budget', 'Code', 'Partner', 'Score']);
     expect(droppedMessage(plan.dropped)[0]).toBe('Some changes were dropped because those fields no longer exist or are not available to you.');
+  });
+
+  it('honours field read and edit permissions from describe on an edit draft (G5)', async () => {
+    const client = createFixtureObjectsClient();
+    const guarded: ObjectsClient = {...client, describe: async api => {
+      const description = await client.describe(api);
+      return {...description, fields: description.fields.map(field => field.apiName === 'custom:budget' ? {...field, access: {read: false, edit: false}} : field.apiName === 'custom:code' ? {...field, access: {read: true, edit: false}} : field)};
+    }};
+    const plan = await planRestore(guarded, documentFor({kind: 'edit', object: 'custom:project', record: '0000000000000001'}, {
+      'custom:budget': {start: '1250.5', value: '99', type: 'currency'},
+      'custom:code': {start: 'AP-1', value: 'AP-2', type: 'text'},
+      'custom:status': {start: 'open', value: 'won', type: 'picklist'},
+    }, {record: {id: '0000000000000001', version: 1, name: 'Apollo'}}));
+    expect(plan).toMatchObject({status: 'ready', values: {'custom:status': 'won'}, dropped: {named: ['Code'], unnamed: 1}});
+    if (plan.status !== 'ready') return;
+    expect(Object.keys(plan.values)).toEqual(['custom:status']);
+    expect(droppedMessage(plan.dropped).join(' ')).not.toContain('Budget');
   });
 
   it('keeps a lookup the member can still read, with the name the record has now', async () => {

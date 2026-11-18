@@ -102,6 +102,10 @@ impl ObjectService {
             plugin_id,
             &manifest.objects,
             manifest.dependencies.keys().map(String::as_str),
+            manifest
+                .permissions
+                .iter()
+                .map(|permission| permission.id.as_str()),
         )
         .map_err(|issue| {
             ObjectError::invalid(
@@ -474,6 +478,8 @@ fn create_input(declared: &ObjectFieldDecl) -> Result<CreateField, ObjectError> 
             .delete_behaviour
             .and_then(|behaviour| DeleteBehaviour::parse(behaviour.as_str())),
         lookup_filter: None,
+        read_permission: declared.read_permission.clone(),
+        write_permission: declared.write_permission.clone(),
         formula: None,
         formula_type: None,
         rollup: None,
@@ -511,6 +517,8 @@ fn field_update(
         position: None,
         formula: None,
         lookup_filter: None,
+        read_permission: None,
+        write_permission: None,
         reference_objects: None,
     };
     let mut changed = false;
@@ -572,6 +580,15 @@ fn field_update(
             update.options = Some(options);
             changed = true;
         }
+    }
+    // The field's permissions are the plugin's, like the rest of it (G5).
+    if declared.read_permission != existing.read_permission {
+        update.read_permission = Some(declared.read_permission.clone());
+        changed = true;
+    }
+    if declared.write_permission != existing.write_permission {
+        update.write_permission = Some(declared.write_permission.clone());
+        changed = true;
     }
     // A related-to field's allowlist is the workspace's once the field
     // exists: the manifest's list is only the starting value, and upgrades

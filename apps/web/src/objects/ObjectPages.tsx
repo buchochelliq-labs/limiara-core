@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -86,7 +86,8 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
 
   useEffect(() => { if (object) document.title = `${object.pluralLabel} - Limiara`; }, [object]);
 
-  const columns = useMemo(() => object?.fields.slice(0, 4) ?? [], [object]);
+  // Fields the member cannot read are never listed (G5).
+  const columns = useMemo(() => object ? readableFields(object.fields).slice(0, 4) : [], [object]);
   const restore = async (record: ObjectRecord) => {
     if (!object) return;
     try {
@@ -248,7 +249,12 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
   // An action grants nothing (ADR 0032 §3): it shows only where the member could do the same through the full form.
-  const available = actions.list.filter(action => action.kind === 'update' ? canEdit : actionTarget(action, actions.targets)?.access.create === true);
+  // Nor where a value it sets without asking is one the member may not change (G5).
+  const available = actions.list.filter(action => {
+    const form = action.kind === 'update' ? object : actionTarget(action, actions.targets);
+    const allowed = action.kind === 'update' ? canEdit : form?.access.create === true;
+    return allowed && form !== undefined && canCompleteAction(action, form);
+  });
   const runningTarget = running?.kind === 'create' ? actionTarget(running, actions.targets) : undefined;
   const editDraft = editDraftFor(drafts.drafts, object.apiName, record.id);
   const closeForm = () => { setResume(undefined); setDraftsSeen(value => value + 1); };
@@ -286,7 +292,7 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       <h2>Details</h2>
       <dl className="object-fields">
         <div><dt>{object.nameLabel}</dt><dd>{record.name}</dd></div>
-        {object.fields.map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} relatedObjects={record.relatedObjects} onNavigate={onNavigate} /></dd></div>)}
+        {readableFields(object.fields).map(field => <div key={field.apiName}><dt>{field.label}</dt><dd><FieldValue field={field} value={record.values[field.apiName]} related={record.related} relatedObjects={record.relatedObjects} onNavigate={onNavigate} /></dd></div>)}
       </dl>
     </section>
     <RelatedLists client={client} apiName={object.apiName} recordId={record.id} recordName={record.name} refresh={relatedRefresh} onNavigate={onNavigate} />
@@ -415,7 +421,7 @@ export function RelatedLists({client, apiName, recordId, recordName, refresh = 0
       return <section key={key(list)} className="object-related" aria-labelledby={headingId}>
         <div className="object-related__header">
           <h3 id={headingId}>{list.objectPluralLabel}{repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}</h3>
-          {children[list.object]?.access.create && <Button size="small" variant="secondary" aria-haspopup="dialog" aria-label={`New ${children[list.object]?.label.toLowerCase()}${repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}`} onClick={() => setCreating(list)}>New</Button>}
+          {children[list.object]?.access.create && canSetField(children[list.object] as ObjectDescription, list.field) && <Button size="small" variant="secondary" aria-haspopup="dialog" aria-label={`New ${children[list.object]?.label.toLowerCase()}${repeated.has(list.object) ? ` (${list.fieldLabel})` : ''}`} onClick={() => setCreating(list)}>New</Button>}
         </div>
         {list.records.length === 0
           ? <p className="object-form__meta">No {list.objectPluralLabel.toLowerCase()} you can see.</p>
@@ -656,11 +662,14 @@ function RelatedToInput({client, objectApiName, field, value, currentName, curre
  * presets (ADR 0032) go with every save, but a shown preset field always sends
  * what the member submitted, even unchanged or empty, so their input wins.
  */
-export function valuesToSend({record, draft, initial, shown, showsName, always = {}}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>}): Record<string, unknown> {
+export function valuesToSend({record, draft, initial, shown, showsName, always: given = {}, writable = () => true}: {record: boolean; draft: Draft; initial: Draft; shown: readonly ObjectField[]; showsName: boolean; always?: Record<string, unknown>; writable?: (apiName: string) => boolean}): Record<string, unknown> {
+  // Nothing the member may not change is ever sent (G5), whatever an action presets.
+  const always = Object.fromEntries(Object.entries(given).filter(([apiName]) => writable(apiName)));
   const overrides = (apiName: string) => Object.prototype.hasOwnProperty.call(always, apiName);
   const values: Record<string, unknown> = {};
   if (showsName && (!record || draft.name !== initial.name || overrides('name'))) values.name = typeof draft.name === 'string' ? draft.name.trim() : '';
   for (const field of shown) {
+    if (!writable(field.apiName)) continue;
     const value = draft[field.apiName];
     if (record && !overrides(field.apiName) && JSON.stringify(value) === JSON.stringify(initial[field.apiName])) continue;
     const apiValue = toApiValue(field, value ?? '');
@@ -759,7 +768,8 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     // The draft is written first, so a failed save keeps everything typed.
     await autosave.flush();
     try {
-      const sent = valuesToSend({record: !!base, draft, initial, shown, showsName, always});
+      // Field-level security (G5): only fields the member may change are sent, and a preset to a field they may not set is left out.
+      const sent = valuesToSend({record: !!base, draft, initial, shown: shown.filter(canEditField), showsName, always, writable: apiName => canSetField(object, apiName)});
       const saved = base ? await client.updateRecord(object.apiName, base.id, base.version, sent) : await client.createRecord(object.apiName, sent);
       // Saving is the normal create or update; the draft goes once it succeeds.
       await autosave.clear();
@@ -768,6 +778,9 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
       if (reason instanceof ObjectsApiError && reason.reason === 'invalid' && reason.issues.length) {
         setIssues(reason.issues);
         setError('Some values need attention.');
+      } else if (reason instanceof ObjectsApiError && reason.code === 'records.field_not_writable') {
+        setIssues(reason.issues);
+        setError('You may not change some of these fields.');
       } else if (reason instanceof ObjectsApiError && reason.code === 'records.duplicate_value') {
         setError('Another record already uses one of these unique values.');
       } else if (reason instanceof ObjectsApiError && reason.code === 'records.version_conflict') {
@@ -791,6 +804,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     {shown.map(field => {
       const value = draft[field.apiName];
       const fieldError = issueFor(field.apiName);
+      if (!canEditField(field)) return <TextField key={field.apiName} label={field.label} value={formatValue(field, toApiValue(field, value ?? ''), record?.related ?? {})} readOnly description="You can see this field but not change it." error={fieldError} />;
       if (field.type === 'boolean') return <label key={field.apiName} className="object-checkbox"><input type="checkbox" checked={value === true} onChange={event => set(field.apiName, event.target.checked)} />{field.label}{fieldError && <span className="ui-field__error">{fieldError}</span>}</label>;
       if (field.type === 'picklist') return <Select key={field.apiName} label={field.label} required={field.required} value={String(value ?? '')} error={fieldError} onChange={event => set(field.apiName, event.target.value)}>
         <option value="">None</option>

@@ -132,6 +132,8 @@ impl RemoteObject {
                     reference_objects: field.reference_objects.clone(),
                     delete_behaviour: field.delete_behaviour,
                     lookup_filter: field.lookup_filter.clone(),
+                    read_permission: field.read_permission.clone(),
+                    write_permission: field.write_permission.clone(),
                     formula: field.formula.clone(),
                     formula_type: field.formula_type,
                     rollup: field.rollup.as_ref().map(|rollup| RemoteRollup {
@@ -226,6 +228,10 @@ pub struct RemoteField {
     pub formula: Option<String>,
     pub formula_type: Option<FieldType>,
     pub rollup: Option<RemoteRollup>,
+    /// The field's read and write permissions (G5): the replica applies
+    /// them to the member exactly as the server does.
+    pub read_permission: Option<String>,
+    pub write_permission: Option<String>,
     pub position: i32,
     pub version: i64,
 }
@@ -640,6 +646,8 @@ async fn put_field(
                 reference_objects,
                 delete_behaviour: remote.delete_behaviour,
                 lookup_filter: remote.lookup_filter.clone(),
+                read_permission: remote.read_permission.clone(),
+                write_permission: remote.write_permission.clone(),
                 formula: remote.formula.clone(),
                 formula_type: remote.formula_type,
                 rollup,
@@ -670,6 +678,8 @@ async fn put_field(
             field.options = remote.options.clone();
             field.default_value = remote.default_value.clone();
             field.lookup_filter = remote.lookup_filter.clone();
+            field.read_permission = remote.read_permission.clone();
+            field.write_permission = remote.write_permission.clone();
             field.reference_object_ids = reference_object_ids;
             field.reference_objects = reference_objects;
             field.formula = remote.formula.clone();

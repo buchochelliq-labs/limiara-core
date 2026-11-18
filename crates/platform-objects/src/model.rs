@@ -347,6 +347,12 @@ pub struct FieldDefinition {
     pub formula_type: Option<FieldType>,
     /// What a roll-up summary field summarises (ADR 0026).
     pub rollup: Option<Rollup>,
+    /// The permission a member needs to read the field's values (G5);
+    /// `None` lets everyone who reads the record read them.
+    pub read_permission: Option<String>,
+    /// The permission a member needs, on top of reading the field, to
+    /// change its values (G5); `None` lets everyone who edits the record.
+    pub write_permission: Option<String>,
     pub position: i32,
     pub status: DefinitionStatus,
     pub version: i64,
@@ -580,6 +586,12 @@ pub struct CreateField {
     /// What a roll-up summary field summarises.
     #[serde(default)]
     pub rollup: Option<CreateRollup>,
+    /// The permission id a member needs to read the field (G5).
+    #[serde(default)]
+    pub read_permission: Option<String>,
+    /// The permission id a member needs to change the field (G5).
+    #[serde(default)]
+    pub write_permission: Option<String>,
 }
 
 /// A partial change to a field. The type, uniqueness and lookup target are
@@ -619,6 +631,12 @@ pub struct UpdateField {
     /// it are refused (ADR 0033 §1).
     #[serde(default)]
     pub reference_objects: Option<Vec<String>>,
+    /// A new read permission, or `null` to remove it (G5).
+    #[serde(default, deserialize_with = "crate::model::present")]
+    pub read_permission: Option<Option<String>>,
+    /// A new write permission, or `null` to remove it (G5).
+    #[serde(default, deserialize_with = "crate::model::present")]
+    pub write_permission: Option<Option<String>>,
 }
 
 /// Effective access to one object, from object permissions and system
