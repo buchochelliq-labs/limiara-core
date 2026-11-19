@@ -156,6 +156,7 @@ for what it does and does not cover yet.
 - Service-plugin protocol: [docs/architecture/service-plugins.md](docs/architecture/service-plugins.md)
 - Migration runbook: [docs/operations/migrations.md](docs/operations/migrations.md)
 - Backup/restore runbook: [docs/operations/backup-restore.md](docs/operations/backup-restore.md)
+- iOS on Windows with pippwin (experimental sideloading): [docs/operations/ios-from-windows.md](docs/operations/ios-from-windows.md)
 - Support and safe issue reporting: [docs/support/index.md](docs/support/index.md)
 - Release/version policy: [docs/releases/index.md](docs/releases/index.md)
 
