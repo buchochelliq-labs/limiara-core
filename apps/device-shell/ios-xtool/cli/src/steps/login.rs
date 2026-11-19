@@ -262,6 +262,14 @@ pub fn store_key(cx: &mut Ctx, source: &Path, key_id: &str) -> Result<PathBuf> {
         Err(problem) => Err(Error::InvalidKey(problem.describe().into())),
         Ok(()) => perms::ensure_private_dir(&cx.paths.config)
             .and_then(|()| perms::ensure_private_dir(&dir))
+            // Check again now the folders exist, so the write lands where
+            // the check looked even if a link changed in between.
+            .and_then(|()| {
+                paths::check_key_destination(&target).map_err(|reason| Error::UnsafeKeyLocation {
+                    path: target.clone(),
+                    reason,
+                })
+            })
             .and_then(|()| {
                 if same_file(source, &target) {
                     perms::set_mode(&target, perms::FILE_MODE)

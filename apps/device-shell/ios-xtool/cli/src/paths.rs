@@ -234,23 +234,52 @@ pub fn git_work_tree(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// `path` as the file system will follow it: the nearest ancestor that
+/// exists is resolved through every symlink, and the parts that do not
+/// exist yet are appended unchanged. A part that does not exist yet may not
+/// be `.` or `..`, so the result names exactly where a write would land.
+pub fn resolve_existing(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return Err("the location cannot be resolved".into()),
+        }
+    }
+    let mut resolved = std::fs::canonicalize(existing)
+        .map_err(|_| String::from("the location cannot be resolved"))?;
+    for name in missing.iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
 /// Whether a key may be kept at `path`: not on a Windows drive and not in
-/// any git working tree.
+/// any git working tree, both as written and as the file system resolves
+/// it, so a symlinked `~/.config` (into a dotfiles repository, say, or onto
+/// `/mnt`) cannot carry the key there.
 pub fn check_key_destination(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("the location must be an absolute path".into());
     }
-    if is_windows_mount(path) {
-        return Err(
-            "it is on a Windows drive (/mnt), which Windows apps, sync tools and backups can read"
-                .into(),
-        );
-    }
-    if let Some(tree) = git_work_tree(path) {
-        return Err(format!(
-            "it is inside the git working tree {}, where it could be committed",
-            tree.display()
-        ));
+    let resolved = resolve_existing(path)?;
+    for candidate in [path, resolved.as_path()] {
+        if is_windows_mount(candidate) {
+            return Err(
+                "it is on a Windows drive (/mnt), which Windows apps, sync tools and backups can read"
+                    .into(),
+            );
+        }
+        if let Some(tree) = git_work_tree(candidate) {
+            return Err(format!(
+                "it is inside the git working tree {}, where it could be committed",
+                tree.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -336,6 +365,35 @@ mod tests {
                 .contains("Windows drive")
         );
         assert!(check_key_destination(Path::new("relative/k.p8")).is_err());
+    }
+
+    #[test]
+    fn symlinked_ancestors_are_resolved_before_the_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("dotfiles");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("config")).unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // ~/.config is a symlink into a git working tree, and the keys
+        // folder below it does not exist yet.
+        std::os::unix::fs::symlink(repo.join("config"), home.join(".config")).unwrap();
+        let target = home.join(".config/limiara-sideload/keys/AuthKey_X.p8");
+        let err = check_key_destination(&target).unwrap_err();
+        assert!(err.contains("git working tree"), "{err}");
+
+        // The key file itself being a symlink into the tree.
+        let safe = dir.path().join("safe");
+        std::fs::create_dir_all(&safe).unwrap();
+        std::fs::write(repo.join("k.p8"), "x").unwrap();
+        std::os::unix::fs::symlink(repo.join("k.p8"), safe.join("AuthKey_Y.p8")).unwrap();
+        assert!(check_key_destination(&safe.join("AuthKey_Y.p8")).is_err());
+
+        // A missing part may not climb out with `..`.
+        assert!(check_key_destination(&safe.join("missing/../AuthKey_Z.p8")).is_err());
+
+        // A plain, unlinked location is still accepted.
+        assert!(check_key_destination(&safe.join("keys/AuthKey_Z.p8")).is_ok());
     }
 
     #[test]
