@@ -185,7 +185,8 @@ export default {
             { text: "Migrations", link: "/operations/migrations" },
             { text: "Backup and restore", link: "/operations/backup-restore" },
             { text: "Documentation publishing", link: "/operations/docs-publishing" },
-            { text: "iOS builds for TestFlight", link: "/operations/testflight" }
+            { text: "iOS builds for TestFlight", link: "/operations/testflight" },
+            { text: "iOS on Windows with pippwin", link: "/operations/ios-from-windows" }
           ]
         }
       ],

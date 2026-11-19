@@ -29,6 +29,7 @@ OIDC
 OpenAPI
 permissioning
 Pipedrive
+pippwin
 PKCE
 PostgreSQL
 RLS
@@ -42,11 +43,13 @@ SQLx
 SurrealDB
 Tauri
 Trameia
+usbipd
 Vite
 VitePress
 Wasmtime
 WCAG
 WebView
 WebViews
+xtool
 Zensical
 Zoho

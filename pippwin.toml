@@ -1,0 +1,26 @@
+# How pippwin (https://github.com/buchochelliq-labs/pippwin) builds this
+# repository's iOS shell on Windows through WSL and installs it on an
+# iPhone with xtool. See apps/device-shell/ios-xtool/README.md and
+# docs/operations/ios-from-windows.md.
+schema = 1
+
+[project]
+name = "Limiara"
+repository = "https://github.com/buchochelliq-labs/limiara-core"
+branch = "main"
+
+[app]
+# The xtool project: xtool.yml, Package.swift and prepare.sh.
+path = "apps/device-shell/ios-xtool"
+
+[build]
+# Builds the web shell and the Rust shell for aarch64-apple-ios, and
+# copies the Swift packages, before `xtool dev`.
+prepare = ["./prepare.sh"]
+
+[needs]
+# rust-toolchain.toml at the repository root picks the toolchain.
+rust = true
+rust_targets = ["aarch64-apple-ios"]
+node = "22"
+pnpm = "9.12.0"
