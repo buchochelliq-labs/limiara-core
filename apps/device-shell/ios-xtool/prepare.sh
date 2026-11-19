@@ -28,7 +28,7 @@ fail() {
     exit 1
 }
 
-for tool in clang llvm-ar perl make rsync cargo rustup pnpm; do
+for tool in clang llvm-ar llvm-ranlib perl make rsync cargo rustup pnpm; do
     command -v "$tool" >/dev/null 2>&1 || fail "'$tool' is not installed (see README.md)"
 done
 rustup target list --installed | grep -qx "$target" \
@@ -51,6 +51,11 @@ export IPHONEOS_DEPLOYMENT_TARGET="$min_ios"
 export CC_aarch64_apple_ios=clang
 export CXX_aarch64_apple_ios=clang++
 export AR_aarch64_apple_ios=llvm-ar
+# The vendored OpenSSL indexes its archives with ranlib, which otherwise
+# falls back to GNU ranlib. That cannot read Mach-O archives: its first
+# pass leaves libcrypto.a malformed (OpenSSL's build ignores that), and
+# its second, in `make install_dev`, fails the build.
+export RANLIB_aarch64_apple_ios=llvm-ranlib
 # The vendored OpenSSL reads the SDK from -isysroot (its ios64-cross
 # configuration), so no xcrun is needed.
 export CFLAGS_aarch64_apple_ios="--target=arm64-apple-ios$min_ios -isysroot $sdk"
