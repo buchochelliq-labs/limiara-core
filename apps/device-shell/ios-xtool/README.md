@@ -5,7 +5,9 @@ This folder builds the iOS app shell (`apps/device-shell`) with
 built on Linux or on Windows through WSL and installed on a connected
 iPhone. It is an experiment. The supported iOS builds are still the ones
 that run on macOS: the `ios` workflow (simulator) and the `testflight`
-workflow. This folder does not replace them, and nothing in CI runs it.
+workflow. This folder does not replace them. CI does not build the app
+here; it only checks the setup tool in `cli/` (the `ios-sideload-cli`
+job).
 
 ## What it builds
 
@@ -34,7 +36,118 @@ TestFlight build of `app.limiara.shell` and never replaces it.
 - **A free Apple ID's builds expire after 7 days** and must be installed
   again. A paid developer account's last a year.
 
-## Set up WSL (once)
+## The way in: `limiara-sideload`
+
+A guided setup does everything below for you, asks what it needs to know,
+and repeats xtool's own questions and warnings before xtool asks them.
+
+- **On Windows:** download this folder's `setup-windows.ps1` and run, in
+  PowerShell,
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\setup-windows.ps1
+  ```
+
+  It asks for administrator rights, installs WSL with Ubuntu 24.04 (if
+  Windows wants a restart it says so: restart and run it again), installs
+  usbipd-win with winget, clones this repository inside Ubuntu, builds
+  the tool and starts it. `-ExecutionPolicy Bypass` applies to that one
+  PowerShell process only.
+- **Already in WSL's Ubuntu:** from a clone, run
+
+  ```sh
+  apps/device-shell/ios-xtool/cli/bootstrap.sh
+  ```
+
+  It installs git, curl and a C compiler (apt), rustup if missing
+  (checked against its SHA-256), builds `limiara-sideload` and runs
+  `limiara-sideload setup`.
+
+`limiara-sideload setup` can be stopped and run again: each step checks
+whether it is already done and skips it. Its steps, in order: WSL and
+Ubuntu; apt packages; Swift 6.4 (swiftly); xtool; Rust and the iOS
+target; Node.js 22 and pnpm; the repository and branch; Xcode.xip and the
+iOS SDK; the Apple login; the iPhone (usbipd, usbmuxd); build and install.
+
+Other commands: `doctor` (a table of every check, including the login
+token's permissions, the SDK, the login and the phone; `--fix` tightens
+permissions), `login` (log in again, or switch account or mode), `sdk`,
+`phone`, `run` (`prepare.sh` then `xtool dev`; run it again every 7 days
+with a free Apple ID). `--yes` answers yes/no confirmations with their
+default; it never answers for a password, a code or a key.
+
+## Security
+
+What the tool asks for, and where things end up:
+
+- **Apple ID password and two-factor code: never seen by this tool.** In
+  password mode it asks only for the Apple ID, shows xtool's warning, and
+  runs `xtool auth login --mode password -u <Apple ID>` on your terminal:
+  you type the password (hidden), the code and the team into xtool
+  itself. xtool's `-p` option is never used. No intuiTUIve screen is
+  active while xtool or sudo has the terminal.
+- **Linux password:** typed into `sudo`, which runs only `apt-get` and
+  `usbmuxd`. Each sudo command is shown and confirmed first.
+- **API key (`AuthKey_<KEYID>.p8`):** the tool asks for the Key ID and
+  Issuer ID (validated) and where the file is (it looks in the Windows
+  Downloads folders). It checks the file looks like a PEM private key
+  without printing any of it, then copies it to
+  `~/.config/limiara-sideload/keys/AuthKey_<KEYID>.p8` (folder `0700`,
+  file `0600`). It refuses to keep a key under `/mnt` or inside any git
+  working tree, and offers to delete the original: a key on the Windows
+  drive (NTFS under `/mnt`) is readable by Windows apps, sync and backup
+  tools. Apple lets you download a key once, so keep your backup in a
+  password manager. xtool is then given the Key ID, the Issuer ID and the
+  key's **path** on its standard input; the key's contents never go
+  through command lines, environment variables, logs or the state file.
+- **xtool's login token:** xtool keeps it in
+  `~/.config/xtool/data/XTLAuthToken`; in API-key mode it contains the
+  private key. xtool writes it with default permissions, so the tool runs
+  xtool with `umask 077` and then sets `~/.config/xtool` and its `data`
+  folder to `0700` and the token to `0600`. `doctor` reports anything
+  looser.
+- **The state file** `~/.config/limiara-sideload/state.toml` (`0600`)
+  holds the repository path, the branch, the Apple ID, the login mode,
+  the key file's location and the finished steps. No secrets.
+- **Downloads** use HTTPS only and are checked before anything runs:
+  Node.js against the pinned SHA-256 and its `SHASUMS256.txt`;
+  rustup-init against the pinned SHA-256 and its published `.sha256`;
+  swiftly against its signature by a pinned swift.org key (swiftly then
+  verifies the toolchain); the xtool AppImage against the SHA-256 GitHub
+  records for the pinned release's asset (xtool publishes no checksum
+  file), and against a pinned SHA-256 once one is recorded. pnpm comes
+  through corepack, which verifies it. Every pin is in
+  `cli/src/versions.rs`.
+- Error messages carry a stable code (`LS0xx_…`) and a plain sentence;
+  they never quote a key, a password or a command's full arguments.
+
+### Updating the pins
+
+All pins are in `cli/src/versions.rs`; change them there only.
+
+- **Node.js:** take the version from <https://nodejs.org/dist/index.json>
+  and the `linux-x64.tar.xz` and `linux-arm64.tar.xz` lines of that
+  release's `SHASUMS256.txt`.
+- **rustup:** the version from
+  <https://static.rust-lang.org/rustup/release-stable.toml>, and each
+  `rustup-init.sha256` under `rustup/archive/<version>/<target>/`.
+- **Swift:** `SWIFT_VERSION` follows xtool's Linux guide; the signing-key
+  fingerprints come from <https://www.swift.org/keys/all-keys.asc>.
+- **xtool:** set `XTOOL_VERSION` to a release tag, then record each
+  AppImage's SHA-256 in `XTOOL_SHA256_X86_64` / `XTOOL_SHA256_AARCH64`
+  (`sha256sum xtool-x86_64.AppImage`, compared with the asset's `digest`
+  in `https://api.github.com/repos/xtool-org/xtool/releases/tags/<tag>`).
+  Also update `XTOOL_SDK_VERSION` from that tag's
+  `Sources/XToolSupport/SDKBuilder.swift` (`currentSDKVersion`) and
+  `XCODE_VERSION` from its Linux guide.
+- **Rust and pnpm** follow `rust-toolchain.toml` and `package.json`; the
+  tests fail when they disagree.
+
+## Manual setup (reference)
+
+What the tool automates, by hand.
+
+### Set up WSL (once)
 
 On Windows, install WSL with Ubuntu, then
 [usbipd](https://learn.microsoft.com/en-us/windows/wsl/connect-usb) so the
@@ -61,7 +174,7 @@ iPhone reaches WSL over USB. Inside Ubuntu:
    You also need Node.js 22 and pnpm 9 for the web shell, as for any
    build of this repository.
 
-## Build and install
+### Build and install
 
 With the iPhone connected, unlocked and trusting the computer:
 
@@ -105,3 +218,14 @@ and what to try:
   start.
 
 Report what happens and it can be fixed from there.
+
+## Follow-up
+
+- The xtool AppImage's SHA-256 is not pinned in `cli/src/versions.rs` yet
+  (`XTOOL_SHA256_*` are `None`): the session that wrote the tool could not
+  reach GitHub's release downloads. Until it is, the tool relies on the
+  digest GitHub records for the release asset, and refuses to install
+  xtool when that cannot be read.
+- `setup-windows.ps1`, the WSL-only steps (usbipd, explorer.exe), Apple's
+  login and the phone have not been run yet; the tool's own logic is
+  covered by `cargo test` in `cli/`.
