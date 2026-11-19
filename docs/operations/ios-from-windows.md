@@ -68,7 +68,7 @@ pippwin run
 
 This runs `apps/device-shell/ios-xtool/prepare.sh` and then `xtool dev`, which builds, signs and installs the app.
 
-- **Phone disconnected?** Reconnect it with `pippwin phone`. Windows hands the USB device back to itself each time it is unplugged.
+- **Phone unplugged?** Windows takes the USB device back each time it is unplugged. `pippwin run` notices and offers to connect it again, or run `pippwin phone`. When `pippwin phone` offers to **reconnect automatically**, say yes and a replugged iPhone is reconnected by itself until that small Windows window is closed or Windows restarts.
 - **Something wrong?** `pippwin doctor` shows each step as done, missing or a problem.
 - **First run on the phone:** trust the developer profile under **Settings → General → VPN & Device Management**.
 
