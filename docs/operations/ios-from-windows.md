@@ -29,7 +29,7 @@ This is for developers who want the app on their own phone. It is experimental, 
    ```
 
    It installs WSL with Ubuntu and the USB passthrough tool `usbipd`, then builds pippwin inside Ubuntu. If Windows needs a restart to finish installing WSL, the script says so: restart and run it again.
-3. **Follow `pippwin setup`.** It clones this repository and reads [`pippwin.toml`](https://github.com/buchochelliq-labs/limiara-core/blob/main/pippwin.toml) at its root. It then works through the steps one by one, explaining each before it runs:
+3. **Follow `pippwin setup`.** It clones this repository and reads `pippwin.toml` at its root. It then works through the steps one by one, explaining each before it runs:
    - Ubuntu packages, after showing the `sudo` commands and asking first;
    - Swift, xtool, Rust with the `aarch64-apple-ios` target, Node 22 and pnpm;
    - the iOS SDK from your Xcode download;
@@ -39,7 +39,11 @@ This is for developers who want the app on their own phone. It is experimental, 
 
    Every step can be run again safely: one that is already done is skipped.
 
-Already in Ubuntu on WSL? Clone pippwin and run its `scripts/bootstrap.sh`, then `pippwin setup --project https://github.com/buchochelliq-labs/limiara-core`.
+Already in Ubuntu on WSL? Clone pippwin and run its `scripts/bootstrap.sh`, then:
+
+```sh
+pippwin setup --project https://github.com/buchochelliq-labs/limiara-core
+```
 
 ## Logging in to Apple
 
