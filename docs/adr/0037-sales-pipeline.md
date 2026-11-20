@@ -257,7 +257,7 @@ workspace automations when it creates the object, through the same checks
 as an administrator's, and never adds, changes or deletes them afterwards:
 they are the workspace's. Sales declares one, `probability_from_stage`,
 setting probability to `PICKLISTWEIGHT(stage)` when the stage changes
-unless the same save sets it. Updating other records, creating records and
+unless the same save changes it. Updating other records, creating records and
 publishing events stay out of manifests.
 
 **Opportunity contact role** (`key_prefix = "ocr"`, sharing controlled by

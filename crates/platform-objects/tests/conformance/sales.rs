@@ -158,7 +158,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect_err("only the path's stages are values");
     assert!(!codes(&refused).is_empty(), "{refused:?}");
-    // A member's own probability stands, in the save that sets it and after.
+    // A member's own probability stands, in the save that changes it and after.
     let judged = admin
         .update_record(
             OPPORTUNITY,
@@ -232,6 +232,61 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect("a move without the automation");
     assert_eq!(probability(&moved), Some(5.0));
+
+    // --- A formula may follow a lookup to an object declared later ---------
+    let mut orders = sales();
+    orders.id = "example.orders".into();
+    orders.objects = serde_json::from_value(json!([
+        {
+            "name": "line", "label": "Line", "plural_label": "Lines", "key_prefix": "lin",
+            "fields": [
+                {"name": "order", "label": "Order", "field_type": "lookup",
+                 "reference_object": "example.orders:order"},
+                {"name": "note", "label": "Note", "field_type": "text", "max_length": 255}
+            ],
+            "automations": [{
+                "name": "note_from_order", "trigger": "create",
+                "set": [{"field": "note", "formula": "example.orders:order.example.orders:title"}]
+            }]
+        },
+        {
+            "name": "order", "label": "Order", "plural_label": "Orders", "key_prefix": "ord",
+            "fields": [{"name": "title", "label": "Title", "field_type": "text", "max_length": 255}]
+        }
+    ]))
+    .expect("objects");
+    let orders_installer = service(
+        &store,
+        ObjectCaller::plugin_installer(tenant, member, "example.orders"),
+    );
+    orders_installer
+        .install_plugin_objects(&orders, context())
+        .await
+        .expect("a lookup to a later object is checked once its fields exist");
+    orders_installer
+        .resume_plugin_objects("example.orders", context())
+        .await
+        .expect("resume");
+    let order = admin
+        .create_record(
+            "example.orders:order",
+            &body(json!({"name": "O-1", "example.orders:title": "Spring order"})),
+            context(),
+        )
+        .await
+        .expect("an order");
+    let line = admin
+        .create_record(
+            "example.orders:line",
+            &body(json!({"name": "L-1", "example.orders:order": order.public_id})),
+            context(),
+        )
+        .await
+        .expect("a line");
+    assert_eq!(
+        line.values.get("example.orders:note"),
+        Some(&json!("Spring order"))
+    );
 
     // --- A lead starts New ---------------------------------------------------
     let prospect = admin

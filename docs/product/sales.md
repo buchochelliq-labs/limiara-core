@@ -66,8 +66,10 @@ Each stage carries its usual probability of closing:
 
 **Probability follows the stage.** A new opportunity starts at its stage's
 probability, and moving it to another stage sets the probability to that
-stage's. A member can still set the probability by hand: a save that sets it
-keeps the member's value, and so do later saves that leave the stage alone.
+stage's. A member can still set the probability by hand: a save that changes
+it keeps the member's value, and so do later saves that leave the stage alone.
+A save that moves the stage and sends the probability it already had counts
+as not changing it, so the new stage's probability applies.
 
 This is an ordinary automation, **probability_from_stage**, that the plugin
 adds when it creates the Opportunity object. Administrators find it in the

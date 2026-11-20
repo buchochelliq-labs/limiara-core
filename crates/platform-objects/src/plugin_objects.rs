@@ -170,12 +170,22 @@ impl ObjectService {
                 .await?;
             self.put_plugin_timeline(tx.as_mut(), plugin_id, &object, declared)
                 .await?;
-            // Starting automations come with a new object only: afterwards
-            // they belong to the workspace's administrators.
-            if installed.created_objects.contains(&api_name) {
-                self.put_plugin_automations(tx.as_mut(), plugin_id, &object, declared, context)
-                    .await?;
+        }
+        // Starting automations come with a new object only: afterwards they
+        // belong to the workspace's administrators. They are checked once
+        // every object's fields are installed, so a formula may follow a
+        // lookup to an object declared later in the manifest.
+        for declared in &manifest.objects {
+            let api_name = format!("{plugin_id}:{}", declared.name);
+            if !installed.created_objects.contains(&api_name) {
+                continue;
             }
+            let object = tx
+                .object_by_api_name(&api_name)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            self.put_plugin_automations(tx.as_mut(), plugin_id, &object, declared, context)
+                .await?;
         }
         tx.commit().await?;
         Ok(installed)
