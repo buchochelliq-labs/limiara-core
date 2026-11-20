@@ -11,8 +11,9 @@
 #
 #   check-ios-release-build.sh ipa <app.ipa> <bundle-version> <short-version>
 #     The exported IPA (macOS only): the bundle identifier and versions, the
-#     export compliance key, distribution entitlements (production APNs, no
-#     debugger attachment) and no trace of the debug simulator's push hook,
+#     export compliance key (and code, when EXPORT_COMPLIANCE_CODE is set),
+#     distribution entitlements (production APNs, no debugger attachment)
+#     and no trace of the debug simulator's push hook,
 #     which `#if DEBUG && targetEnvironment(simulator)` keeps out of device
 #     builds.
 #
@@ -130,6 +131,13 @@ check_ipa() {
   [[ "$value" == "$expected_short" ]] || fail "CFBundleShortVersionString is '$value', expected $expected_short"
   value=$(plist_value "$info" ITSAppUsesNonExemptEncryption)
   [[ "$value" == true ]] || fail "ITSAppUsesNonExemptEncryption is '$value', expected true (docs/operations/testflight.md)"
+  # EXPORT_COMPLIANCE_CODE (the workflow's APP_STORE_EXPORT_COMPLIANCE_CODE),
+  # when set, must be the app's ITSEncryptionExportComplianceCode.
+  if [[ -n "${EXPORT_COMPLIANCE_CODE:-}" ]]; then
+    value=$(plist_value "$info" ITSEncryptionExportComplianceCode)
+    [[ "$value" == "$EXPORT_COMPLIANCE_CODE" ]] ||
+      fail "ITSEncryptionExportComplianceCode is '$value', expected APP_STORE_EXPORT_COMPLIANCE_CODE"
+  fi
   value=$(plist_value "$info" UIBackgroundModes)
   [[ "$value" == *remote-notification* ]] || fail "UIBackgroundModes does not declare remote-notification"
 
