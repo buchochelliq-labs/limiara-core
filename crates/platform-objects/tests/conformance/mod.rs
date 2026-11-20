@@ -65,6 +65,32 @@ fn caller(tenant: Uuid, user: Uuid, permissions: &[&str], roles: &[Uuid]) -> Obj
     )
 }
 
+/// Runs a test's body on a thread with a 32 MiB stack and its own runtime.
+/// The object engine suite is one long async function; in debug builds
+/// polling it takes more stack than a test thread's 2 MiB, whether or not
+/// its future is boxed.
+pub fn on_large_stack<F, Fut>(test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()>,
+{
+    let outcome = std::thread::Builder::new()
+        .name("conformance".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(test());
+        })
+        .expect("test thread")
+        .join();
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 fn service(store: &Arc<dyn ObjectStore>, caller: ObjectCaller) -> ObjectService {
     ObjectService::new(store.clone(), caller)
 }

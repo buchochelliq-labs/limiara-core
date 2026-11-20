@@ -8,8 +8,12 @@ use platform_objects::ObjectStore;
 use platform_storage::sqlite::SqliteTenantDatabases;
 use std::sync::Arc;
 
-#[tokio::test]
-async fn sqlite_store_passes_the_object_engine_conformance_suite() {
+#[test]
+fn sqlite_store_passes_the_object_engine_conformance_suite() {
+    conformance::on_large_stack(object_engine_suite);
+}
+
+async fn object_engine_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(
         directory.path(),
