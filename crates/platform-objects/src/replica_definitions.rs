@@ -33,6 +33,8 @@ pub struct RemoteObject {
     pub track_history: bool,
     pub searchable: bool,
     pub in_navigation: bool,
+    /// The picklist field the path and board use (ADR 0037 §2).
+    pub path_field: Option<String>,
     pub version: i64,
     pub access: AccessFlags,
     /// Active fields in display order.
@@ -107,6 +109,7 @@ impl RemoteObject {
             track_history: object.track_history,
             searchable: object.searchable,
             in_navigation: object.in_navigation,
+            path_field: object.path_field.clone(),
             version: object.version,
             access,
             fields: object
@@ -526,6 +529,7 @@ async fn put_object(
                 track_history: remote.track_history,
                 searchable: remote.searchable,
                 in_navigation: remote.in_navigation,
+                path_field: remote.path_field.clone(),
                 status: DefinitionStatus::Active,
                 suspended: false,
                 version: remote.version.max(1),
@@ -555,6 +559,7 @@ async fn put_object(
             object.track_history = remote.track_history;
             object.searchable = remote.searchable;
             object.in_navigation = remote.in_navigation;
+            object.path_field = remote.path_field.clone();
             object.status = DefinitionStatus::Active;
             object.version = remote.version.max(1);
             if object == local {

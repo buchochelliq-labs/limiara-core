@@ -302,6 +302,40 @@ pub struct PicklistOption {
     pub active: bool,
     #[serde(default)]
     pub default: bool,
+    /// Whether the value closes the record, and how (ADR 0037 §1).
+    #[serde(default)]
+    pub outcome: OptionOutcome,
+    /// A percentage, 0 to 100, the value carries: a deal stage's
+    /// probability, say (ADR 0037 §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u8>,
+}
+
+/// What a picklist value means for the record's progress (ADR 0037 §1). A
+/// value other than `open` is closed: the path groups it last and the
+/// board hides it unless asked. The names are domain-neutral; sales calls
+/// them won and lost, support resolved and rejected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionOutcome {
+    #[default]
+    Open,
+    Positive,
+    Negative,
+}
+
+impl OptionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Positive => "positive",
+            Self::Negative => "negative",
+        }
+    }
+
+    pub fn is_closed(self) -> bool {
+        self != Self::Open
+    }
 }
 
 fn active_by_default() -> bool {
@@ -422,6 +456,9 @@ pub struct ObjectDefinition {
     pub track_history: bool,
     pub searchable: bool,
     pub in_navigation: bool,
+    /// The picklist field whose values the record page shows as a path
+    /// and the board groups by (ADR 0037 §2), by API name.
+    pub path_field: Option<String>,
     pub status: DefinitionStatus,
     /// Whether the object is out of service because its owning plugin is
     /// not enabled in the workspace (ADR 0033 §2). A suspended object is
@@ -522,6 +559,9 @@ pub struct UpdateObject {
     pub searchable: Option<bool>,
     #[serde(default)]
     pub in_navigation: Option<bool>,
+    /// The path field's API name, or `null` to have none (ADR 0037 §2).
+    #[serde(default, deserialize_with = "crate::model::present")]
+    pub path_field: Option<Option<String>>,
 }
 
 /// Reads an update field that may be left out (keep the value), `null`

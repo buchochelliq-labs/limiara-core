@@ -188,6 +188,14 @@ pub(crate) fn visible(object: &ObjectDefinition, hidden: &BTreeSet<String>) -> O
     visible
         .fields
         .retain(|field| !hidden.contains(&field.api_name));
+    // A member who cannot read the path field sees no path or board by it.
+    if visible
+        .path_field
+        .as_ref()
+        .is_some_and(|field| hidden.contains(field))
+    {
+        visible.path_field = None;
+    }
     visible
 }
 

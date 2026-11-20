@@ -338,16 +338,23 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
     upgrade.objects[1].fields.push(estimate);
     ticket_field(&mut upgrade, "status").options = vec![
         ObjectFieldOption {
+            outcome: Default::default(),
+            weight: None,
             value: "open".into(),
             label: "Open".into(),
             default: true,
         },
         ObjectFieldOption {
+            // The value closes a ticket, which the path and board show
+            // (ADR 0037 §1).
+            outcome: plugin_contract::objects::ObjectOptionOutcome::Positive,
+            weight: Some(100),
             value: "closed".into(),
             label: "Closed".into(),
             default: false,
         },
     ];
+    upgrade.objects[1].path_field = Some("status".into());
     // The summary field is no longer declared: it stays, with its values.
     upgrade.objects[1]
         .fields
@@ -367,6 +374,27 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
     );
     let (ticket, _) = admin.describe(TICKET).await.expect("upgraded ticket");
     assert_eq!(ticket.label, "Work item");
+    // The manifest's path field and option outcomes are installed (ADR
+    // 0037), and the path field is the plugin's, like its other flags.
+    assert_eq!(ticket.path_field.as_deref(), Some("example.tracker:status"));
+    let closed = ticket
+        .field("example.tracker:status")
+        .and_then(|status| {
+            status
+                .options
+                .iter()
+                .find(|option| option.value == "closed")
+        })
+        .cloned()
+        .expect("closed option");
+    assert_eq!(closed.outcome, OptionOutcome::Positive);
+    assert_eq!(closed.weight, Some(100));
+    let mut repath = update_object(ticket.version);
+    repath.path_field = Some(None);
+    assert_eq!(
+        conflict(admin.update_object(TICKET, repath, context()).await),
+        PLUGIN_OWNED
+    );
     assert_eq!(
         ticket.sharing_model,
         SharingModel::Private,
@@ -728,6 +756,7 @@ fn update_field(version: i64) -> UpdateField {
 
 fn update_object(version: i64) -> UpdateObject {
     UpdateObject {
+        path_field: None,
         expected_version: version,
         label: None,
         plural_label: None,

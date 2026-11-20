@@ -908,6 +908,16 @@ CREATE INDEX replica_assistant_marks_record_idx
   ON replica_assistant_marks (tenant_id, record_id, position);
 "#,
     },
+    // The path field of an object (ADR 0037 §2). Option outcomes and
+    // weights (ADR 0037 §1) live in the options JSON and need no column.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0037_object_path_field",
+        sql: r#"
+ALTER TABLE object_definitions ADD COLUMN path_field TEXT
+  CHECK (path_field IS NULL OR length(path_field) BETWEEN 1 AND 255);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1000,7 +1010,8 @@ impl SqliteObjectTx {
 const OBJECT_COLUMNS: &str =
     "id, api_name, label, plural_label, description, origin, owner_plugin, \
      key_prefix, name_label, sharing_model, searchable, in_navigation, status, version, \
-     created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended";
+     created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended, \
+     path_field";
 const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.description, f.field_type, \
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
@@ -1085,6 +1096,7 @@ fn object_from_row(row: &SqliteRow) -> Result<ObjectDefinition, ObjectError> {
         track_history: flag(row, "track_history")?,
         searchable: flag(row, "searchable")?,
         in_navigation: flag(row, "in_navigation")?,
+        path_field: row.try_get("path_field")?,
         status: parse(DefinitionStatus::parse(
             &row.try_get::<String, _>("status")?,
         ))?,
@@ -1688,8 +1700,8 @@ impl ObjectTx for SqliteObjectTx {
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
                origin, owner_plugin, key_prefix, name_label, sharing_model, searchable, in_navigation, \
                status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, \
-               suspended) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+               suspended, path_field) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         )
         .bind(&self.tenant)
         .bind(object.id.to_string())
@@ -1713,6 +1725,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(object.grant_hierarchy)
         .bind(object.track_history)
         .bind(object.suspended)
+        .bind(&object.path_field)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -1728,7 +1741,7 @@ impl ObjectTx for SqliteObjectTx {
             "UPDATE object_definitions SET label = ?4, plural_label = ?5, description = ?6, \
                name_label = ?7, sharing_model = ?8, searchable = ?9, in_navigation = ?10, \
                status = ?11, version = ?12, updated_at = ?13, updated_by = ?14, \
-               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, \
+               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, path_field = ?18, \
                deleted_at = CASE WHEN ?11 = 'deleted' THEN coalesce(deleted_at, ?13) END \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
         )
@@ -1749,6 +1762,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(object.grant_hierarchy)
         .bind(object.track_history)
         .bind(object.suspended)
+        .bind(&object.path_field)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();

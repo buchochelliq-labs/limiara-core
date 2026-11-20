@@ -17,7 +17,7 @@ pub use devices::*;
 pub use draft_keys::*;
 
 /// Latest core migration required before runtime services can report ready.
-pub const CORE_MIGRATION_SENTINEL: &str = "0045_recycle_bin.sql";
+pub const CORE_MIGRATION_SENTINEL: &str = "0046_object_path_field.sql";
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]

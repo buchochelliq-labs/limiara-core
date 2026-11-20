@@ -116,6 +116,9 @@ struct ObjectBody {
     track_history: bool,
     searchable: bool,
     in_navigation: bool,
+    /// Servers before ADR 0037 send none.
+    #[serde(default)]
+    path_field: Option<String>,
     version: i64,
     #[serde(default)]
     access: Option<AccessFlags>,
@@ -271,6 +274,7 @@ pub fn remote_object(
         track_history: body.track_history,
         searchable: body.searchable,
         in_navigation: body.in_navigation,
+        path_field: body.path_field,
         version: body.version,
         access: body.access.unwrap_or_default(),
         fields: body
@@ -538,6 +542,61 @@ mod tests {
             remote_object(&described, None, Some(&[json!({"name": "x"})])),
             Err(SyncError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn paths_and_option_outcomes_reach_the_device() {
+        let mut described = json!({
+            "api_name": "custom:deal",
+            "label": "Deal",
+            "plural_label": "Deals",
+            "origin": "workspace",
+            "key_prefix": "a0D",
+            "name_label": "Deal name",
+            "sharing_model": "read_write",
+            "grant_hierarchy": true,
+            "track_history": false,
+            "searchable": true,
+            "in_navigation": true,
+            "path_field": "custom:stage",
+            "version": 1,
+            "fields": [{
+                "api_name": "custom:stage",
+                "label": "Stage",
+                "field_type": "picklist",
+                "origin": "workspace",
+                "required": false,
+                "unique": false,
+                "indexed": true,
+                "searchable": false,
+                "track_history": false,
+                "options": [
+                    {"value": "open", "label": "Open", "weight": 20},
+                    {"value": "won", "label": "Won", "outcome": "positive", "weight": 100}
+                ],
+                "position": 0,
+                "version": 1
+            }]
+        });
+        let object = remote_object(&described, None, None).expect("object");
+        assert_eq!(object.path_field.as_deref(), Some("custom:stage"));
+        let options = &object.fields[0].options;
+        assert_eq!(options[0].outcome, platform_objects::OptionOutcome::Open);
+        assert_eq!(options[0].weight, Some(20));
+        assert_eq!(
+            options[1].outcome,
+            platform_objects::OptionOutcome::Positive
+        );
+        // A server from before ADR 0037 sends neither.
+        if let Some(map) = described.as_object_mut() {
+            map.remove("path_field");
+        }
+        assert_eq!(
+            remote_object(&described, None, None)
+                .expect("object")
+                .path_field,
+            None
+        );
     }
 
     #[test]

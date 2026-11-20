@@ -35,9 +35,11 @@ use crate::service::{MutationContext, ObjectService, OBJECTS_PER_WORKSPACE_MAX};
 use crate::values::{self, LABEL_MAX};
 use crate::{
     CreateField, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, ObjectDefinition,
-    ObjectError, ObjectTx, Origin, PicklistOption, SharingModel, UpdateField, ValidationIssue,
+    ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel, UpdateField,
+    ValidationIssue,
 };
 use chrono::Utc;
+use plugin_contract::objects::ObjectOptionOutcome;
 use plugin_contract::{Manifest, ObjectDecl, ObjectFieldDecl};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -213,6 +215,12 @@ impl ObjectService {
         let track_history = declared.track_history.unwrap_or(false);
         let searchable = declared.searchable.unwrap_or(true);
         let in_navigation = declared.in_navigation.unwrap_or(true);
+        // The manifest checked that it names one of the object's picklists,
+        // which the installer puts in the same transaction.
+        let path_field = declared
+            .path_field
+            .as_ref()
+            .map(|field| format!("{plugin_id}:{field}"));
         let now = Utc::now();
         match tx.object_by_api_name(&api_name).await? {
             None => {
@@ -241,6 +249,7 @@ impl ObjectService {
                     track_history,
                     searchable,
                     in_navigation,
+                    path_field,
                     status: DefinitionStatus::Active,
                     // Out of service until the plugin is enabled.
                     suspended: true,
@@ -275,6 +284,7 @@ impl ObjectService {
                 object.track_history = track_history;
                 object.searchable = searchable;
                 object.in_navigation = in_navigation;
+                object.path_field = path_field;
                 if object == existing {
                     return Ok(());
                 }
@@ -468,6 +478,12 @@ fn create_input(declared: &ObjectFieldDecl) -> Result<CreateField, ObjectError> 
                 label: option.label.trim().to_owned(),
                 active: true,
                 default: option.default,
+                outcome: match option.outcome {
+                    ObjectOptionOutcome::Open => OptionOutcome::Open,
+                    ObjectOptionOutcome::Positive => OptionOutcome::Positive,
+                    ObjectOptionOutcome::Negative => OptionOutcome::Negative,
+                },
+                weight: option.weight,
             })
             .collect(),
         default_value: None,

@@ -64,6 +64,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `sharing_model` | `private`, `read` or `read_write` (the default). Only the starting value: the workspace owns it afterwards. |
 | `searchable`, `in_navigation` | Default `true`. |
 | `track_history` | Default `false`. |
+| `path_field` | Optional. The short name of one of the object's single-value picklists: the record page shows it as a path and the board groups by it (ADR 0037 §2). Upgrades keep it in line with the manifest. |
 
 | Field setting | Rule |
 | --- | --- |
@@ -74,7 +75,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `searchable` | Text-like fields only. |
 | `max_length` | Text (1 to 255) and long text (1 to 131072) only. |
 | `scale` | Number, currency and percent only; 0 to 8. |
-| `options` | Required for picklists and only allowed there: up to 200, each with `value`, `label` and optional `default`. |
+| `options` | Required for picklists and only allowed there: up to 200, each with `value`, `label` and optional `default`, `outcome` and `weight`. `outcome` is `open` (the default), `positive` or `negative`, and only a single-value picklist's options may close a record (ADR 0037 §1). `weight` is a percentage from 0 to 100. |
 | `reference_object` | A lookup's target. |
 | `reference_objects` | A related-to field's starting allowlist: 0 to 10 distinct targets. Workspace administrators choose the rest (see below). |
 | `delete_behaviour` | A lookup's: `clear` (the default) or `restrict`. |

@@ -17,6 +17,7 @@ pub mod field_permissions;
 pub mod formulas;
 pub mod jobs;
 pub mod lease;
+pub mod paths;
 pub mod plugin_objects;
 pub mod push;
 pub mod query;
@@ -62,6 +63,32 @@ fn caller(tenant: Uuid, user: Uuid, permissions: &[&str], roles: &[Uuid]) -> Obj
             .collect(),
         roles.to_vec(),
     )
+}
+
+/// Runs a test's body on a thread with a 32 MiB stack and its own runtime.
+/// The object engine suite is one long async function; in debug builds
+/// polling it takes more stack than a test thread's 2 MiB, whether or not
+/// its future is boxed.
+pub fn on_large_stack<F, Fut>(test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()>,
+{
+    let outcome = std::thread::Builder::new()
+        .name("conformance".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(test());
+        })
+        .expect("test thread")
+        .join();
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 fn service(store: &Arc<dyn ObjectStore>, caller: ObjectCaller) -> ObjectService {
@@ -120,6 +147,8 @@ fn field(name: &str, kind: FieldType) -> CreateField {
 
 fn option(value: &str, default: bool) -> PicklistOption {
     PicklistOption {
+        outcome: Default::default(),
+        weight: None,
         value: value.into(),
         label: value.into(),
         active: true,
@@ -1129,6 +1158,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
         .update_object(
             "custom:deal",
             UpdateObject {
+                path_field: None,
                 expected_version: deal_definition.version,
                 label: None,
                 plural_label: None,

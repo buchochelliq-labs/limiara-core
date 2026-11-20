@@ -317,6 +317,21 @@ async fn postgres_store_passes_the_quick_action_conformance_suite() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_path_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Path conformance')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::paths::run(store, tenant).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_passes_the_search_conformance_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
@@ -345,9 +360,13 @@ async fn postgres_store_passes_the_query_conformance_suite() {
     conformance::query::run(store, tenant).await;
 }
 
-#[tokio::test]
+#[test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
-async fn postgres_store_passes_the_object_engine_conformance_suite() {
+fn postgres_store_passes_the_object_engine_conformance_suite() {
+    conformance::on_large_stack(object_engine_suite);
+}
+
+async fn object_engine_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
     let (tenant_a, tenant_b) = (Uuid::now_v7(), Uuid::now_v7());
@@ -361,9 +380,7 @@ async fn postgres_store_passes_the_object_engine_conformance_suite() {
         .expect("tenant");
     }
     let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app.clone()));
-    // Boxed: the suite's future outgrows a test thread's stack in debug
-    // builds once it is polled on it.
-    let report = Box::pin(conformance::run(store, tenant_a, tenant_b)).await;
+    let report = conformance::run(store, tenant_a, tenant_b).await;
 
     for table in ["audit_log", "outbox"] {
         let count: i64 = sqlx::query_scalar(&format!(

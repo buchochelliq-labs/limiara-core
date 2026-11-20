@@ -52,7 +52,7 @@ can read returns `403 auth.permission_denied`.
 | `GET /objects` | Objects the caller can read, with their effective `access`, plus `can_manage` |
 | `POST /objects` | Create an object: `name`, `label`, `plural_label`, optional `description`, `name_label`, `sharing_model` (`private`, `read`, `read_write`), `grant_hierarchy`, `searchable`, `in_navigation` |
 | `GET /objects/{api_name}` | Describe an object with its active fields in order |
-| `PATCH /objects/{api_name}` | Change labels and settings; send `expected_version` |
+| `PATCH /objects/{api_name}` | Change labels and settings, including `path_field`; send `expected_version` |
 | `DELETE /objects/{api_name}?expected_version=` | Delete an object; refused with `409 objects.object_referenced` while lookups, or related-to fields that allow nothing else, point to it, and `409 objects.object_in_use` while an automation creates its records |
 | `POST /objects/{api_name}/fields` | Create a field |
 | `PATCH /objects/{api_name}/fields/{field}` | Change a field; send `expected_version` |
@@ -67,7 +67,7 @@ Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,
 `related_to`. A field may be `required`, `unique` (text,
 email, phone, URL and number types; case-insensitive), `indexed` (for filters
 and sorting) and `searchable`. Picklists take `options` with `value`, `label`,
-`active` and `default`. Lookups take `reference_object` and a
+`active`, `default`, `outcome` and `weight` (see Paths below). Lookups take `reference_object` and a
 `delete_behaviour` of `clear` (the default) or `restrict`. A field's type,
 uniqueness and lookup target cannot change once it exists.
 
@@ -156,6 +156,26 @@ never bypass it: `records.view_all` and `records.modify_all` widen record
 access, not field access. Role-based field-level security (#316) is a
 follow-up that extends the same function.
 
+### Paths and outcomes
+
+A picklist option may carry an `outcome` (ADR 0037 §1): `open`, the default,
+`positive` or `negative`. A value other than `open` closes the record: the
+record page's path groups it last and the board hides it unless asked. Only
+a single-value picklist's options may have an outcome; a multi-select
+picklist's answer `400 objects.options_invalid`. An option may also carry a
+`weight`, a percentage from 0 to 100, such as a deal stage's probability;
+other values answer `400 objects.options_invalid`.
+
+An object's `path_field` (ADR 0037 §2) is the API name of one of its
+active single-value picklists, or `null`. The record page shows its options
+as a path, and the board view groups records by it. `PATCH /objects/...`
+sets it; a field that is not one of the object's single-value picklists
+answers `400 objects.path_field_invalid`, and `null` clears it. A field is
+not deleted while it is the path (`409 objects.field_in_use`). A member who
+cannot read the field (field permissions) is described an object with no
+`path_field`. Describing an object always returns `path_field`; device
+replicas carry it with the rest of the definition.
+
 ### Plugin objects
 
 Plugins declare objects and fields in their manifest (`[[objects]]`, see
@@ -173,8 +193,8 @@ administrators add.
   related-to field that sends only `expected_version` and
   `reference_objects` changes its allowlist (see Related-to fields).
 - `PATCH /objects/{api_name}` on a plugin object may change only
-  `sharing_model` and `grant_hierarchy`; any other setting answers
-  `409 objects.plugin_owned`.
+  `sharing_model` and `grant_hierarchy`; any other setting, `path_field`
+  included, answers `409 objects.plugin_owned`.
 - Custom fields, validation rules, automations, quick actions and object
   permissions on plugin objects work as on any object. Role permissions
   start empty, as for a new workspace object.
