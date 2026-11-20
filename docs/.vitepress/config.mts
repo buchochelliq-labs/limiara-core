@@ -158,7 +158,8 @@ export default {
             { text: "Activities", link: "/adr/0033-activities" },
             { text: "The assistant bridge", link: "/adr/0034-assistant-bridge" },
             { text: "Contacts on the object engine", link: "/adr/0035-contacts-on-the-object-engine" },
-            { text: "Record drafts", link: "/adr/0036-record-drafts" }
+            { text: "Record drafts", link: "/adr/0036-record-drafts" },
+            { text: "Sales: leads, opportunities and pipelines", link: "/adr/0037-sales-pipeline" }
           ]
         }
       ],

@@ -16,9 +16,11 @@ const sizes = files.map((file) => ({ file, bytes: statSync(file).size }));
 const largest = sizes.slice().sort((a, b) => b.bytes - a.bytes)[0];
 // The local search index grows with every page and is fetched only when a
 // reader opens search, so it has its own budget. Every other asset keeps the
-// stricter per-asset budget that protects first-page load.
+// stricter per-asset budget that protects first-page load. Raised to
+// 800 KB, then to 1 MB at 93 pages (ADR 0037), when page growth alone
+// reached it.
 const ASSET_BUDGET = 300_000;
-const SEARCH_INDEX_BUDGET = 800_000;
+const SEARCH_INDEX_BUDGET = 1_000_000;
 const isSearchIndex = (file) => /(^|[\\/])@localSearchIndex[^\\/]*\.js$/.test(file);
 // The whole site grows with every page (about 30-60 KB per ADR including its
 // search entries); the per-asset budgets below keep first-page load in check,
