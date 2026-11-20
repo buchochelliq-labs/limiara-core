@@ -61,7 +61,14 @@ export function referenceTargets(field: ObjectField): string[] {
 /** The most objects a related-to field may allow (ADR 0033). */
 export const referenceObjectsMax = 10;
 
-export type PicklistOption = {value: string; label: string; active: boolean; default: boolean};
+/** Whether a picklist value closes the record, and how (ADR 0037 §1). */
+export type OptionOutcome = 'open' | 'positive' | 'negative';
+export type PicklistOption = {value: string; label: string; active: boolean; default: boolean; outcome?: OptionOutcome; weight?: number | null};
+
+/** An option's outcome, `open` when the server sent none. */
+export function optionOutcome(option: PicklistOption): OptionOutcome {
+  return option.outcome === 'positive' || option.outcome === 'negative' ? option.outcome : 'open';
+}
 
 export type ObjectField = {
   /** For formula fields (ADR 0021): the formula and the type it gives. */
@@ -220,6 +227,8 @@ export type ObjectSummary = {
   sharingModel: SharingModel;
   grantHierarchy: boolean;
   trackHistory: boolean;
+  /** The single-value picklist shown as the record's path (ADR 0037 §2). */
+  pathField: string | null;
   version: number;
   access: ObjectAccess;
 };
@@ -284,7 +293,7 @@ const messages: Record<ObjectsErrorReason, string> = {
 };
 
 export type NewObject = {name: string; label: string; plural_label: string; description?: string; name_label?: string; in_navigation?: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean};
-export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean};
+export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean; path_field?: string | null};
 export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]; read_permission?: string | null; write_permission?: string | null};
 export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}; read_permission?: string; write_permission?: string};
 export type RolePermission = {roleId: string; roleName: string; access: ObjectAccess};
@@ -454,7 +463,7 @@ export type ObjectsClient = {
 
 type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; read_permission?: string | null; write_permission?: string | null; access?: {read?: unknown; edit?: unknown}; version: number};
 type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference; source?: unknown};
-type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; version: number; access?: ObjectAccess; fields?: ApiField[]};
+type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; path_field?: string | null; version: number; access?: ObjectAccess; fields?: ApiField[]};
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
 type ApiRecord = Record<string, unknown> & {id: string; name: string; owner: UserReference; created_at: string; created_by: UserReference; updated_at: string; updated_by: UserReference; version: number; is_deleted: boolean; related?: Record<string, string>; access?: RecordRights};
 
@@ -493,7 +502,7 @@ function stringMap(value: unknown): Record<string, string> {
 }
 
 export function objectFromApi(object: ApiObject): ObjectDescription {
-  return {apiName: object.api_name, label: object.label, pluralLabel: object.plural_label, description: object.description ?? null, origin: object.origin, keyPrefix: object.key_prefix, nameLabel: object.name_label, inNavigation: object.in_navigation, sharingModel: object.sharing_model ?? 'read_write', grantHierarchy: object.grant_hierarchy !== false, trackHistory: object.track_history === true, version: object.version, access: object.access ?? noAccess, fields: (object.fields ?? []).map(fieldFromApi)};
+  return {apiName: object.api_name, label: object.label, pluralLabel: object.plural_label, description: object.description ?? null, origin: object.origin, keyPrefix: object.key_prefix, nameLabel: object.name_label, inNavigation: object.in_navigation, sharingModel: object.sharing_model ?? 'read_write', grantHierarchy: object.grant_hierarchy !== false, trackHistory: object.track_history === true, pathField: typeof object.path_field === 'string' ? object.path_field : null, version: object.version, access: object.access ?? noAccess, fields: (object.fields ?? []).map(fieldFromApi)};
 }
 
 type ApiReport = {id: string; name: string; description: string | null; query: string; chart: ReportChart; label_column: string | null; value_column: string | null; visibility: 'private' | 'workspace'; owner?: UserReference; version: number; updated_at: string; can_edit?: boolean};
@@ -816,9 +825,9 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
   const timelines = options.timelines ?? {};
   const reports: Report[] = [];
   const objects: ObjectDescription[] = [{
-    apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: 'Client engagements', origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'read_write', grantHierarchy: true, trackHistory: true, version: 1, access: fullAccess,
+    apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: 'Client engagements', origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'read_write', grantHierarchy: true, trackHistory: true, pathField: 'custom:status', version: 1, access: fullAccess,
     fields: [
-      field('custom:status', 'Status', 'picklist', {indexed: true, trackHistory: true, options: [{value: 'open', label: 'Open', active: true, default: true}, {value: 'won', label: 'Won', active: true, default: false}]}),
+      field('custom:status', 'Status', 'picklist', {indexed: true, trackHistory: true, options: [{value: 'open', label: 'Open', active: true, default: true, outcome: 'open', weight: 20}, {value: 'won', label: 'Won', active: true, default: false, outcome: 'positive', weight: 100}]}),
       field('custom:code', 'Code', 'text', {unique: true, indexed: true}),
       field('custom:budget', 'Budget', 'currency'),
       field('custom:starts_on', 'Starts on', 'date'),
@@ -856,7 +865,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     async createObject(input) {
       const apiName = `custom:${input.name}`;
       if (objects.some(item => item.apiName === apiName)) throw new ObjectsApiError('conflict', 'objects.duplicate_api_name');
-      const created: ObjectDescription = {apiName, label: input.label, pluralLabel: input.plural_label, description: input.description ?? null, origin: 'workspace', keyPrefix: String(objects.length).padStart(3, '0'), nameLabel: input.name_label ?? `${input.label} name`, inNavigation: input.in_navigation ?? true, sharingModel: input.sharing_model ?? 'read_write', grantHierarchy: input.grant_hierarchy ?? true, trackHistory: input.track_history ?? false, version: 1, access: fullAccess, fields: []};
+      const created: ObjectDescription = {apiName, label: input.label, pluralLabel: input.plural_label, description: input.description ?? null, origin: 'workspace', keyPrefix: String(objects.length).padStart(3, '0'), nameLabel: input.name_label ?? `${input.label} name`, inNavigation: input.in_navigation ?? true, sharingModel: input.sharing_model ?? 'read_write', grantHierarchy: input.grant_hierarchy ?? true, trackHistory: input.track_history ?? false, pathField: null, version: 1, access: fullAccess, fields: []};
       objects.push(created);
       records[apiName] = [];
       return structuredClone(created);
@@ -864,7 +873,11 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
     async updateObject(apiName, version, changes) {
       const object = find(apiName);
       if (object.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
-      Object.assign(object, {version: object.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.sharing_model ? {sharingModel: changes.sharing_model} : {}, changes.grant_hierarchy === undefined ? {} : {grantHierarchy: changes.grant_hierarchy}, changes.in_navigation === undefined ? {} : {inNavigation: changes.in_navigation});
+      if (changes.path_field) {
+        const path = object.fields.find(item => item.apiName === changes.path_field);
+        if (!path || path.type !== 'picklist') throw new ObjectsApiError('invalid', 'objects.path_field_invalid');
+      }
+      Object.assign(object, {version: object.version + 1}, changes.path_field === undefined ? {} : {pathField: changes.path_field}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.sharing_model ? {sharingModel: changes.sharing_model} : {}, changes.grant_hierarchy === undefined ? {} : {grantHierarchy: changes.grant_hierarchy}, changes.in_navigation === undefined ? {} : {inNavigation: changes.in_navigation});
       return structuredClone(object);
     },
     async createField(apiName, input) {

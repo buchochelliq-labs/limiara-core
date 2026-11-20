@@ -1,10 +1,11 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type PicklistOption, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
+import {pathFieldOf, RecordPath} from './RecordPath';
 import {BlockedDraft, CancelChoice, CreateDraftChooser, DraftMessages, DraftStatus, formatDraftTime, RestorePrompt} from '../drafts/components';
 import {changedFields} from '../drafts/model';
 import {createDraftsFor, editDraftFor, useDraftList} from '../drafts/lists';
@@ -191,6 +192,9 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const [notice, setNotice] = useState('');
   const [running, setRunning] = useState<QuickAction | null>(null);
   const [relatedRefresh, setRelatedRefresh] = useState(0);
+  // The path (ADR 0037 §2): a move in flight, and a closing value whose form is open.
+  const [moving, setMoving] = useState(false);
+  const [closing, setClosing] = useState<PicklistOption | null>(null);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
   const actions = useQuickActions(client, apiName);
   // A draft of this record (ADR 0036 §8): a quiet notice, or opened straight from Drafts.
@@ -260,6 +264,25 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
     }
   };
 
+  // A path move is an ordinary edit with the record's version: a conflict keeps the record as it was.
+  const pathField = pathFieldOf(object);
+  const move = async (value: string) => {
+    if (!pathField) return;
+    setError('');
+    setNotice('');
+    setMoving(true);
+    try {
+      const saved = await client.updateRecord(object.apiName, record.id, record.version, {[pathField.apiName]: value});
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      const label = pathField.options.find(option => option.value === value)?.label ?? value;
+      setNotice(`${pathField.label} is now ${label}.`);
+    } catch (reason) {
+      setError(pathProblem(reason, pathField.label));
+    } finally {
+      setMoving(false);
+    }
+  };
+
   // Record-level rights (ADR 0016) refine the object's permissions.
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
@@ -300,9 +323,15 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       setRunning(null);
       closeForm();
     }} />}
+    {closing && pathField && <RecordModal client={client} object={object} record={record} title={`Close as ${closing.label}`} always={{[pathField.apiName]: closing.value}} offerNew={false} onNavigate={onNavigate} onClose={() => setClosing(null)} onSaved={saved => {
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      setNotice(`${record.name} was closed as ${closing.label}.`);
+      setClosing(null);
+    }} />}
     {running?.kind === 'create' && runningTarget && running.targetField && <RecordModal client={client} object={runningTarget} title={running.label} presets={{[running.targetField]: {value: record.id, label: record.name}}} only={running.fields} always={running.presets} draftContext={{parent: {object: object.apiName, id: record.id, field: running.targetField, name: record.name}, action: {name: running.name, label: running.label}}} onNavigate={onNavigate}
       // As with New on a related list, the member stays on this record and its lists show what they added.
       onClose={() => setRunning(null)} onSaved={(_, next) => { setRelatedRefresh(value => value + 1); if (next === 'close') setRunning(null); }} />}
+    {pathField && <RecordPath object={object} field={pathField} record={record} canEdit={canEdit} busy={moving} onMove={value => void move(value)} onClose={option => { setError(''); setClosing(option); }} />}
     <section aria-label="Details" className="object-section">
       <h2>Details</h2>
       <dl className="object-fields">
@@ -853,4 +882,15 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     {autosave.state.kind === 'failed' && autosave.state.reason === 'other_tab' && <Button type="button" size="small" variant="secondary" onClick={() => void autosave.takeOver()}>Take over here</Button>}
     {base && <p className="object-form__meta"><Badge variant="neutral">Version {base.version}</Badge></p>}
   </form>;
+}
+
+/** Why a path move was not saved, in words the member can act on. */
+function pathProblem(reason: unknown, fieldLabel: string): string {
+  if (reason instanceof ObjectsApiError) {
+    if (reason.reason === 'conflict') return 'This record changed since you opened it. Reload it to see the latest, then try again.';
+    // A validation rule may need other values for this step: its message says which.
+    if (reason.reason === 'invalid') return reason.issues.map(issue => issue.detail).filter(Boolean).join(' ') || `${fieldLabel} could not be changed: the record needs other values first. Use Edit to see them.`;
+    if (reason.reason === 'denied') return `You do not have permission to change ${fieldLabel.toLowerCase()}.`;
+  }
+  return reason instanceof Error ? reason.message : `${fieldLabel} could not be changed.`;
 }
