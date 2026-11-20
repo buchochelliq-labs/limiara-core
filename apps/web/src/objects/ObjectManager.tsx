@@ -1,6 +1,6 @@
 import React, {useEffect, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Select, Skeleton, TextField} from '../components/ui';
-import {type AssistantPolicy, type AssistantSettings, type QuickAction, fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule, canReadField, type FieldChanges, type FieldPermissionChoice} from './api';
+import {type AssistantPolicy, type AssistantSettings, type QuickAction, fieldTypes, holdsReference, isReference, ObjectsApiError, referenceObjectsMax, rollupFunctions, type RollupFunction, sharingModels, type FieldType, type SharingModel, type NewField, type ObjectAccess, type ObjectDescription, type ObjectField, type ObjectsClient, type ObjectSummary, type RolePermission, type ValidationIssue, type ValidationRule, canReadField, type FieldChanges, type FieldPermissionChoice, optionOutcome, type OptionOutcome, type PicklistOption} from './api';
 import {failed, objectRoute, useObject, type Load} from './ObjectPages';
 import {Automations} from './Automations';
 import {QuickActions} from './QuickActions';
@@ -275,6 +275,7 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
   const [filtering, setFiltering] = useState<string | null>(null);
   const [allowing, setAllowing] = useState<string | null>(null);
   const [securing, setSecuring] = useState<string | null>(null);
+  const [valuing, setValuing] = useState<string | null>(null);
   const object = load.status === 'ready' ? load.value : undefined;
   useEffect(() => {
     const controller = new AbortController();
@@ -332,12 +333,13 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
               {object.trackHistory && <td>{canManage
                 ? <input type="checkbox" aria-label={`Track history of ${field.label}`} checked={field.trackHistory} onChange={event => void toggleHistory(field, event.target.checked)} />
                 : field.trackHistory ? 'Tracked' : 'Not tracked'}</td>}
-              {canManage && <td><Button size="small" variant="quiet" onClick={() => setSecuring(field.apiName)} aria-label={`Access to ${field.label}`}>Access</Button>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.type === 'related_to' && <Button size="small" variant="quiet" onClick={() => setAllowing(field.apiName)} aria-label={`Objects ${field.label} can point to`}>Objects</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
+              {canManage && <td><Button size="small" variant="quiet" onClick={() => setSecuring(field.apiName)} aria-label={`Access to ${field.label}`}>Access</Button>{isReference(field.type) && <Button size="small" variant="quiet" onClick={() => setFiltering(field.apiName)} aria-label={`Lookup filter of ${field.label}`}>Filter</Button>}{field.type === 'related_to' && <Button size="small" variant="quiet" onClick={() => setAllowing(field.apiName)} aria-label={`Objects ${field.label} can point to`}>Objects</Button>}{field.type === 'picklist' && field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => setValuing(field.apiName)} aria-label={`Values of ${field.label}`}>Values</Button>}{field.origin === 'workspace' && <Button size="small" variant="quiet" onClick={() => void removeField(field)} aria-label={`Delete ${field.label}`}>Delete</Button>}</td>}
             </tr>)}
           </tbody>
         </table></div>
         {filtering && object.fields.some(field => field.apiName === filtering) && <LookupFilterForm key={filtering} client={client} object={object} field={object.fields.find(field => field.apiName === filtering) ?? object.fields[0]!} onDone={message => { setFiltering(null); if (message) { setNotice(message); retry(); } }} />}
         {securing && object.fields.some(field => field.apiName === securing) && <FieldPermissionsForm key={`${securing}@${object.fields.find(field => field.apiName === securing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === securing) ?? object.fields[0]!} onDone={message => { setSecuring(null); if (message) { setNotice(message); retry(); } }} />}
+        {valuing && object.fields.some(field => field.apiName === valuing) && <OptionOutcomesForm key={`${valuing}@${object.fields.find(field => field.apiName === valuing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === valuing) ?? object.fields[0]!} onDone={message => { setValuing(null); if (message) { setNotice(message); retry(); } }} />}
         {allowing && object.fields.some(field => field.apiName === allowing) && <AllowlistForm key={`${allowing}@${object.fields.find(field => field.apiName === allowing)?.version ?? 0}`} client={client} object={object} field={object.fields.find(field => field.apiName === allowing) ?? object.fields[0]!} onDone={message => { setAllowing(null); if (message) { setNotice(message); retry(); } }} />}
       </section>
       {canManage && <ValidationRules client={client} object={object} onNotice={setNotice} />}
@@ -713,6 +715,78 @@ function RecordAccessSettings({client, object, onSaved}: {client: ObjectsClient;
  * a path on record pages and grouped by on the board. A plugin's object
  * keeps the plugin's choice.
  */
+const outcomeLabels: Record<OptionOutcome, string> = {open: 'Open', positive: 'Closes, positive', negative: 'Closes, negative'};
+
+/** A weight as typed: blank for none, else a whole number from 0 to 100. */
+function parseWeight(text: string): number | null | 'invalid' {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (!/^\d{1,3}$/.test(trimmed)) return 'invalid';
+  const weight = Number(trimmed);
+  return weight <= 100 ? weight : 'invalid';
+}
+
+/**
+ * Each value of a single-value picklist, with its outcome and weight (ADR
+ * 0037 §1): whether choosing it closes the record, and how, and a
+ * percentage it carries, such as a deal stage's probability. Formulas read
+ * them with PICKLISTOUTCOME and PICKLISTWEIGHT, and the path shows closing
+ * values last.
+ */
+export function OptionOutcomesForm({client, object, field, onDone}: {client: Pick<ObjectsClient, 'updateField'>; object: ObjectDescription; field: ObjectField; onDone: (message?: string) => void}) {
+  const [rows, setRows] = useState(() => field.options.map(option => ({option, outcome: optionOutcome(option), weight: option.weight === undefined || option.weight === null ? '' : String(option.weight)})));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<{message: string; issues: ValidationIssue[]} | null>(null);
+  const weights = rows.map(row => parseWeight(row.weight));
+  const invalid = weights.some(weight => weight === 'invalid');
+  const set = (index: number, change: Partial<{outcome: OptionOutcome; weight: string}>) => setRows(current => current.map((row, at) => at === index ? {...row, ...change} : row));
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (invalid) return;
+    setSaving(true);
+    setError(null);
+    const options: PicklistOption[] = rows.map((row, index) => {
+      const weight = weights[index];
+      const next: PicklistOption = {value: row.option.value, label: row.option.label, active: row.option.active, default: row.option.default, outcome: row.outcome};
+      if (typeof weight === 'number') next.weight = weight;
+      return next;
+    });
+    try {
+      await client.updateField(object.apiName, field.apiName, field.version, {options});
+      onDone(`The values of ${field.label} were saved.`);
+    } catch (reason) {
+      setError(issuesText(reason, `The values of ${field.label} could not be saved.`));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <form className="object-form" aria-label={`Values of ${field.label}`} onSubmit={event => void save(event)}>
+    <h3>Values of {field.label}</h3>
+    <p className="object-form__meta">A closing value ends the record's progress, positively (won, resolved) or negatively (lost, rejected); the path shows closing values last. A weight is a percentage from 0 to 100 the value carries, such as a stage's probability. Formulas read them with <code>PICKLISTOUTCOME</code> and <code>PICKLISTWEIGHT</code>.</p>
+    {error && <Alert variant="danger" title={error.message}><Issues issues={error.issues} /></Alert>}
+    <div className="object-table-wrap"><table className="object-table">
+      <caption className="sr-only">Outcomes and weights of {field.label}'s values</caption>
+      <thead><tr><th scope="col">Value</th><th scope="col">Outcome</th><th scope="col">Weight</th></tr></thead>
+      <tbody>{rows.map((row, index) => {
+        const weightId = `option-weight-${index}`;
+        const bad = weights[index] === 'invalid';
+        return <tr key={row.option.value}>
+          <th scope="row">{row.option.label}{!row.option.active && <> <Badge>Inactive</Badge></>}</th>
+          <td><select className="ui-field__control" aria-label={`Outcome of ${row.option.label}`} value={row.outcome} disabled={saving} onChange={event => set(index, {outcome: event.target.value as OptionOutcome})}>
+            {(Object.keys(outcomeLabels) as OptionOutcome[]).map(outcome => <option key={outcome} value={outcome}>{outcomeLabels[outcome]}</option>)}
+          </select></td>
+          <td><input id={weightId} className="ui-field__control" inputMode="numeric" aria-label={`Weight of ${row.option.label}`} aria-invalid={bad || undefined} aria-describedby={bad ? `${weightId}-error` : undefined} value={row.weight} disabled={saving} onChange={event => set(index, {weight: event.target.value})} />
+            {bad && <span className="ui-field__error" id={`${weightId}-error`}>Enter a whole number from 0 to 100, or leave it blank.</span>}</td>
+        </tr>;
+      })}</tbody>
+    </table></div>
+    <div className="object-page__actions">
+      <Button type="submit" loading={saving} disabled={invalid}>Save values</Button>
+      <Button type="button" variant="secondary" onClick={() => onDone()} disabled={saving}>Cancel</Button>
+    </div>
+  </form>;
+}
+
 export function PathSettings({client, object, onSaved}: {client: Pick<ObjectsClient, 'updateObject'>; object: ObjectDescription; onSaved: (message: string) => void}) {
   const picklists = object.fields.filter(field => field.type === 'picklist');
   const [pathField, setPathField] = useState(object.pathField ?? '');

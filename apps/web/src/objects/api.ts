@@ -295,7 +295,7 @@ const messages: Record<ObjectsErrorReason, string> = {
 
 export type NewObject = {name: string; label: string; plural_label: string; description?: string; name_label?: string; in_navigation?: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean};
 export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean; path_field?: string | null};
-export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]; read_permission?: string | null; write_permission?: string | null};
+export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]; read_permission?: string | null; write_permission?: string | null; options?: PicklistOption[]};
 export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}; read_permission?: string; write_permission?: string};
 export type RolePermission = {roleId: string; roleName: string; access: ObjectAccess};
 
@@ -969,7 +969,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       const target = find(apiName).fields.find(item => item.apiName === fieldName);
       if (!target) throw new ObjectsApiError('missing');
       if (target.version !== version) throw new ObjectsApiError('conflict', 'records.version_conflict');
-      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter}, changes.reference_objects === undefined ? {} : {referenceObjects: changes.reference_objects}, changes.read_permission === undefined ? {} : {readPermission: changes.read_permission}, changes.write_permission === undefined ? {} : {writePermission: changes.write_permission});
+      Object.assign(target, {version: target.version + 1}, changes.track_history === undefined ? {} : {trackHistory: changes.track_history}, changes.label ? {label: changes.label} : {}, changes.required === undefined ? {} : {required: changes.required}, changes.lookup_filter === undefined ? {} : {lookupFilter: changes.lookup_filter}, changes.reference_objects === undefined ? {} : {referenceObjects: changes.reference_objects}, changes.read_permission === undefined ? {} : {readPermission: changes.read_permission}, changes.write_permission === undefined ? {} : {writePermission: changes.write_permission}, changes.options === undefined ? {} : {options: structuredClone(changes.options)});
       return structuredClone(target);
     },
     async relatedLists(apiName, id) {
