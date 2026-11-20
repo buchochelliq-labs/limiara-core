@@ -20,7 +20,7 @@ const salary = field('custom:salary', 'Salary', {type: 'number', readPermission:
 const code = field('custom:code', 'Code');
 
 const project: ObjectDescription = {
-  apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: null, origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'read_write', grantHierarchy: true, trackHistory: false, version: 1,
+  apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: null, origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'read_write', grantHierarchy: true, trackHistory: false, pathField: null, version: 1,
   access: {read: true, create: true, edit: true, delete: true, view_all: false, modify_all: false},
   fields: [code, budget, salary],
 };

@@ -1,10 +1,11 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, optionOutcome, type PicklistOption, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
+import {pathFieldOf, RecordPath} from './RecordPath';
 import {BlockedDraft, CancelChoice, CreateDraftChooser, DraftMessages, DraftStatus, formatDraftTime, RestorePrompt} from '../drafts/components';
 import {changedFields} from '../drafts/model';
 import {createDraftsFor, editDraftFor, useDraftList} from '../drafts/lists';
@@ -191,6 +192,9 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
   const [notice, setNotice] = useState('');
   const [running, setRunning] = useState<QuickAction | null>(null);
   const [relatedRefresh, setRelatedRefresh] = useState(0);
+  // The path (ADR 0037 §2): a move in flight, and a closing value whose form is open.
+  const [moving, setMoving] = useState(false);
+  const [closing, setClosing] = useState<PicklistOption | null>(null);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
   const actions = useQuickActions(client, apiName);
   // A draft of this record (ADR 0036 §8): a quiet notice, or opened straight from Drafts.
@@ -260,6 +264,25 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
     }
   };
 
+  // A path move is an ordinary edit with the record's version: a conflict keeps the record as it was.
+  const pathField = pathFieldOf(object);
+  const move = async (value: string) => {
+    if (!pathField) return;
+    setError('');
+    setNotice('');
+    setMoving(true);
+    try {
+      const saved = await client.updateRecord(object.apiName, record.id, record.version, {[pathField.apiName]: value});
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      const label = pathField.options.find(option => option.value === value)?.label ?? value;
+      setNotice(`${pathField.label} is now ${label}.`);
+    } catch (reason) {
+      setError(pathProblem(reason, pathField.label));
+    } finally {
+      setMoving(false);
+    }
+  };
+
   // Record-level rights (ADR 0016) refine the object's permissions.
   const canEdit = record.rights ? record.rights.edit : object.access.edit;
   const canDelete = record.rights ? record.rights.delete : object.access.delete;
@@ -300,9 +323,18 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       setRunning(null);
       closeForm();
     }} />}
+    {closing && pathField && <RecordModal client={client} object={object} record={record} title={`Close as ${closing.label}`} changes={{[pathField.apiName]: closing.value}} offerNew={false} onNavigate={onNavigate} onClose={() => setClosing(null)} onSaved={saved => {
+      setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
+      // The member may pick another value in the form: say what was saved.
+      const value = saved.values[pathField.apiName];
+      const option = pathField.options.find(item => item.value === value);
+      setNotice(option ? (optionOutcome(option) === 'open' ? `${pathField.label} is now ${option.label}.` : `${saved.name} was closed as ${option.label}.`) : `${saved.name} was saved.`);
+      setClosing(null);
+    }} />}
     {running?.kind === 'create' && runningTarget && running.targetField && <RecordModal client={client} object={runningTarget} title={running.label} presets={{[running.targetField]: {value: record.id, label: record.name}}} only={running.fields} always={running.presets} draftContext={{parent: {object: object.apiName, id: record.id, field: running.targetField, name: record.name}, action: {name: running.name, label: running.label}}} onNavigate={onNavigate}
       // As with New on a related list, the member stays on this record and its lists show what they added.
       onClose={() => setRunning(null)} onSaved={(_, next) => { setRelatedRefresh(value => value + 1); if (next === 'close') setRunning(null); }} />}
+    {pathField && <RecordPath object={object} field={pathField} record={record} canEdit={canEdit} busy={moving} onMove={value => void move(value)} onClose={option => { setError(''); setClosing(option); }} />}
     <section aria-label="Details" className="object-section">
       <h2>Details</h2>
       <dl className="object-fields">
@@ -498,7 +530,7 @@ function useCreateChooser(object: ObjectDescription, creating: boolean, context:
  * (or, when editing, shows it updated); Save & New keeps the modal open on
  * a blank form for the next record.
  */
-export function RecordModal({client, object, record, presets, title, only, always, offerNew, onClose, onSaved, onNavigate, draftContext = {}, resume}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; title?: string; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate; draftContext?: DraftContext; resume?: StoredDraft}) {
+export function RecordModal({client, object, record, presets, title, only, always, changes, offerNew, onClose, onSaved, onNavigate, draftContext = {}, resume}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; title?: string; only?: readonly string[]; always?: Record<string, unknown>; changes?: Record<string, unknown>; offerNew?: boolean; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate; draftContext?: DraftContext; resume?: StoredDraft}) {
   const sequence = useSaveAndNew();
   // After Save & New on an edit, the modal goes on to create a record.
   const [editing, setEditing] = useState(record);
@@ -515,7 +547,7 @@ export function RecordModal({client, object, record, presets, title, only, alway
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {chooser.offering && <CreateDraftChooser drafts={chooser.drafts} expiryDays={chooser.expiryDays} onContinue={chooser.choose} onStartNew={() => chooser.choose('new')} />}
     {/* Each form after Save & New takes focus, since the one that had it is gone. */}
-    {<RecordForm key={`${sequence.form}-${chooser.resume?.meta.id ?? ''}`} focusFirst={sequence.form > 0 || (chooser.resume !== undefined && !resume)} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} only={only} always={always} offerNew={offerNew} cancelRef={cancel} draft={{key: formDraftKey(object, editing, context, chooser.resume ? (chooser.resume.document.key.kind === 'create' ? chooser.resume.document.key.draft : newDraft) : newDraft), resume: sequence.form === 0 ? chooser.resume : undefined, parentName: draftContext.parent?.name, action: context.action}} onCancel={onClose} onSaved={(saved, next) => {
+    {<RecordForm key={`${sequence.form}-${chooser.resume?.meta.id ?? ''}`} focusFirst={sequence.form > 0 || (chooser.resume !== undefined && !resume)} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} only={only} always={always} changes={editing ? changes : undefined} offerNew={offerNew} cancelRef={cancel} draft={{key: formDraftKey(object, editing, context, chooser.resume ? (chooser.resume.document.key.kind === 'create' ? chooser.resume.document.key.draft : newDraft) : newDraft), resume: sequence.form === 0 ? chooser.resume : undefined, parentName: draftContext.parent?.name, action: context.action}} onCancel={onClose} onSaved={(saved, next) => {
         onSaved(saved, next);
         if (next === 'new') { setEditing(undefined); sequence.next(saved); }
       }} />}
@@ -701,12 +733,14 @@ export type AfterSave = 'close' | 'new';
 export type FormDraft = {key: DraftKey; resume?: StoredDraft; parentName?: string; action?: {name: string; label: string}};
 
 /** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
-export function RecordForm({client, object, record, presets = {}, only, always, offerNew = true, onCancel, onSaved, onSavingChange, focusFirst = false, draft: drafting, cancelRef}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean; draft?: FormDraft; cancelRef?: React.MutableRefObject<(() => void) | null>}) {
+export function RecordForm({client, object, record, presets = {}, only, always, changes, offerNew = true, onCancel, onSaved, onSavingChange, focusFirst = false, draft: drafting, cancelRef}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; only?: readonly string[]; always?: Record<string, unknown>; changes?: Record<string, unknown>; offerNew?: boolean; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean; draft?: FormDraft; cancelRef?: React.MutableRefObject<(() => void) | null>}) {
   // The record the form edits: the one it opened with, or the current one a restored draft re-read (ADR 0036 §6).
   const [base, setBase] = useState(record);
-  const [draft, setDraft] = useState<Draft>(() => withValues(object, initialDraft(object, record, presets), always));
   // Where the form started, with presets and defaults: a draft keeps only what differs from it.
-  const start = useRef(draft);
+  const start = useRef<Draft>(withValues(object, initialDraft(object, record, presets), always));
+  // `changes` open the form already changed (a closing value chosen on the path, ADR 0037 §2): they differ
+  // from the start, so a draft keeps them and resuming it restores them.
+  const [draft, setDraft] = useState<Draft>(() => withValues(object, start.current, changes));
   const [lookupNames, setLookupNames] = useState<Record<string, string>>({});
   const [chosenObjects, setChosenObjects] = useState<Record<string, string>>({});
   const [saving, setSavingState] = useState(false);
@@ -853,4 +887,15 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
     {autosave.state.kind === 'failed' && autosave.state.reason === 'other_tab' && <Button type="button" size="small" variant="secondary" onClick={() => void autosave.takeOver()}>Take over here</Button>}
     {base && <p className="object-form__meta"><Badge variant="neutral">Version {base.version}</Badge></p>}
   </form>;
+}
+
+/** Why a path move was not saved, in words the member can act on. */
+function pathProblem(reason: unknown, fieldLabel: string): string {
+  if (reason instanceof ObjectsApiError) {
+    if (reason.reason === 'conflict') return 'This record changed since you opened it. Reload it to see the latest, then try again.';
+    // A validation rule may need other values for this step: its message says which.
+    if (reason.reason === 'invalid') return reason.issues.map(issue => issue.detail).filter(Boolean).join(' ') || `${fieldLabel} could not be changed: the record needs other values first. Use Edit to see them.`;
+    if (reason.reason === 'denied') return `You do not have permission to change ${fieldLabel.toLowerCase()}.`;
+  }
+  return reason instanceof Error ? reason.message : `${fieldLabel} could not be changed.`;
 }

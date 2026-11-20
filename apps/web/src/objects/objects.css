@@ -91,3 +91,32 @@
 .object-timeline__item { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .object-lookup { display: grid; gap: var(--space-2); }
 .object-history__source { color: var(--text-muted, var(--color-ink-600)); font-size: 0.875em; }
+
+/* The path on a record page (ADR 0037 §2). Open steps fill the row; closing
+   values sit after them. On a phone the row scrolls, and the next step is a
+   full-width button. */
+.record-path { margin: 0 0 var(--space-6); }
+.record-path__steps { display: flex; margin: 0; padding: 0; list-style: none; overflow-x: auto; scroll-snap-type: x proximity; border: var(--border-width) solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-raised); }
+.record-path__steps li { flex: 1 0 auto; min-width: 7rem; display: flex; scroll-snap-align: center; }
+.record-path__steps li + li { border-left: var(--border-width) solid var(--border-subtle); }
+.record-path__step { flex: 1; min-height: var(--target-min); display: flex; align-items: center; justify-content: center; padding: var(--space-2) var(--space-3); border: 0; color: var(--text-secondary); background: transparent; font: inherit; font-size: var(--text-sm); font-weight: 700; text-align: center; white-space: nowrap; }
+button.record-path__step { cursor: pointer; }
+button.record-path__step:hover { color: var(--text-primary); background: var(--surface-subtle); }
+button.record-path__step:focus-visible { outline: 2px solid var(--focus-ring, var(--action-primary)); outline-offset: -2px; }
+.record-path__steps li[data-complete="true"] .record-path__step { color: var(--color-forest-900); background: var(--surface-selected); }
+.record-path__steps li[data-complete="true"] .record-path__step::before { content: "✓ "; }
+.record-path__steps li[aria-current="step"] .record-path__step { color: var(--text-on-accent); background: var(--action-primary); }
+.record-path__closed { flex-grow: 0; }
+.record-path__closed .record-path__step { font-weight: 600; }
+.record-path__closed[data-outcome="negative"][aria-current="step"] .record-path__step { background: var(--text-danger, #8a1c1c); }
+.record-path__footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-2); }
+.record-path__status { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
+
+@media (max-width: 48rem) {
+  .record-path__steps li { min-width: 6.5rem; }
+  .record-path__footer .ui-button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-path__steps { scroll-behavior: auto; }
+}

@@ -25,7 +25,7 @@ function respond(status: number, body: unknown = {}) {
 }
 
 const project: ObjectDescription = {
-  apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: null, origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'private', grantHierarchy: true, trackHistory: true, version: 1,
+  apiName: 'custom:project', label: 'Project', pluralLabel: 'Projects', description: null, origin: 'workspace', keyPrefix: '000', nameLabel: 'Project name', inNavigation: true, sharingModel: 'private', grantHierarchy: true, trackHistory: true, pathField: null, version: 1,
   access: {read: true, create: true, edit: true, delete: true, view_all: false, modify_all: false},
   fields: [
     {apiName: 'custom:status', label: 'Status', description: null, type: 'picklist', origin: 'workspace', required: true, unique: false, indexed: true, options: [{value: 'open', label: 'Open', active: true, default: true}, {value: 'lost', label: 'Lost', active: false, default: false}], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1},
@@ -506,7 +506,7 @@ describe('validation rules', () => {
 });
 
 describe('formula fields', () => {
-  const total = {apiName: 'custom:total', label: 'Total', description: null, type: 'formula' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1, formula: 'custom:amount * 1.2', formulaType: 'currency' as const};
+  const total = {apiName: 'custom:total', label: 'Total', description: null, type: 'formula' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, pathField: null, version: 1, formula: 'custom:amount * 1.2', formulaType: 'currency' as const};
 
   it('maps the formula and formats values by the result type', async () => {
     const fetcher = respond(200, {api_name: 'custom:total', label: 'Total', description: null, field_type: 'formula', origin: 'workspace', required: false, unique: false, indexed: false, reference_object: null, delete_behaviour: null, formula: 'custom:amount * 1.2', formula_type: 'currency', version: 1});
@@ -562,7 +562,7 @@ describe('automations (ADR 0022)', () => {
   });
 
   it('describes when an automation runs and what it does', () => {
-    const objects = [{apiName: 'custom:task', label: 'Task', pluralLabel: 'Tasks', description: null, origin: 'workspace' as const, keyPrefix: '001', nameLabel: 'Subject', inNavigation: true, sharingModel: 'read_write' as const, grantHierarchy: true, trackHistory: false, version: 1, access: project.access}];
+    const objects = [{apiName: 'custom:task', label: 'Task', pluralLabel: 'Tasks', description: null, origin: 'workspace' as const, keyPrefix: '001', nameLabel: 'Subject', inNavigation: true, sharingModel: 'read_write' as const, grantHierarchy: true, trackHistory: false, pathField: null, version: 1, access: project.access}];
     expect(automationWhen(before)).toBe('A record is created or updated, before saving');
     expect(automationWhen({trigger: 'update', timing: 'after_save'})).toBe('A record is updated, after saving');
     expect(automationDoes({actions: [
@@ -630,7 +630,7 @@ describe('background and scheduled automations (ADR 0022 §6)', () => {
 
   it('asks when a scheduled automation runs', () => {
     const scheduled = {name: 'escalate', description: null, trigger: 'create_or_update' as const, timing: 'scheduled' as const, condition: null, actions: [{type: 'update_record' as const, values: [{field: 'custom:code', formula: "'late'"}]}], schedule: {offset_minutes: 90, from: 'custom:starts_on'}, active: true, version: 1};
-    const withDate = {...project, fields: [...project.fields, {apiName: 'custom:starts_on', label: 'Starts on', description: null, type: 'date' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1}]};
+    const withDate = {...project, fields: [...project.fields, {apiName: 'custom:starts_on', label: 'Starts on', description: null, type: 'date' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, pathField: null, version: 1}]};
     const markup = renderToStaticMarkup(<AutomationForm client={createFixtureObjectsClient()} object={withDate} objects={[]} automation={scheduled} onCancel={noop} onSaved={noop} />);
     for (const text of ['on a schedule', 'When it runs', 'Hours after', 'value="1.5"', 'Counting from', 'Starts on', 'Update this record']) {
       expect(markup).toContain(text);
@@ -741,7 +741,7 @@ describe('related lists and lookup filters (ADR 0028)', () => {
 });
 
 describe('related-to fields (ADR 0033)', () => {
-  const regarding = {apiName: 'custom:regarding', label: 'Regarding', description: null, type: 'related_to' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, referenceObjects: ['custom:account', 'custom:deal'], deleteBehaviour: 'clear' as const, trackHistory: false, version: 1};
+  const regarding = {apiName: 'custom:regarding', label: 'Regarding', description: null, type: 'related_to' as const, origin: 'workspace' as const, required: false, unique: false, indexed: false, options: [], referenceObject: null, referenceObjects: ['custom:account', 'custom:deal'], deleteBehaviour: 'clear' as const, trackHistory: false, pathField: null, version: 1};
 
   it('maps the allowlist and the objects of named targets', async () => {
     const fetcher = respond(200, {api_name: 'custom:regarding', label: 'Regarding', description: null, field_type: 'related_to', origin: 'workspace', required: false, unique: false, indexed: false, reference_object: null, reference_objects: ['custom:account', 'custom:deal'], delete_behaviour: 'clear', version: 2});
