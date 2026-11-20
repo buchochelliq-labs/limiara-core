@@ -78,7 +78,7 @@ export function RecordPath({object, field, record, canEdit, busy, onMove, onClos
     <div className="record-path__footer">
       <p className="record-path__status">{current === null
         ? `No ${field.label.toLowerCase()} yet.`
-        : closedCurrent ? `Closed as ${closedCurrent.label}.` : `${field.label}: ${open[index]?.label ?? current}`}{weightOf(open[index] ?? closedCurrent)}</p>
+        : closedCurrent ? `Closed as ${closedCurrent.label}${weightOf(closedCurrent)}.` : `${field.label}: ${open[index]?.label ?? current}${weightOf(open[index])}`}</p>
       {editable && next && <Button type="button" size="small" disabled={busy} aria-busy={busy || undefined} onClick={() => onMove(next.value)}>{current === null ? `Start at ${next.label}` : `Mark as ${next.label}`}</Button>}
     </div>
   </nav>;
