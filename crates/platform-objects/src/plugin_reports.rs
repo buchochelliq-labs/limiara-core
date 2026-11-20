@@ -16,7 +16,8 @@
 //!   is never added again. Reports a new version no longer declares are
 //!   kept.
 //! - **A report that cannot be added is skipped.** A query that reads
-//!   another plugin's objects, or that the engine refuses, is skipped and
+//!   another plugin's objects, directly or through a lookup, or that the
+//!   engine refuses, is skipped and
 //!   audited as `reports.plugin_report.skipped` with its reason; enabling
 //!   the plugin goes ahead.
 //! - **Suspended with the plugin.** While the plugin is not enabled, its
@@ -39,8 +40,8 @@ use uuid::Uuid;
 
 /// Audited when a declared report cannot be added or upgraded.
 pub const PLUGIN_REPORT_SKIPPED: &str = "reports.plugin_report.skipped";
-/// A report's query reads an object that is neither the plugin's nor one
-/// of its dependencies'.
+/// A report's query reads an object, directly or through a lookup, that is
+/// neither the plugin's nor one of its dependencies'.
 pub const PLUGIN_REPORT_FOREIGN: &str = "reports.plugin_report_foreign_object";
 
 /// What adding a plugin's reports changed, by manifest name.
@@ -220,17 +221,40 @@ impl ObjectService {
         let Ok(query) = crate::query::parse::parse(&report.query) else {
             return Ok(Err("query.syntax"));
         };
-        let namespace = query
-            .from
-            .segments
-            .first()
-            .and_then(|object| object.split_once(':'))
-            .map(|(namespace, _)| namespace);
-        let allowed = namespace.is_some_and(|namespace| {
-            namespace == manifest.id || manifest.dependencies.contains_key(namespace)
-        });
-        if !allowed {
+        // Every object the query reads, through its lookups too, must be the
+        // plugin's or a dependency's.
+        let allowed = |api_name: &str| {
+            api_name.split_once(':').is_some_and(|(namespace, _)| {
+                namespace == manifest.id || manifest.dependencies.contains_key(namespace)
+            })
+        };
+        let Some(base) = query.from.segments.first() else {
+            return Ok(Err("query.object_unknown"));
+        };
+        if !allowed(base) {
             return Ok(Err(PLUGIN_REPORT_FOREIGN));
+        }
+        let Some(base) = tx.object_by_api_name(base).await? else {
+            return Ok(Err("query.object_unknown"));
+        };
+        for path in crate::query::every_path(&query) {
+            let mut object = base.clone();
+            for segment in &path.segments[..path.segments.len().saturating_sub(1)] {
+                let Some(target_id) = object
+                    .field(segment)
+                    .filter(|field| field.field_type.is_reference())
+                    .and_then(|field| field.reference_object_id)
+                else {
+                    break;
+                };
+                let Some(target) = tx.object_by_id(target_id).await? else {
+                    break;
+                };
+                if !allowed(&target.api_name) {
+                    return Ok(Err(PLUGIN_REPORT_FOREIGN));
+                }
+                object = target;
+            }
         }
         let columns = match self
             .query_in(

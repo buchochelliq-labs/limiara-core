@@ -262,6 +262,25 @@ fn paths(query: &parse::Query) -> Vec<&parse::Path> {
     out
 }
 
+/// Every path a query names: selected, aggregated, filtered, grouped and
+/// ordered by.
+pub(crate) fn every_path(query: &parse::Query) -> Vec<&parse::Path> {
+    let mut out = paths(query);
+    for item in &query.select {
+        if let parse::SelectItem::Aggregate { call, .. } = item {
+            out.extend(call.argument.as_ref());
+        }
+    }
+    out.extend(query.group_by.iter());
+    for item in &query.order_by {
+        match &item.target {
+            parse::OrderTarget::Path(path) => out.push(path),
+            parse::OrderTarget::Aggregate(call) => out.extend(call.argument.as_ref()),
+        }
+    }
+    out
+}
+
 /// Visible, active records of one object by public ID, in batches.
 async fn visible_by_public_id(
     tx: &mut dyn ObjectTx,

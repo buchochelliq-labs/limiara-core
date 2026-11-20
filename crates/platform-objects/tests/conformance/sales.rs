@@ -278,6 +278,78 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
     );
     assert!(skipped.created.is_empty());
 
+    // --- A lookup may not lead a report outside its dependencies -----------
+    let dependency = |id: &str| json!({id: {"version": ">=0.1.0"}});
+    let plugin = |id: &str, dependencies: serde_json::Value, objects: serde_json::Value| {
+        let mut manifest = sales();
+        manifest.id = id.into();
+        manifest.dependencies = serde_json::from_value(dependencies).expect("dependencies");
+        manifest.objects = serde_json::from_value(objects).expect("objects");
+        manifest.reports = Vec::new();
+        manifest
+    };
+    let third = plugin(
+        "example.third",
+        json!({}),
+        json!([{"name": "region", "label": "Region", "plural_label": "Regions", "key_prefix": "rgn"}]),
+    );
+    let middle = plugin(
+        "example.middle",
+        dependency("example.third"),
+        json!([{"name": "account", "label": "Account", "plural_label": "Accounts", "key_prefix": "acc",
+                "fields": [{"name": "region", "label": "Region", "field_type": "lookup",
+                            "reference_object": "example.third:region"}]}]),
+    );
+    for manifest in [&third, &middle] {
+        let installer = service(
+            &store,
+            ObjectCaller::plugin_installer(tenant, member, manifest.id.clone()),
+        );
+        installer
+            .install_plugin_objects(manifest, context())
+            .await
+            .expect("install");
+        installer
+            .resume_plugin_objects(&manifest.id, context())
+            .await
+            .expect("resume");
+    }
+    let mut reporting = plugin("example.reporting", dependency("example.middle"), json!([]));
+    reporting.reports = vec![plugin_contract::ReportDecl {
+        name: "accounts_by_region".into(),
+        label: "Accounts by region".into(),
+        description: None,
+        query: "SELECT name, example.middle:region.name FROM example.middle:account".into(),
+        chart: plugin_contract::ReportChartDecl::Table,
+        label_column: None,
+        value_column: None,
+    }];
+    let reporting_installer = service(
+        &store,
+        ObjectCaller::plugin_installer(tenant, member, "example.reporting"),
+    );
+    let refused = reporting_installer
+        .put_plugin_reports(&reporting, context())
+        .await
+        .expect("skips, not fails");
+    assert_eq!(
+        refused.skipped,
+        [(
+            "accounts_by_region".to_owned(),
+            "reports.plugin_report_foreign_object".to_owned()
+        )],
+        "a lookup into a plugin the report does not depend on"
+    );
+    reporting.dependencies = serde_json::from_value(
+        json!({"example.middle": {"version": ">=0.1.0"}, "example.third": {"version": ">=0.1.0"}}),
+    )
+    .expect("dependencies");
+    let allowed = reporting_installer
+        .put_plugin_reports(&reporting, context())
+        .await
+        .expect("allowed once declared");
+    assert_eq!(allowed.created, ["accounts_by_region"]);
+
     // --- Only the plugin's installer adds them ------------------------------
     assert!(matches!(
         admin.put_plugin_reports(&sales(), context()).await,
