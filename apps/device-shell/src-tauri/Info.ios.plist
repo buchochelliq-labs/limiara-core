@@ -8,13 +8,13 @@
 		<string>remote-notification</string>
 	</array>
 	<!-- Export compliance (docs/operations/testflight.md): the app ships its
-	     own standard encryption, SQLCipher with vendored OpenSSL for the
-	     replica and rustls for TLS, not only the encryption built into iOS.
-	     YES is the accurate declaration; App Store Connect then asks for
-	     the encryption questions once. Apple's compliance code, when one
-	     is issued, is added as ITSEncryptionExportComplianceCode by the
-	     testflight workflow from APP_STORE_EXPORT_COMPLIANCE_CODE. -->
+	     own standard encryption (SQLCipher with vendored OpenSSL for the
+	     replica, rustls for TLS), nothing proprietary. The account holder
+	     answered App Store Connect's encryption questions (standard
+	     algorithms, not distributed in France), which concluded that no
+	     documentation is needed, and chose to declare that here so builds
+	     are not asked again. Revisit before distributing in France. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 </dict>
 </plist>
