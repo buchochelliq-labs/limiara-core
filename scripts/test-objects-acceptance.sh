@@ -6,6 +6,7 @@
 # The journey covers object and field definition, naming, key prefixes,
 # picklists, uniqueness, lookups, related-to fields, plugin-declared objects,
 # the Activities plugin and its Log a call action, the Activity timeline,
+# the Sales plugin's leads and opportunities on their paths,
 # record create/read/update with optimistic
 # versions, filters and search, the recycle bin, object permissions per role,
 # forced RLS on the engine tables, and evidence that names changes without
@@ -108,6 +109,7 @@ platform:
     manifest_paths:
       - plugins/contacts/plugin.toml
       - plugins/activities/plugin.toml
+      - plugins/sales/plugin.toml
       - fixtures/plugins/tracker/plugin.toml
 EOF
 
@@ -1104,6 +1106,24 @@ expect 200 "$(call "$member_cookie" GET "$timeline")" "the timeline is back"
 [[ "$(app_sql --command="SELECT count(*) FROM timeline_sources;")" == 0 ]] || fail "timeline_sources leaks rows without tenant context"
 [[ "$(sql --command="SELECT count(*) FROM timeline_sources WHERE tenant_id = '$tenant';")" == 2 ]] || fail "Task and Event are kept as timeline sources"
 
+log "Sales (ADR 0037 slice 2): leads and opportunities on their paths"
+sales="$workspace/plugins/platform.sales"
+opportunity_api="$workspace/objects/platform.sales:opportunity"
+expect 200 "$(call "$member_cookie" POST "$sales/enable")" "enable Sales"
+expect 200 "$(call "$member_cookie" GET "$workspace/objects/platform.sales:lead")" "describe leads"
+[[ "$(field '.owner_plugin')" == platform.sales && "$(field '.key_prefix')" == led && "$(field '.path_field')" == platform.sales:status ]] || fail "lead metadata: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$opportunity_api")" "describe opportunities"
+[[ "$(field '.key_prefix')" == opp && "$(field '.path_field')" == platform.sales:stage ]] || fail "opportunity metadata: $(cat "$body")"
+[[ "$(field '[.fields[] | select(.api_name == "platform.sales:stage") | .options[] | "\(.value):\(.outcome // "open"):\(.weight)"] | join(",")')" == "prospecting:open:10,qualification:open:20,needs_analysis:open:40,proposal:open:60,negotiation:open:80,closed_won:positive:100,closed_lost:negative:0" ]] || fail "stages with outcomes and weights: $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$opportunity_api/records" '{"name":"Initech renewal"}')" "an opportunity needs a close date"
+expect 201 "$(call "$member_cookie" POST "$opportunity_api/records" "{\"name\":\"Initech renewal\",\"platform.sales:close_date\":\"$tomorrow\",\"platform.sales:amount\":\"12000.00\"}")" "an opportunity"
+deal=$(field '.id')
+deal_version=$(field '.version')
+[[ "$deal" == opp* && "$(field '."platform.sales:stage"')" == prospecting ]] || fail "a deal starts prospecting: $(cat "$body")"
+expect 400 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"signed\"}")" "only the path's stages are values"
+expect 200 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"closed_won\"}")" "the deal closes won"
+[[ "$(field '."platform.sales:stage"')" == closed_won ]] || fail "a won deal: $(cat "$body")"
+
 log "assistant policy (ADR 0034 §4 and §6): off until turned on, and pushed assistant writes re-checked"
 policy="$workspace/objects/assistant-policy"
 project_policy="$workspace/objects/custom:project/assistant-policy"
@@ -1284,4 +1304,4 @@ sql --command="UPDATE records SET deleted_at = now() - interval '16 days' WHERE 
 expect 200 "$(call "$member_cookie" GET "$workspace/objects/changes?limit=1")" "a change page"
 [[ "$(field '.purges')" == 0 ]] || fail "change pages carry the purge count: $(cat "$body")"
 
-printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, restored lookups, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, record drafts, RLS, evidence and the browser pages\n'
+printf 'object engine acceptance passed for definitions, fields, records, validation, uniqueness, lookups, lists, recycle bin, restored lookups, archiving, permissions, sharing, transfer, reporting lines, master-detail, roll-up summaries, saved reports, related lists, lookup filters, related-to fields, plugin-declared objects, the Activities plugin, the Activity timeline, the Sales plugin, field history, change data capture, sync, queries, search, validation rules, quick actions, the assistant policy, formula fields, automations, composite requests, bulk jobs, API clients, devices, device sync, record drafts, RLS, evidence and the browser pages\n'

@@ -32,6 +32,7 @@ pub mod replica;
 pub mod reports;
 pub mod rollups;
 pub mod rules;
+pub mod sales;
 pub mod search;
 pub mod sources;
 pub mod sync;

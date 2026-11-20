@@ -1471,6 +1471,66 @@ delete_behaviour = "restrict""#,
     }
 
     #[test]
+    fn the_sales_plugin_declares_leads_and_opportunities_on_paths() {
+        use crate::objects::ObjectOptionOutcome::{Negative, Open, Positive};
+        let manifest = Manifest::parse_toml(include_str!("../../../plugins/sales/plugin.toml"))
+            .expect("the Sales manifest parses");
+        assert_eq!(manifest.id, "platform.sales");
+        assert_eq!(
+            manifest.supply_chain.distribution,
+            Some(PluginDistribution::CoreOob)
+        );
+        let names: Vec<_> = manifest.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["lead", "opportunity"]);
+        let (lead, opportunity) = (&manifest.objects[0], &manifest.objects[1]);
+        assert_eq!(lead.key_prefix, "led");
+        assert_eq!(opportunity.key_prefix, "opp");
+        // Each object's path is a single-value picklist with closing values
+        // (ADR 0037 §1).
+        assert_eq!(lead.path_field.as_deref(), Some("status"));
+        assert_eq!(opportunity.path_field.as_deref(), Some("stage"));
+        let options = |object: &crate::objects::ObjectDecl, name: &str| {
+            object
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .expect("path field")
+                .options
+                .iter()
+                .map(|option| (option.value.clone(), option.outcome, option.weight))
+                .collect::<Vec<_>>()
+        };
+        let status = options(lead, "status");
+        assert_eq!(status.first().map(|o| o.0.as_str()), Some("new"));
+        assert!(status.contains(&("qualified".into(), Positive, None)));
+        assert!(status.contains(&("unqualified".into(), Negative, None)));
+        assert_eq!(
+            options(opportunity, "stage"),
+            [
+                ("prospecting".into(), Open, Some(10)),
+                ("qualification".into(), Open, Some(20)),
+                ("needs_analysis".into(), Open, Some(40)),
+                ("proposal".into(), Open, Some(60)),
+                ("negotiation".into(), Open, Some(80)),
+                ("closed_won".into(), Positive, Some(100)),
+                ("closed_lost".into(), Negative, Some(0)),
+            ]
+        );
+        let close_date = opportunity
+            .fields
+            .iter()
+            .find(|field| field.name == "close_date")
+            .expect("close date");
+        assert!(close_date.required);
+        assert_eq!(close_date.field_type, ObjectFieldType::Date);
+        // Stored manifests are JSON and read back unchanged.
+        let round_trip: Manifest =
+            serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
+                .expect("stored manifests read back");
+        assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    #[test]
     fn related_actions_are_validated_when_the_manifest_is_read() {
         let manifest = |action: &str| {
             objects_manifest(
