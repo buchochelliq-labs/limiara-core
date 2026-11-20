@@ -275,3 +275,22 @@ describe('taking over another tab’s draft (review P3)', () => {
     expect((await store.get('draft-1'))?.document.fields['custom:code']?.value).toBe('AP-mine');
   });
 });
+
+describe('a value the form opens with already changed (ADR 0037 §2, review P2)', () => {
+  it('is kept in the draft, so resuming it restores the value', async () => {
+    const client = createFixtureObjectsClient();
+    const object = await client.describe('custom:project');
+    const record = await client.getRecord('custom:project', apollo);
+    const runtime: DraftRuntime = {status: 'ready', store, contribution, member, workspace};
+    // "Close as Won" on the path opens the edit form with the closing value already chosen.
+    await act(async () => {
+      root.render(<DraftsContext.Provider value={runtime}><RecordForm client={client} object={object} record={record} changes={{'custom:status': 'won'}} draft={{key: editKey}} onCancel={() => undefined} onSaved={() => undefined} /></DraftsContext.Provider>);
+    });
+    await type(input('Code'), 'AP-9');
+    await until(() => /Draft saved at/.test(text()), 'the draft to be saved');
+    const stored = (await store.list()).find(draft => draft.meta.key.includes(apollo));
+    expect(stored?.document.fields['custom:status']?.value).toBe('won');
+    expect(stored?.document.fields['custom:code']?.value).toBe('AP-9');
+  });
+});
+

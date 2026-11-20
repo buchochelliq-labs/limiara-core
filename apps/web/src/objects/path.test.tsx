@@ -133,6 +133,24 @@ describe('the path on the generic record page', () => {
     expect(document.body.textContent).toContain('Close as Won');
   });
 
+  it('says what was saved when the member picks another value in the closing form', async () => {
+    const client = createFixtureObjectsClient();
+    await page(client, apollo);
+    await act(async () => { button('Won')?.click(); });
+    await settle();
+    const status = [...document.querySelectorAll('select')].find(select => [...select.options].some(option => option.value === 'won')) as HTMLSelectElement;
+    expect(status.value).toBe('won');
+    await act(async () => {
+      status.value = 'open';
+      status.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+    const save = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === 'Save') as HTMLButtonElement;
+    await act(async () => { save.click(); });
+    await settle();
+    expect(container.textContent).toContain('Status is now Open.');
+    expect(container.textContent).not.toContain('was closed as Won');
+  });
+
   it('keeps the record and explains a conflict', async () => {
     const client = createFixtureObjectsClient();
     await page(client, gemini);

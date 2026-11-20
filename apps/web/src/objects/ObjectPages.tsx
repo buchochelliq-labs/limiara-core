@@ -1,7 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
 import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
-import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, type PicklistOption, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
+import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, optionOutcome, type PicklistOption, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
@@ -323,9 +323,12 @@ export function ObjectRecordPage({client, apiName, recordId, onNavigate, heading
       setRunning(null);
       closeForm();
     }} />}
-    {closing && pathField && <RecordModal client={client} object={object} record={record} title={`Close as ${closing.label}`} always={{[pathField.apiName]: closing.value}} offerNew={false} onNavigate={onNavigate} onClose={() => setClosing(null)} onSaved={saved => {
+    {closing && pathField && <RecordModal client={client} object={object} record={record} title={`Close as ${closing.label}`} changes={{[pathField.apiName]: closing.value}} offerNew={false} onNavigate={onNavigate} onClose={() => setClosing(null)} onSaved={saved => {
       setLoad({status: 'ready', value: {...saved, rights: saved.rights ?? record.rights}});
-      setNotice(`${record.name} was closed as ${closing.label}.`);
+      // The member may pick another value in the form: say what was saved.
+      const value = saved.values[pathField.apiName];
+      const option = pathField.options.find(item => item.value === value);
+      setNotice(option ? (optionOutcome(option) === 'open' ? `${pathField.label} is now ${option.label}.` : `${saved.name} was closed as ${option.label}.`) : `${saved.name} was saved.`);
       setClosing(null);
     }} />}
     {running?.kind === 'create' && runningTarget && running.targetField && <RecordModal client={client} object={runningTarget} title={running.label} presets={{[running.targetField]: {value: record.id, label: record.name}}} only={running.fields} always={running.presets} draftContext={{parent: {object: object.apiName, id: record.id, field: running.targetField, name: record.name}, action: {name: running.name, label: running.label}}} onNavigate={onNavigate}
@@ -527,7 +530,7 @@ function useCreateChooser(object: ObjectDescription, creating: boolean, context:
  * (or, when editing, shows it updated); Save & New keeps the modal open on
  * a blank form for the next record.
  */
-export function RecordModal({client, object, record, presets, title, only, always, offerNew, onClose, onSaved, onNavigate, draftContext = {}, resume}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; title?: string; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate; draftContext?: DraftContext; resume?: StoredDraft}) {
+export function RecordModal({client, object, record, presets, title, only, always, changes, offerNew, onClose, onSaved, onNavigate, draftContext = {}, resume}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; title?: string; only?: readonly string[]; always?: Record<string, unknown>; changes?: Record<string, unknown>; offerNew?: boolean; onClose: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onNavigate: Navigate; draftContext?: DraftContext; resume?: StoredDraft}) {
   const sequence = useSaveAndNew();
   // After Save & New on an edit, the modal goes on to create a record.
   const [editing, setEditing] = useState(record);
@@ -544,7 +547,7 @@ export function RecordModal({client, object, record, presets, title, only, alway
     {sequence.created && <Created object={object} record={sequence.created} onNavigate={onNavigate} />}
     {chooser.offering && <CreateDraftChooser drafts={chooser.drafts} expiryDays={chooser.expiryDays} onContinue={chooser.choose} onStartNew={() => chooser.choose('new')} />}
     {/* Each form after Save & New takes focus, since the one that had it is gone. */}
-    {<RecordForm key={`${sequence.form}-${chooser.resume?.meta.id ?? ''}`} focusFirst={sequence.form > 0 || (chooser.resume !== undefined && !resume)} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} only={only} always={always} offerNew={offerNew} cancelRef={cancel} draft={{key: formDraftKey(object, editing, context, chooser.resume ? (chooser.resume.document.key.kind === 'create' ? chooser.resume.document.key.draft : newDraft) : newDraft), resume: sequence.form === 0 ? chooser.resume : undefined, parentName: draftContext.parent?.name, action: context.action}} onCancel={onClose} onSaved={(saved, next) => {
+    {<RecordForm key={`${sequence.form}-${chooser.resume?.meta.id ?? ''}`} focusFirst={sequence.form > 0 || (chooser.resume !== undefined && !resume)} onSavingChange={setSaving} client={client} object={object} record={editing} presets={editing ? undefined : presets} only={only} always={always} changes={editing ? changes : undefined} offerNew={offerNew} cancelRef={cancel} draft={{key: formDraftKey(object, editing, context, chooser.resume ? (chooser.resume.document.key.kind === 'create' ? chooser.resume.document.key.draft : newDraft) : newDraft), resume: sequence.form === 0 ? chooser.resume : undefined, parentName: draftContext.parent?.name, action: context.action}} onCancel={onClose} onSaved={(saved, next) => {
         onSaved(saved, next);
         if (next === 'new') { setEditing(undefined); sequence.next(saved); }
       }} />}
@@ -730,12 +733,14 @@ export type AfterSave = 'close' | 'new';
 export type FormDraft = {key: DraftKey; resume?: StoredDraft; parentName?: string; action?: {name: string; label: string}};
 
 /** The create and edit form, built from field metadata, with Save, Save & New and Cancel. */
-export function RecordForm({client, object, record, presets = {}, only, always, offerNew = true, onCancel, onSaved, onSavingChange, focusFirst = false, draft: drafting, cancelRef}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; only?: readonly string[]; always?: Record<string, unknown>; offerNew?: boolean; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean; draft?: FormDraft; cancelRef?: React.MutableRefObject<(() => void) | null>}) {
+export function RecordForm({client, object, record, presets = {}, only, always, changes, offerNew = true, onCancel, onSaved, onSavingChange, focusFirst = false, draft: drafting, cancelRef}: {client: ObjectsClient; object: ObjectDescription; record?: ObjectRecord; presets?: Presets; only?: readonly string[]; always?: Record<string, unknown>; changes?: Record<string, unknown>; offerNew?: boolean; onCancel: () => void; onSaved: (record: ObjectRecord, next: AfterSave) => void; onSavingChange?: (saving: boolean) => void; focusFirst?: boolean; draft?: FormDraft; cancelRef?: React.MutableRefObject<(() => void) | null>}) {
   // The record the form edits: the one it opened with, or the current one a restored draft re-read (ADR 0036 §6).
   const [base, setBase] = useState(record);
-  const [draft, setDraft] = useState<Draft>(() => withValues(object, initialDraft(object, record, presets), always));
   // Where the form started, with presets and defaults: a draft keeps only what differs from it.
-  const start = useRef(draft);
+  const start = useRef<Draft>(withValues(object, initialDraft(object, record, presets), always));
+  // `changes` open the form already changed (a closing value chosen on the path, ADR 0037 §2): they differ
+  // from the start, so a draft keeps them and resuming it restores them.
+  const [draft, setDraft] = useState<Draft>(() => withValues(object, start.current, changes));
   const [lookupNames, setLookupNames] = useState<Record<string, string>>({});
   const [chosenObjects, setChosenObjects] = useState<Record<string, string>>({});
   const [saving, setSavingState] = useState(false);
