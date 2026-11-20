@@ -4,10 +4,24 @@
 
 Proposed (2026-11-20). Builds on ADR 0015 (metadata-driven objects),
 ADR 0017 (field history), ADR 0019 (the query language), ADR 0023
-(composite writes), ADR 0027 (reports), ADR 0032 (quick actions), ADR 0033 (plugin-declared objects and
-Activities) and ADR 0035 (Contacts on the object engine). Part of the
-roadmap's "CRM application" milestone. This is a design; delivery slices
-are in §8.
+(composite writes), ADR 0016 (sharing and the role hierarchy), ADR 0026
+(rollups), ADR 0027 (reports), ADR 0032 (quick actions), ADR 0033
+(plugin-declared objects and Activities) and ADR 0035 (Contacts on the
+object engine). Part of the roadmap's "CRM application" milestone. This is
+a design; delivery slices are in §12.
+
+Decided in review (2026-11-20):
+
+- **Multi-currency** is in scope, with dated exchange rates (§7).
+- **Forecasting** (quotas, and rollups by owner and period) is part of
+  this milestone (§8).
+- **Contact roles** come now: an opportunity has any number of contacts
+  with roles, one of them marked primary, following the Salesforce
+  `OpportunityContactRole` model and Salesforce Industries (Vlocity)
+  party relationships as guidance (§6, §9).
+- **Products, price books and quotes** follow directly after conversion,
+  with Salesforce Industries' product and pricing model as guidance
+  (§10).
 
 ## Context
 
@@ -217,9 +231,9 @@ opportunity.
 **Opportunity** (`key_prefix = "opp"`, private sharing, history tracked),
 with fields:
 
-- name (the record name), account (lookup to Organisation), primary
-  contact (lookup to Person);
-- amount (currency), close date (required, indexed);
+- name (the record name), account (lookup to Organisation);
+- amount (currency, in the record's currency, §7), close date (required,
+  indexed);
 - stage, the path field, with weights: prospecting 10, qualification 20,
   needs analysis 40, proposal 60, negotiation 80, closed won (positive,
   100), closed lost (negative, 0);
@@ -236,10 +250,103 @@ The plugin also ships:
   allowlist (ADR 0035 §7, gap G18), so "Log a call" and the Activity
   timeline appear on both from the start.
 
-Amounts are in the workspace's single currency. Multi-currency is out of
-scope (Open questions).
+**Opportunity contact role** (`key_prefix = "ocr"`, sharing controlled by
+its opportunity), the people involved in a deal, with fields:
 
-### 7. On the phone and desktop
+- opportunity (master-detail to Opportunity), contact (lookup to Person,
+  required);
+- role: decision maker, economic buyer, evaluator, influencer, technical
+  buyer, business user, other;
+- primary (boolean, at most one per opportunity, §9).
+
+The opportunity page lists its contact roles as a related list with the
+primary first. The lead conversion creates the converted contact's role,
+marked primary. The primary contact's name is available to list views,
+reports and formulas through the role, so no copy of it is kept on the
+opportunity.
+
+### 7. Multi-currency
+
+Currency is platform behaviour, not sales behaviour, so the engine gains
+it for every object.
+
+- **Currencies.** A workspace has a **corporate currency** and a list of
+  active ISO 4217 currencies, set by administrators.
+- **Records.** Every record of an object with currency fields carries a
+  `currency_code`, which defaults to the member's currency. All of the
+  record's currency fields are in that currency, as in Salesforce.
+- **Exchange rates.**
+  - Administrators keep **dated exchange rates**: each rate applies to
+    the corporate currency from its start date until the next one.
+  - A currency field's converted value uses the rate in force on a date
+    field the object names (for opportunities, the close date), or today
+    when it names none.
+  - Changing a rate changes converted values, not stored amounts.
+- **Converted values.**
+  - The query language and reports gain `CONVERTED(field)`, which gives
+    the value in the corporate currency.
+  - Sums, rollups (ADR 0026) and board column totals use converted
+    values, and say so.
+  - A member may choose a display currency for reports, converted
+    through the corporate currency.
+- **Device.** The device holds the rates in the replica definitions, so
+  converted values and totals work offline.
+- **Existing records.** Records created before a workspace turns on more
+  than one currency keep the corporate currency.
+
+### 8. Forecasting
+
+Forecasting is part of the Sales plugin, built on platform pieces.
+
+- **Quotas.** A Quota object (owner, period, amount, currency) holds each
+  owner's target per month or quarter.
+- **The forecast view.** For a period and a member, it shows the open and
+  closed opportunities in that period by forecast category (pipeline,
+  best case, commit, closed), against quota, for the member and, through
+  the role hierarchy (ADR 0016), for everyone below them.
+  - Totals are converted to the viewer's chosen currency (§7).
+  - Each cell opens the opportunities behind it.
+- **Adjustments.** A manager may adjust a subordinate's or their own
+  commit and best-case figures. An adjustment is a Forecast adjustment
+  record (owner, period, category, amount, note, adjusted by), kept with
+  history, so the original figure stays visible.
+- **Domain-neutral support.** The view needs one platform piece: a report
+  grouped by the role hierarchy, rolled up to each level. It is a report
+  grouping any object can use, not a sales feature.
+- **Sharing.** The forecast reads only opportunities the viewer may see,
+  so it follows sharing like any report.
+
+### 9. Platform pieces for contact roles
+
+Two manifest gaps from ADR 0033 close for this:
+
+- **Master-detail in manifests.** A plugin may declare a master-detail
+  field when it first declares the object. As with every plugin field,
+  its type and master cannot change in an upgrade, which removes the
+  migration risk ADR 0033 named. Deleting an opportunity then deletes
+  its contact roles, and the roles' sharing follows it.
+- **One flag per parent.** A boolean field may be declared
+  `one_per = "<field>"`. Setting it on a record clears it on every other
+  record with the same value of that field, in the same transaction.
+  Each cleared record is recorded in history and audit as changed by the
+  engine. This gives one primary contact per opportunity, and works for
+  any "default" or "primary" flag.
+
+### 10. Products, price books and quotes
+
+Directly after conversion, a further ADR designs the product catalogue,
+pricing and quotes, using Salesforce Industries (Vlocity) as guidance:
+
+- products with typed attributes (for example size or term);
+- price lists, with price list entries per product and currency;
+- opportunity line items with quantity, list price, discount and total,
+  rolled up to the opportunity amount;
+- quotes with line items, versions and a PDF.
+
+It is listed here so that this ADR's pieces leave room for it: line items
+need multi-currency (§7), master-detail (§9) and rollups.
+
+### 11. On the phone and desktop
 
 Nothing here is web-only. The path, the board, conversions and reports
 are parts of the web shell over the engine's routes, which the device
@@ -250,7 +357,7 @@ The phone layouts named in §2 and §3 are part of each slice's acceptance,
 checked at 390 points wide. Android follows when its push and release
 work is picked up.
 
-### 8. Slices
+### 12. Slices
 
 1. **Path and board for every engine object.**
    - Option outcome and weight in the engine, the manifest, the Object
@@ -268,6 +375,13 @@ work is picked up.
    Person and Organisation as engine objects; then the Sales lookups to
    them.
 5. **Conversions.** §4, and the lead conversion.
+6. **Contact roles.** Master-detail in manifests and `one_per` (§9),
+   and Opportunity contact role.
+7. **Multi-currency.** §7 for every engine object, then the Sales
+   objects in the record's currency.
+8. **Forecasting.** Hierarchy rollups in reports, quotas, the forecast
+   view and adjustments (§8).
+9. **Products, price books and quotes**, after their own ADR (§10).
 
 Each slice runs on both stores (PostgreSQL and SQLite), on the web and in
 the device shell, with conformance tests on both stores and a Playwright
@@ -292,25 +406,21 @@ journey at desktop and phone widths.
 - Every engine object, custom objects included, gains a path and a board,
   so the demonstration and admin-built objects get them too.
 - Manifests grow three declarations (`path_field`, `conversions`,
-  `reports`) and two option attributes. The manifest's limits and
+  `reports`), two option attributes, master-detail fields and the
+  `one_per` flag. The manifest's limits and
   installer checks extend to them.
 - The Sales plugin depends on ADR 0035's migration for its links to
   people and organisations. Until then (slices 2 and 3) leads and
-  opportunities stand alone, and conversion waits for slice 5.
-- Formulas gain two functions, which the device's formula evaluator must
-  match.
+  opportunities stand alone, and conversion and contact roles wait for
+  slices 5 and 6.
+- Formulas gain two functions, and the query language
+  `CONVERTED(field)`, which the device's evaluators must match.
+- Multi-currency touches every currency field, rollup and report, so it
+  is a slice of its own with conformance tests on both stores.
 
 ## Open questions
 
-- **Multi-currency.** Should opportunities support several currencies
-  with dated exchange rates, as Salesforce's advanced currency
-  management does, or is one workspace currency enough for the first
-  release?
-- **Forecasting.** Should forecasts (quota, commit and best-case rollups
-  by owner and period) be part of this milestone, or later?
-- **Products and quotes.** Should opportunity products (price books,
-  line items) and quotes follow directly after slice 5, or after
-  service operations?
-- **Opportunity contact roles.** Should several contacts per opportunity
-  with roles be part of slice 4, or is the primary contact enough at
-  first?
+- **Exchange rate sources.** Rates are entered by administrators. Should
+  a later slice fetch them from a provider, as an integration plugin?
+- **Forecast types.** Forecasts are by opportunity amount. Should
+  forecasts by quantity or by product family follow with products?

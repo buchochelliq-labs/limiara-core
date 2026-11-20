@@ -47,6 +47,7 @@ Trameia
 usbipd
 Vite
 VitePress
+Vlocity
 Wasmtime
 WCAG
 WebView
