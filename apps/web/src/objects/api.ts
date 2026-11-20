@@ -272,7 +272,8 @@ export const RECYCLE_BIN_RETENTION_DAYS = 15;
 /** Which records a list shows: live ones not archived (the default), archived ones, both, or the recycle bin. */
 export type RecordListStatus = 'active' | 'archived' | 'all' | 'deleted';
 
-export type RecordListQuery = {search?: string; status?: RecordListStatus; sort?: 'name' | 'created_at' | 'updated_at'; direction?: 'asc' | 'desc'; cursor?: string; limit?: number};
+/** `filters` are equality filters on indexed fields, by API name (`filter[<field>]=<value>` on the API). */
+export type RecordListQuery = {search?: string; status?: RecordListStatus; sort?: 'name' | 'created_at' | 'updated_at'; direction?: 'asc' | 'desc'; cursor?: string; limit?: number; filters?: Record<string, string>};
 
 export type ValidationIssue = {field: string; code: string; detail: string};
 
@@ -626,7 +627,9 @@ export function createObjectsApiClient(workspaceId: string, fetcher: typeof fetc
     },
     async listRecords(apiName, query, signal) {
       const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== '') params.set(key, String(value));
+      const {filters, ...rest} = query;
+      for (const [key, value] of Object.entries(rest)) if (value !== undefined && value !== '') params.set(key, String(value));
+      for (const [field, value] of Object.entries(filters ?? {})) params.set(`filter[${field}]`, value);
       const body = await request<{data: ApiRecord[]; next_cursor: string | null}>(`${object(apiName)}/records${params.size ? `?${params}` : ''}`, {signal});
       return {records: body.data.map(recordFromApi), nextCursor: body.next_cursor ?? null};
     },
@@ -900,8 +903,13 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       const search = query.search?.toLowerCase() ?? '';
       const status = query.status ?? 'active';
       const shown = (item: ObjectRecord) => status === 'deleted' ? item.isDeleted : !item.isDeleted && (status === 'all' || (status === 'archived') === (item.archivedAt !== null));
-      const matching = (records[apiName] ?? []).filter(item => shown(item) && item.name.toLowerCase().includes(search));
-      return {records: structuredClone(matching), nextCursor: null};
+      const filters = Object.entries(query.filters ?? {});
+      const matching = (records[apiName] ?? []).filter(item => shown(item) && item.name.toLowerCase().includes(search) && filters.every(([field, value]) => item.values[field] === value));
+      // Cursor paging over the fixture's records, so boards and lists can be tested past one page.
+      const start = query.cursor ? Number(query.cursor) : 0;
+      const limit = query.limit ?? matching.length;
+      const end = start + limit;
+      return {records: structuredClone(matching.slice(start, end)), nextCursor: end < matching.length ? String(end) : null};
     },
     async getRecord(apiName, id) {
       const found = record(apiName, id);

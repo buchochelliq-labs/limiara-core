@@ -6,6 +6,7 @@ import {SharingPanel} from './SharingPanel';
 import {HistoryPanel} from './HistoryPanel';
 import {ActivityTimeline} from './ActivityTimeline';
 import {pathFieldOf, RecordPath} from './RecordPath';
+import {boardFieldOf, RecordBoard} from './RecordBoard';
 import {BlockedDraft, CancelChoice, CreateDraftChooser, DraftMessages, DraftStatus, formatDraftTime, RestorePrompt} from '../drafts/components';
 import {changedFields} from '../drafts/model';
 import {createDraftsFor, editDraftFor, useDraftList} from '../drafts/lists';
@@ -88,16 +89,22 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
   const [notice, setNotice] = useState('');
   const [creating, setCreating] = useState(false);
   const object = objectLoad.status === 'ready' ? objectLoad.value : undefined;
+  // Table or board (ADR 0037 §3), remembered per object on this device.
+  const boardField = object ? boardFieldOf(object) : undefined;
+  const [view, setView] = useState<'table' | 'board'>(() => storedView(apiName));
+  useEffect(() => setView(storedView(apiName)), [apiName]);
+  const showBoard = view === 'board' && boardField !== undefined && !bin;
+  const chooseView = (next: 'table' | 'board') => { setView(next); rememberView(apiName, next); };
 
   useEffect(() => {
-    if (!object) return;
+    if (!object || showBoard) return;
     const controller = new AbortController();
     setPage({status: 'loading'});
     client.listRecords(object.apiName, {search: submitted || undefined, status: bin ? 'deleted' : shown === 'active' ? undefined : shown, sort: 'name', direction: 'asc', cursor, limit: 50}, controller.signal)
       .then(value => { if (!controller.signal.aborted) setPage({status: 'ready', value}); })
       .catch(error => { if (!controller.signal.aborted) setPage(failed(error)); });
     return () => controller.abort();
-  }, [client, object, submitted, bin, shown, cursor, attempt]);
+  }, [client, object, submitted, bin, shown, cursor, attempt, showBoard]);
 
   useEffect(() => { if (object) document.title = `${object.pluralLabel} - Limiara`; }, [object]);
 
@@ -137,7 +144,13 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
         <option value="all">All records</option>
       </Select>}
       {object.access.delete && <Button type="button" variant="quiet" aria-pressed={bin} onClick={() => { setCursor(undefined); setBin(value => !value); }}>{bin ? 'Back to records' : 'Recycle bin'}</Button>}
+      {boardField && !bin && <div className="object-view-switch" role="group" aria-label="View">
+        <Button type="button" size="small" variant={showBoard ? 'quiet' : 'secondary'} aria-pressed={!showBoard} onClick={() => chooseView('table')}>Table</Button>
+        <Button type="button" size="small" variant={showBoard ? 'secondary' : 'quiet'} aria-pressed={showBoard} onClick={() => chooseView('board')}>Board</Button>
+      </div>}
     </form>
+    {showBoard && boardField && <RecordBoard key={`${submitted}|${shown}|${attempt}`} client={client} object={object} field={boardField} search={submitted} status={shown} onOpen={record => onNavigate(recordRoute(object.apiName, record.id))} />}
+    {!showBoard && <>
     {page.status !== 'ready' && <LoadState load={page} noun="record list" onRetry={() => setAttempt(value => value + 1)} />}
     {bin && <RecycleBinNotice />}
     {page.status === 'ready' && page.value.records.length === 0 && <EmptyState title={bin ? 'The recycle bin is empty' : submitted ? 'No matching records' : shown === 'archived' ? `No archived ${object.pluralLabel.toLowerCase()}` : `No ${object.pluralLabel.toLowerCase()} yet`} description={bin ? 'Deleted records appear here until they are restored or purged.' : submitted ? 'Try a different search.' : shown === 'archived' ? 'Archived records appear here. They stay readable but leave lists and search.' : object.access.create ? `Create the first ${object.label.toLowerCase()} to get started.` : 'Records you can see will appear here.'} />}
@@ -157,7 +170,27 @@ export function ObjectHome({client, apiName, onNavigate, headingRef}: {client: O
       {cursor && <Button variant="secondary" onClick={() => setCursor(undefined)}>First page</Button>}
       {page.value.nextCursor && <Button variant="secondary" onClick={() => setCursor(page.value.nextCursor ?? undefined)}>Next page</Button>}
     </div>}
+    </>}
   </div>;
+}
+
+const viewKey = (apiName: string) => `limiara.objects.view.${apiName}`;
+
+/** The view a member last chose for an object on this device; a convenience, so any storage failure means the table. */
+function storedView(apiName: string): 'table' | 'board' {
+  try {
+    return window.localStorage.getItem(viewKey(apiName)) === 'board' ? 'board' : 'table';
+  } catch {
+    return 'table';
+  }
+}
+
+function rememberView(apiName: string, view: 'table' | 'board') {
+  try {
+    window.localStorage.setItem(viewKey(apiName), view);
+  } catch {
+    // Not remembered: the choice still holds until the page changes.
+  }
 }
 
 function UserLink({user, onNavigate}: {user: ObjectRecord['owner']; onNavigate: Navigate}) {
