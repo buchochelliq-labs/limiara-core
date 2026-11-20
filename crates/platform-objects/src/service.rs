@@ -517,6 +517,9 @@ impl ObjectService {
     ) -> Result<ObjectDefinition, ObjectError> {
         self.caller.require_manage()?;
         let mut tx = self.begin().await?;
+        // Serialised with field changes: choosing a path field and deleting
+        // that field at once would otherwise both pass (ADR 0037 §2).
+        tx.lock_metadata().await?;
         let mut object = self.active_object(tx.as_mut(), api_name).await?;
         // A plugin object's labels and flags are the plugin's; only its
         // sharing settings are the workspace's to choose (ADR 0033 §2).
