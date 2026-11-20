@@ -67,6 +67,7 @@ In the GitHub repository, open **Settings → Environments → New environment**
 | `APP_STORE_CONNECT_API_KEY_P8_BASE64` | The `.p8` file, base64-encoded (below). |
 
 4. Optionally, add the environment **variable** (not a secret) `APP_STORE_APP_ID` with the Apple ID from step 2.
+5. Once App Store Connect issues an export compliance code (see Export compliance below), add it as the environment **variable** `APP_STORE_EXPORT_COMPLIANCE_CODE`.
 
 To base64-encode the key on a Mac and copy it to the clipboard, run this in Terminal, in the folder holding the file, and paste the clipboard into the secret's value:
 
@@ -129,7 +130,7 @@ What this means in practice:
 
 1. In App Store Connect, under **Apps → Limiara → App Information → App Encryption Documentation**, choose **+** and answer the questions once. For this app the type of encryption is **standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system**. App Store Connect then says whether documentation must be uploaded, which depends on where the app is distributed: for example, distribution in France needs a French encryption declaration.
 2. Until that is answered, each new build shows **Missing Compliance** in TestFlight; choose **Manage** next to the build to answer for it.
-3. If Apple approves uploaded documentation, it gives a compliance code. Add it to `Info.ios.plist` as the string `ITSEncryptionExportComplianceCode`, and builds no longer ask.
+3. When the encryption documentation is set up, App Store Connect shows an export compliance code for the app (under **App Information → App Encryption Documentation**) and from then on refuses uploads without it: altool fails with error 90592, "Invalid Export Compliance Code". Add the code, exactly as shown, as the `testflight` environment variable `APP_STORE_EXPORT_COMPLIANCE_CODE`. The workflow writes it into the app's `Info.plist` as `ITSEncryptionExportComplianceCode`, and the release check confirms it is there. It is not secret, since every build carries it, but it belongs to one App Store Connect account, so it is not committed.
 4. Using standard encryption can also require a yearly self-classification report to the US Bureau of Industry and Security. Apple's guidance covers when; the account holder, with legal advice if needed, decides whether it applies.
 
 If the questionnaire concludes that the app needs no documentation and its use is exempt, the key may be changed to `NO`. That is a compliance decision for the account holder, not a build setting.

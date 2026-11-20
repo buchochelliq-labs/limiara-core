@@ -11,8 +11,9 @@
 	     own standard encryption, SQLCipher with vendored OpenSSL for the
 	     replica and rustls for TLS, not only the encryption built into iOS.
 	     YES is the accurate declaration; App Store Connect then asks for
-	     the encryption questions once, and Apple's compliance code, when
-	     one is issued, goes in ITSEncryptionExportComplianceCode. -->
+	     the encryption questions once. Apple's compliance code, when one
+	     is issued, is added as ITSEncryptionExportComplianceCode by the
+	     testflight workflow from APP_STORE_EXPORT_COMPLIANCE_CODE. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<true/>
 </dict>

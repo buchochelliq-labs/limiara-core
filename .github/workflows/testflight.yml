@@ -197,8 +197,20 @@ jobs:
       - name: Generate the Xcode project
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          # Optional: the export compliance code App Store Connect issues
+          # for the app's encryption documentation. It is not secret (it
+          # ships in every build's Info.plist) but belongs to one account,
+          # so it lives in the environment, not the repository.
+          EXPORT_COMPLIANCE_CODE: ${{ vars.APP_STORE_EXPORT_COMPLIANCE_CODE }}
         run: |
           cd "$APP_DIR"
+          if [[ -n "$EXPORT_COMPLIANCE_CODE" ]]; then
+            [[ "$EXPORT_COMPLIANCE_CODE" =~ ^[A-Za-z0-9._-]{1,128}$ ]] ||
+              { echo "::error::APP_STORE_EXPORT_COMPLIANCE_CODE must be the code exactly as App Store Connect shows it (letters, digits, dots, dashes)"; exit 1; }
+            # Into the plist Tauri merges into the app's Info.plist, before
+            # the project is generated and built from it.
+            /usr/libexec/PlistBuddy -c "Add :ITSEncryptionExportComplianceCode string $EXPORT_COMPLIANCE_CODE" Info.ios.plist
+          fi
           cargo tauri ios init --ci
           # Tauri's configuration has no iOS entitlements, so the committed
           # file replaces the generated one, as in the `ios` workflow. A
@@ -239,6 +251,8 @@ jobs:
           echo "IPA_PATH=$PWD/$ipa" >>"$GITHUB_ENV"
 
       - name: Check the release build
+        env:
+          EXPORT_COMPLIANCE_CODE: ${{ vars.APP_STORE_EXPORT_COMPLIANCE_CODE }}
         run: bash scripts/check-ios-release-build.sh ipa "$IPA_PATH" "$BUILD_NUMBER" "$SHORT_VERSION"
 
       - name: Upload to App Store Connect
@@ -260,6 +274,11 @@ jobs:
           # output must also say the upload succeeded.
           if ((status != 0)) || ! grep -Eq 'UPLOAD SUCCEEDED|No errors uploading' "$log"; then
             echo "::error::the upload to App Store Connect failed (altool exit status $status)"
+            # 90592: the app's encryption documentation has a compliance
+            # code, and the build does not carry it.
+            if grep -q '90592' "$log"; then
+              echo "::error::App Store Connect expects an export compliance code: set the testflight environment variable APP_STORE_EXPORT_COMPLIANCE_CODE (docs/operations/testflight.md, Export compliance)"
+            fi
             exit 1
           fi
           {
