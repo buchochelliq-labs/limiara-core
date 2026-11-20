@@ -232,3 +232,14 @@ options = [
 name = "description"
 label = "Description"
 field_type = "long_text"
+
+# Probability follows the stage (ADR 0037 §6): a new deal starts at its
+# stage's weight unless it is given a probability, and a stage change sets
+# it again unless the same save sets it. It is a workspace automation once
+# installed, so administrators may change or turn it off.
+[[objects.automations]]
+name = "probability_from_stage"
+description = "Sets the probability to the stage's weight when the stage changes, unless the same save sets it"
+trigger = "create_or_update"
+condition = "IF(ISNEW(), ISBLANK(platform.sales:probability), ISCHANGED(platform.sales:stage) && !ISCHANGED(platform.sales:probability))"
+set = [{ field = "probability", formula = "PICKLISTWEIGHT(platform.sales:stage)" }]

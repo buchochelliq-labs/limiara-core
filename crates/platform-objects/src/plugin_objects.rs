@@ -22,6 +22,9 @@
 //! - **Related actions** a plugin object declares are kept with it on
 //!   install and offered to the objects its related-to fields allow when it
 //!   resumes (`crate::related_actions`).
+//! - **Starting automations** a plugin object declares are added as
+//!   workspace automations when the object is created, and left to the
+//!   workspace's administrators afterwards (`crate::automation`).
 //! - **Timeline sources** a plugin object declares are kept with it on
 //!   install, replaced on upgrade and dropped with the declaration
 //!   (`crate::timeline`).
@@ -167,6 +170,12 @@ impl ObjectService {
                 .await?;
             self.put_plugin_timeline(tx.as_mut(), plugin_id, &object, declared)
                 .await?;
+            // Starting automations come with a new object only: afterwards
+            // they belong to the workspace's administrators.
+            if installed.created_objects.contains(&api_name) {
+                self.put_plugin_automations(tx.as_mut(), plugin_id, &object, declared, context)
+                    .await?;
+            }
         }
         tx.commit().await?;
         Ok(installed)

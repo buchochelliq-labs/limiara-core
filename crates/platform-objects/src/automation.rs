@@ -21,6 +21,7 @@ use crate::{
     ValidationIssue,
 };
 use chrono::Utc;
+use plugin_contract::objects::ObjectAutomationTrigger;
 use serde_json::Map;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -1524,6 +1525,83 @@ impl ObjectService {
         .await?;
         tx.commit().await?;
         Ok(automation)
+    }
+
+    /// Adds the starting automations a plugin object declares (ADR 0037
+    /// §6), as the plugin installer, inside the install's transaction. Each
+    /// is checked like an administrator's automation, so a formula the
+    /// engine refuses fails the install.
+    pub(crate) async fn put_plugin_automations(
+        &self,
+        tx: &mut dyn ObjectTx,
+        plugin_id: &str,
+        object: &ObjectDefinition,
+        declared: &plugin_contract::ObjectDecl,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let existing = tx.automations(object.id).await?;
+        let now = Utc::now();
+        let actor = Some(self.caller().user_id());
+        for decl in &declared.automations {
+            if existing
+                .iter()
+                .any(|automation| automation.name == decl.name)
+            {
+                continue;
+            }
+            let automation = Automation {
+                id: Uuid::now_v7(),
+                object_id: object.id,
+                name: decl.name.clone(),
+                description: clean(decl.description.clone()),
+                trigger: match decl.trigger {
+                    ObjectAutomationTrigger::Create => AutomationTrigger::Create,
+                    ObjectAutomationTrigger::Update => AutomationTrigger::Update,
+                    ObjectAutomationTrigger::CreateOrUpdate => AutomationTrigger::CreateOrUpdate,
+                },
+                timing: AutomationTiming::BeforeSave,
+                condition: clean(decl.condition.clone()),
+                actions: vec![AutomationAction::UpdateRecord {
+                    when: None,
+                    values: decl
+                        .set
+                        .iter()
+                        .map(|value| Assignment {
+                            field: format!("{plugin_id}:{}", value.field),
+                            formula: value.formula.clone(),
+                        })
+                        .collect(),
+                }],
+                schedule: None,
+                active: true,
+                version: 1,
+                created_at: now,
+                created_by: actor,
+                updated_at: now,
+                updated_by: actor,
+            };
+            self.checked(tx, object, &automation)
+                .await
+                .map_err(|error| match error {
+                    ObjectError::Validation(issues) => ObjectError::Validation(
+                        issues
+                            .into_iter()
+                            .map(|issue| ValidationIssue {
+                                field: format!(
+                                    "{}/automations/{}/{}",
+                                    declared.name, decl.name, issue.field
+                                ),
+                                ..issue
+                            })
+                            .collect(),
+                    ),
+                    other => other,
+                })?;
+            tx.insert_automation(&automation).await?;
+            self.record_change(tx, context, Change::AutomationCreated(object, &automation))
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn update_automation(

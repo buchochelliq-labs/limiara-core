@@ -609,3 +609,96 @@ fn evaluates_text_number_and_date_functions() {
         assert!(error.message.contains(fragment), "{text}: {error:?}");
     }
 }
+
+fn stage_option(
+    value: &str,
+    outcome: crate::OptionOutcome,
+    weight: Option<u8>,
+) -> crate::PicklistOption {
+    crate::PicklistOption {
+        value: value.into(),
+        label: value.into(),
+        active: true,
+        default: false,
+        outcome,
+        weight,
+    }
+}
+
+/// `PICKLISTWEIGHT` and `PICKLISTOUTCOME` read the current value's option
+/// (ADR 0037 §1), here and through a lookup.
+#[test]
+fn picklist_weights_and_outcomes() {
+    use crate::OptionOutcome::{Negative, Open, Positive};
+    let mut fixture = fixture();
+    let stage = fixture
+        .deal
+        .fields
+        .iter_mut()
+        .find(|field| field.api_name == "custom:stage")
+        .expect("stage");
+    stage.options = vec![
+        stage_option("open", Open, Some(20)),
+        stage_option("won", Positive, Some(100)),
+        stage_option("lost", Negative, None),
+    ];
+    let account = fixture.objects.values_mut().next().expect("account");
+    account.fields[0].options = vec![stage_option("emea", Open, None)];
+    let value = |text: &str, env: &TestEnv| {
+        let formula = compile_as(&fixture, text, Purpose::Field)
+            .unwrap_or_else(|error| panic!("{text}: {error:?}"));
+        evaluate(&formula, env).expect("evaluates")
+    };
+    let mut env = env();
+    assert_eq!(
+        value("PICKLISTWEIGHT(custom:stage)", &env),
+        Value::Number(100.0)
+    );
+    assert_eq!(
+        value("PICKLISTOUTCOME(custom:stage)", &env),
+        Value::Text("positive".into())
+    );
+    assert_eq!(
+        value("PICKLISTOUTCOME(custom:account.custom:region)", &env),
+        Value::Text("open".into())
+    );
+    // An option without a weight, and a field with no weights at all.
+    assert_eq!(
+        value("PICKLISTWEIGHT(custom:account.custom:region)", &env),
+        Value::Null
+    );
+    env.values
+        .insert("custom:stage".into(), Value::Text("lost".into()));
+    assert_eq!(value("PICKLISTWEIGHT(custom:stage)", &env), Value::Null);
+    assert_eq!(
+        value("PICKLISTOUTCOME(custom:stage) = 'negative'", &env),
+        Value::Bool(true)
+    );
+    // Blank, or a value that is no longer an option, is blank.
+    for stage in [Value::Null, Value::Text("retired".into())] {
+        env.values.insert("custom:stage".into(), stage);
+        assert_eq!(value("PICKLISTWEIGHT(custom:stage)", &env), Value::Null);
+        assert_eq!(value("PICKLISTOUTCOME(custom:stage)", &env), Value::Null);
+    }
+    // Weights are numbers and outcomes are text.
+    assert!(compile_as(&fixture, "PICKLISTWEIGHT(custom:stage) + 1", Purpose::Field).is_ok());
+    assert!(compile_as(
+        &fixture,
+        "PICKLISTOUTCOME(custom:stage) + 1",
+        Purpose::Field
+    )
+    .is_err());
+    // Only a single-value picklist field.
+    for text in [
+        "PICKLISTWEIGHT(custom:tags)",
+        "PICKLISTWEIGHT(custom:amount)",
+        "PICKLISTWEIGHT('won')",
+        "PICKLISTOUTCOME(custom:stage, 1)",
+        "PICKLISTOUTCOME(custom:account.custom:nothing)",
+    ] {
+        assert!(
+            compile_as(&fixture, text, Purpose::Field).is_err(),
+            "{text}"
+        );
+    }
+}

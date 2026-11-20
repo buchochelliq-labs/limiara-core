@@ -26,6 +26,13 @@
 //! §4): through which of its lookup or related-to fields, ordered by which
 //! date, and when a record counts as open. The kernel knows nothing of what
 //! the records are; it serves every declared source the same way.
+//!
+//! An object may declare *starting automations* (`[[objects.automations]]`,
+//! ADR 0037 §6): values the engine sets on the record being saved, before
+//! it is saved, from formulas over the record. The kernel adds them as
+//! ordinary workspace automations (ADR 0022) when it creates the object, so
+//! administrators may change, turn off or delete them; it never adds them
+//! again or changes them afterwards.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,6 +51,12 @@ pub const MAX_PLUGIN_REFERENCE_OBJECTS: usize = 10;
 /// Related actions per declared object: an object an allowlist names has at
 /// most 10 quick actions anyway (ADR 0032 §2).
 pub const MAX_PLUGIN_RELATED_ACTIONS: usize = 10;
+/// Starting automations per declared object.
+pub const MAX_PLUGIN_AUTOMATIONS: usize = 10;
+/// Values one starting automation sets.
+pub const MAX_PLUGIN_AUTOMATION_VALUES: usize = 20;
+/// Characters in one of a starting automation's formulas.
+pub const MAX_PLUGIN_AUTOMATION_FORMULA: usize = 2_000;
 /// Fields a related action's form asks for, and presets it applies, as for
 /// quick actions.
 pub const MAX_RELATED_ACTION_FIELDS: usize = 20;
@@ -96,6 +109,46 @@ pub struct ObjectDecl {
     /// path and the board groups by (ADR 0037 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_field: Option<String>,
+    /// Automations the engine adds when it creates the object.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automations: Vec<ObjectAutomationDecl>,
+}
+
+/// A starting automation (ADR 0037 §6): before a record is saved, and when
+/// `condition` holds, set each of `set`'s fields to its formula's value.
+/// Formulas name fields by API name (`<plugin id>:<field>`) and are checked
+/// by the engine when the automation is added.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectAutomationDecl {
+    /// Unique per object: `[a-z][a-z0-9_]*`.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub trigger: ObjectAutomationTrigger,
+    /// A boolean formula. Without one, the automation runs on every save
+    /// its trigger covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    pub set: Vec<ObjectAutomationValue>,
+}
+
+/// The saves a starting automation runs on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectAutomationTrigger {
+    Create,
+    Update,
+    CreateOrUpdate,
+}
+
+/// One value a starting automation sets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectAutomationValue {
+    /// Short name of one of the object's own stored fields.
+    pub field: String,
+    pub formula: String,
 }
 
 /// Fields a timeline declaration reaches the viewed record through.
@@ -538,6 +591,30 @@ pub fn validate_objects<'a>(
                 reason,
             })?;
         }
+        if object.automations.len() > MAX_PLUGIN_AUTOMATIONS {
+            return Err(ObjectDeclIssue {
+                object: object.name.clone(),
+                field: Some("automations".to_owned()),
+                reason: "an object may declare at most 10 automations",
+            });
+        }
+        let mut automations = std::collections::BTreeSet::new();
+        for automation in &object.automations {
+            let issue = |reason| ObjectDeclIssue {
+                object: object.name.clone(),
+                field: Some(format!("automations/{}", automation.name)),
+                reason,
+            };
+            if !valid_object_name(&automation.name) {
+                return Err(issue(
+                    "an automation's name must be a lowercase letter followed by lowercase letters, digits or single underscores",
+                ));
+            }
+            if !automations.insert(automation.name.as_str()) {
+                return Err(issue("duplicate automation name"));
+            }
+            validate_automation(object, automation).map_err(issue)?;
+        }
         if let Some(path_field) = &object.path_field {
             let is_picklist = object.fields.iter().any(|field| {
                 field.name == *path_field && field.field_type == ObjectFieldType::Picklist
@@ -549,6 +626,41 @@ pub fn validate_objects<'a>(
                     reason: "path_field must name one of the object's single-value picklist fields",
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+/// Checks a starting automation against the object that declares it. The
+/// engine checks its formulas when it adds it.
+fn validate_automation(
+    object: &ObjectDecl,
+    automation: &ObjectAutomationDecl,
+) -> Result<(), &'static str> {
+    let formula = |text: &str| {
+        !text.trim().is_empty() && text.chars().count() <= MAX_PLUGIN_AUTOMATION_FORMULA
+    };
+    if automation
+        .condition
+        .as_deref()
+        .is_some_and(|text| !formula(text))
+    {
+        return Err("an automation's condition must be a formula of at most 2000 characters");
+    }
+    if automation.set.is_empty() || automation.set.len() > MAX_PLUGIN_AUTOMATION_VALUES {
+        return Err("an automation must set between 1 and 20 fields");
+    }
+    let mut set = std::collections::BTreeSet::new();
+    for value in &automation.set {
+        // Plugins declare no formula fields, so every declared field is stored.
+        if !object.fields.iter().any(|field| field.name == value.field) {
+            return Err("an automation sets only the object's own stored fields");
+        }
+        if !set.insert(value.field.as_str()) {
+            return Err("an automation sets each field once");
+        }
+        if !formula(&value.formula) {
+            return Err("an automation's values must be formulas of at most 2000 characters");
         }
     }
     Ok(())
