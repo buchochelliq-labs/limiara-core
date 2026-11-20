@@ -1123,6 +1123,11 @@ deal_version=$(field '.version')
 expect 400 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"signed\"}")" "only the path's stages are values"
 expect 200 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"closed_won\"}")" "the deal closes won"
 [[ "$(field '."platform.sales:stage"')" == closed_won ]] || fail "a won deal: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/reports")" "reports after enabling Sales"
+[[ "$(field '[.data[] | select(.owner_plugin == "platform.sales") | .name] | sort | join(",")')" == "Leads by source,Open pipeline by forecast category,Open pipeline by stage,Won this year" ]] || fail "Sales adds its reports: $(cat "$body")"
+won_report=$(field '.data[] | select(.name == "Won this year") | .id')
+expect 200 "$(call "$member_cookie" GET "$workspace/reports/$won_report")" "run a Sales report"
+[[ "$(field '.chart')" == metric && "$(field '.result.data | length')" == 1 ]] || fail "won this year: $(cat "$body")"
 
 log "assistant policy (ADR 0034 §4 and §6): off until turned on, and pushed assistant writes re-checked"
 policy="$workspace/objects/assistant-policy"

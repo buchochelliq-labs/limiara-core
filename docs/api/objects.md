@@ -1343,7 +1343,13 @@ reports (`409 reports.limit_reached`); concurrent saves are serialised, so
 they cannot exceed it.
 
 Each report carries `can_edit`: whether the caller may change or delete
-it (its owner, or a member with `reports.manage`). The run result is under
+it (its owner, or a member with `reports.manage`), and `owner_plugin`: the
+plugin that provides it, or `null` (ADR 0037 §5). A plugin's reports are
+shared with the workspace and owned by the member who enabled the plugin.
+Changing one keeps it as the workspace made it through the plugin's
+upgrades; deleting one means the plugin never adds it again. While the
+plugin is not enabled, its reports are missing from the list and from
+`GET /reports/{id}`. The run result is under
 `result`, in the shape of `GET /query`; pass its `next_cursor` back as
 `cursor` for the next page of rows.
 

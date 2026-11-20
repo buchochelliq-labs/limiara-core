@@ -212,6 +212,53 @@ What the engine does with it:
   field whose allowlist names it, or one still holding a value to one of
   its records after the object left the allowlist.
 
+## Reports
+
+A plugin may declare saved reports (ADR 0037 §5, ADR 0027) at the top level
+of its manifest:
+
+```toml
+[[reports]]
+name = "open_pipeline_by_stage"        # unique per plugin; never shown
+label = "Open pipeline by stage"       # the report's name in the workspace
+description = "The amount and number of open opportunities in each stage"
+query = "SELECT platform.sales:stage, SUM(platform.sales:amount) amount FROM platform.sales:opportunity GROUP BY platform.sales:stage"
+chart = "bar"                          # table, bar, line, pie or metric
+label_column = "platform.sales:stage"  # bar, line and pie
+value_column = "amount"                # every chart but a table
+```
+
+| Setting | Rule |
+| --- | --- |
+| `name` | A lowercase letter, then lowercase letters, digits or single underscores, up to 63; unique per plugin. |
+| `label` | 1 to 80 characters. |
+| `description` | Optional, at most 1,000 characters. |
+| `query` | A record query (ADR 0019) of at most 10,000 characters, reading the plugin's own objects or its dependencies'. |
+| `chart` | `table` (the default) names no columns; `metric` names `value_column`; `bar`, `line` and `pie` name both. |
+
+A plugin declares at most 20. Unknown keys are refused, and a broken rule
+refuses the manifest when it is read (`ManifestError::InvalidReport`).
+
+What the engine does with them:
+
+- **Added on enable.** Once the plugin's objects are in service, each
+  report is added as a report every member sees, owned by the member who
+  enabled the plugin and naming the plugin as `owner_plugin`. Its query is
+  checked against the workspace's objects as an administrator's report is:
+  it must run, and its chart's columns must exist.
+- **Skipped, not fatal.** A report whose query reads another plugin's
+  objects, or that the engine refuses, is skipped and audited as
+  `reports.plugin_report.skipped` with the reason. Enabling the plugin
+  goes ahead.
+- **The workspace's to change.** Members who may edit it can change or
+  delete a plugin's report. An upgrade updates only reports nobody has
+  changed since the plugin last did, and never deletes one; a report the
+  workspace deleted is never added again.
+- **As the viewer.** A report runs as whoever opens it, with their
+  permissions and sharing, like any report.
+- **Hidden while disabled.** Disabling the plugin hides its reports, and
+  enabling it brings them back unchanged.
+
 ## Enabling, upgrading and disabling
 
 | Plugin change | What happens to its objects in the workspace |

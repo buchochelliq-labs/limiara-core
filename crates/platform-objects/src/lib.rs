@@ -35,6 +35,7 @@ pub mod formula_fields;
 pub mod model;
 pub mod naming;
 pub mod plugin_objects;
+pub mod plugin_reports;
 pub mod push;
 pub mod query;
 pub mod quick_actions;

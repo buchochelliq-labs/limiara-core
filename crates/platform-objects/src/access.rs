@@ -203,6 +203,21 @@ impl ObjectAccess {
         }
     }
 
+    /// Read access to every object and field, for the engine checking a
+    /// query a plugin declares (ADR 0037 §5) against the workspace's
+    /// definitions. Only the query's columns reach the caller, never rows.
+    pub(crate) fn reading_everything() -> Self {
+        Self {
+            system: AccessFlags {
+                read: true,
+                view_all: true,
+                ..AccessFlags::default()
+            },
+            fields: FieldSecurity::system(),
+            ..Self::default()
+        }
+    }
+
     /// Detail objects are only accessible with read access to every one of
     /// their masters (ADR 0025). `links` are `(detail, master)` pairs.
     pub fn with_masters(mut self, links: impl IntoIterator<Item = (Uuid, Uuid)>) -> Self {

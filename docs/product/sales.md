@@ -79,6 +79,23 @@ card to another column, or use its **Move to…** menu.
 Every move is an ordinary record update: the record's permissions, sharing,
 validation rules, field history and audit apply to it as to any other edit.
 
+## Reports
+
+Enabling Sales adds four reports to the workspace's **Reports**, marked
+**Plugin** and shared with everyone:
+
+| Report | Shows |
+| --- | --- |
+| Open pipeline by stage | The amount of open opportunities in each stage, as a bar chart. |
+| Open pipeline by forecast category | The amount of open opportunities in each forecast category. |
+| Won this year | The amount of opportunities closed won with a close date this year. |
+| Leads by source | How many leads came from each source, as a pie chart. |
+
+Each report runs as whoever opens it, so it counts only the records they
+may see. They are the workspace's reports: members who manage reports can
+change or delete them. A changed report stays as the workspace made it
+when Sales is upgraded, and a deleted one is not added again.
+
 ## Not yet
 
 Leads and opportunities stand alone for now. Their links to accounts and

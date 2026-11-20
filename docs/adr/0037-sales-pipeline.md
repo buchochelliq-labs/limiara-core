@@ -208,6 +208,20 @@ workspace as public reports owned by the plugin.
 Administrators may copy and change them. An upgrade updates only reports
 nobody has changed, and never deletes one.
 
+Decided in slice 3:
+
+- Reports are added when the plugin is enabled, once its objects are in
+  service, so their queries are checked against the workspace's real
+  definitions. The plugin's installer holds no member permissions, so the
+  engine checks the query with read access of its own and keeps only the
+  columns.
+- "Nobody has changed" means the report is still at the version the plugin
+  last installed. A report the workspace deleted is remembered and never
+  added again.
+- A report the engine refuses is skipped and audited; it does not stop the
+  plugin from being enabled.
+- While the plugin is not enabled, its reports are hidden.
+
 ### 6. The Sales plugin
 
 `plugins/sales` (`platform.sales`) is manifest-only, like Activities. It
@@ -244,8 +258,11 @@ with fields:
 
 The plugin also ships:
 
-- **Reports:** open pipeline by stage, won this quarter, pipeline by
-  close month, and lead conversion by source.
+- **Reports:** open pipeline by stage, open pipeline by forecast
+  category, won this year, and leads by source. (Slice 3 shipped these
+  instead of "won this quarter", "pipeline by close month" and "lead
+  conversion by source": the query language has no quarter literal and
+  no grouping by month yet, and conversion comes with slice 5.)
 - **Activities:** it names Lead and Opportunity in Activities' starting
   allowlist (ADR 0035 §7, gap G18), so "Log a call" and the Activity
   timeline appear on both from the start.

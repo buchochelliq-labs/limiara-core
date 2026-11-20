@@ -430,10 +430,10 @@ async fn transition_serialised(
     let actor_id = principal.session.user.id;
     // Engine objects the plugin declares (ADR 0033 §2) are installed before
     // the plugin is enabled, so a refused installation leaves it as it was.
-    let installed_version = if desired == PluginDesiredState::Enabled {
+    let mut installed = if desired == PluginDesiredState::Enabled {
         match install_plugin_objects(pool, workspace_id, actor_id, plugin_id, correlation_id).await
         {
-            Ok(version) => version,
+            Ok(installed) => installed,
             Err(response) => return response,
         }
     } else {
@@ -453,15 +453,21 @@ async fn transition_serialised(
             // A newer candidate may have been activated meanwhile; its
             // objects are installed before they come into service.
             if desired == PluginDesiredState::Enabled
-                && installed_version
-                    .as_deref()
-                    .is_some_and(|version| version != plugin.version)
+                && installed
+                    .as_ref()
+                    .is_some_and(|(version, _)| *version != plugin.version)
             {
-                if let Err(response) =
-                    install_plugin_objects(pool, workspace_id, actor_id, plugin_id, correlation_id)
-                        .await
+                match install_plugin_objects(
+                    pool,
+                    workspace_id,
+                    actor_id,
+                    plugin_id,
+                    correlation_id,
+                )
+                .await
                 {
-                    return response;
+                    Ok(newer) => installed = newer,
+                    Err(response) => return response,
                 }
             }
             if let Err(response) = settle_plugin_objects(
@@ -470,6 +476,7 @@ async fn transition_serialised(
                 actor_id,
                 plugin_id,
                 desired,
+                installed.as_ref().map(|(_, manifest)| manifest),
                 correlation_id,
             )
             .await
@@ -568,7 +575,7 @@ async fn install_plugin_objects(
     actor_id: Uuid,
     plugin_id: &str,
     correlation_id: Uuid,
-) -> Result<Option<String>, axum::response::Response> {
+) -> Result<Option<(String, plugin_contract::Manifest)>, axum::response::Response> {
     let candidate = match platform_db::usable_plugin_candidate(pool, workspace_id, plugin_id).await
     {
         Ok(candidate) => candidate,
@@ -589,7 +596,7 @@ async fn install_plugin_objects(
         }
     };
     if manifest.objects.is_empty() {
-        return Ok(Some(version));
+        return Ok(Some((version, manifest)));
     }
     let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
     match engine
@@ -607,7 +614,7 @@ async fn install_plugin_objects(
                     "plugin objects installed"
                 );
             }
-            Ok(Some(version))
+            Ok(Some((version, manifest)))
         }
         Err(error) => {
             let (code, detail) = match &error {
@@ -657,12 +664,35 @@ async fn settle_plugin_objects(
     actor_id: Uuid,
     plugin_id: &str,
     desired: PluginDesiredState,
+    manifest: Option<&plugin_contract::Manifest>,
     correlation_id: Uuid,
 ) -> Result<(), axum::response::Response> {
     let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
     let context = system_context(correlation_id);
     let settled = match desired {
-        PluginDesiredState::Enabled => engine.resume_plugin_objects(plugin_id, context).await,
+        PluginDesiredState::Enabled => {
+            let resumed = engine.resume_plugin_objects(plugin_id, context).await;
+            // The plugin's reports (ADR 0037 §5) read its objects, so they
+            // are added once those are in service.
+            match (resumed, manifest) {
+                (Ok(_), Some(manifest)) if !manifest.reports.is_empty() => engine
+                    .put_plugin_reports(manifest, context)
+                    .await
+                    .map(|installed| {
+                        if !installed.created.is_empty() || !installed.updated.is_empty() {
+                            tracing::info!(
+                                plugin_id,
+                                created_reports = installed.created.len(),
+                                updated_reports = installed.updated.len(),
+                                skipped_reports = installed.skipped.len(),
+                                "plugin reports installed"
+                            );
+                        }
+                        Vec::new()
+                    }),
+                (resumed, _) => resumed,
+            }
+        }
         PluginDesiredState::Disabled | PluginDesiredState::Removed => {
             engine.suspend_plugin_objects(plugin_id, context).await
         }
