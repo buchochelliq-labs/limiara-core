@@ -74,7 +74,15 @@ To base64-encode the key on a Mac and copy it to the clipboard, run this in Term
 base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 ```
 
-Clear the clipboard afterwards by copying something else.
+On Windows, in PowerShell in the folder holding the file:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_XXXXXXXXXX.p8")) | Set-Clipboard
+```
+
+On Linux or WSL, `base64 -w0 AuthKey_XXXXXXXXXX.p8` prints it on one line.
+
+Clear the clipboard afterwards by copying something else. Encode the file exactly as downloaded, without opening and saving it in an editor. The workflow ignores line breaks in the secret, removes a byte-order mark and Windows line endings from the decoded key, and stops with a message if it is not an App Store Connect key (an EC P-256 private key).
 
 ### Manual signing
 
