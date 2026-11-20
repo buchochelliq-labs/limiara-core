@@ -179,7 +179,7 @@ Actionable work is tracked in the [roadmap implementation issue index](https://g
 
 **Outcome:** assemble a coherent CRM from plugins after the secure Contacts slice is proven.
 
-- Leads, opportunities, pipelines, stages, activities, notes, reminders, and cross-plugin timeline contributions.
+- Leads, opportunities, pipelines and stages, as designed in [ADR 0037](../adr/0037-sales-pipeline.md): a path and a board view for every engine object, then the manifest-only Sales plugin, plugin-declared reports, Contacts on the engine (ADR 0035) and record conversions, in that order. iOS and desktop come first; Android follows. Notes, reminders, and further cross-plugin timeline contributions follow.
 - Import/export jobs with preview, validation, duplicate-detection hooks, progress, cancellation, and audit history.
 - Reporting read models for pipeline, activity, conversion, and owner performance without raw cross-plugin table access.
 - Signed webhooks with replay protection and delivery logs, plus hardened cursor/filter conventions and typed API clients.
