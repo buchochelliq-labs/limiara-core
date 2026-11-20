@@ -212,6 +212,49 @@ What the engine does with it:
   field whose allowlist names it, or one still holding a value to one of
   its records after the object left the allowlist.
 
+## Starting automations
+
+An object may declare automations the engine adds when it creates the
+object (ADR 0037 §6). Each one sets values on the record being saved,
+before it is saved, from formulas over the record:
+
+```toml
+[[objects.automations]]
+name = "probability_from_stage"
+description = "Sets the probability to the stage's weight when the stage changes"
+trigger = "create_or_update"           # create, update or create_or_update
+condition = "IF(ISNEW(), ISBLANK(platform.sales:probability), ISCHANGED(platform.sales:stage) && !ISCHANGED(platform.sales:probability))"
+set = [{ field = "probability", formula = "PICKLISTWEIGHT(platform.sales:stage)" }]
+```
+
+| Setting | Rule |
+| --- | --- |
+| `name` | Unique per object: a lowercase letter, then lowercase letters, digits or single underscores. |
+| `trigger` | `create`, `update` or `create_or_update`. |
+| `condition` | Optional. A boolean formula of at most 2,000 characters; without one, the automation runs on every save its trigger covers. |
+| `set` | 1 to 20 values. Each `field` is the short name of one of the object's own fields, set once; each `formula` has at most 2,000 characters. |
+
+Formulas name fields by API name (`<plugin id>:<field>`), as in any
+automation (ADR 0022). An object may declare up to 10. Unknown keys are
+refused, and a broken rule refuses the manifest when it is read, naming
+`automations/<name>`.
+
+What the engine does with them:
+
+- **Added once.** When an install creates the object, the engine adds each
+  declaration as a before-save automation of the workspace, through the
+  same checks as an administrator's: a formula the engine refuses fails
+  the whole install, naming `<object>/automations/<name>/<part>`.
+- **Then the workspace's.** Administrators may change, turn off or delete
+  it like any other automation. Upgrades never add a starting automation
+  to an object that already exists, never change one and never delete one,
+  so a deleted automation stays deleted. Declaring a new one in a later
+  version therefore reaches only workspaces that install the object then.
+- **Only the record being saved.** It runs before save and sets fields of
+  that record only, inside the same save, so validation rules still check
+  the result and field history records it. It cannot update other records,
+  create records or publish events.
+
 ## Reports
 
 A plugin may declare saved reports (ADR 0037 §5, ADR 0027) at the top level
@@ -247,7 +290,7 @@ What the engine does with them:
   checked against the workspace's objects as an administrator's report is:
   it must run, and its chart's columns must exist.
 - **Skipped, not fatal.** A report whose query reads another plugin's
-  objects, or that the engine refuses, is skipped and audited as
+  objects, directly or through a lookup, or that the engine refuses, is skipped and audited as
   `reports.plugin_report.skipped` with the reason. Enabling the plugin
   goes ahead.
 - **The workspace's to change.** Members who may edit it can change or

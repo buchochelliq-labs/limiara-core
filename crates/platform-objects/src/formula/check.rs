@@ -5,7 +5,7 @@
 use super::parse::{self, BinaryOp, Expr, ExprKind, FormulaError, UnaryOp};
 use super::{limits, FieldRef, Function, Leaf, Node, Type, Value};
 use crate::query::plan::Standard;
-use crate::{FieldType, ObjectDefinition};
+use crate::{FieldType, ObjectDefinition, OptionOutcome};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -279,17 +279,13 @@ impl<'a> Catalog<'a> {
         Ok(Reference::Inlined(guard(node, through), expected))
     }
 
-    fn path(&self, segments: &[String], position: usize) -> Result<Reference, FormulaError> {
-        if segments.len() > limits::HOPS + 1 {
-            return Err(FormulaError::new(
-                position,
-                format!("follow at most {} lookups", limits::HOPS),
-            ));
-        }
+    /// The object the lookups in `through` lead to from the base object.
+    fn object_through(
+        &self,
+        through: &[String],
+        position: usize,
+    ) -> Result<&'a ObjectDefinition, FormulaError> {
         let mut object = self.base;
-        let (last, through) = segments
-            .split_last()
-            .ok_or_else(|| FormulaError::new(position, "expected a field"))?;
         for segment in through {
             let field = object.field(segment).ok_or_else(|| {
                 FormulaError::new(
@@ -313,6 +309,20 @@ impl<'a> Catalog<'a> {
                     FormulaError::new(position, format!("{segment} points to an unknown object"))
                 })?;
         }
+        Ok(object)
+    }
+
+    fn path(&self, segments: &[String], position: usize) -> Result<Reference, FormulaError> {
+        if segments.len() > limits::HOPS + 1 {
+            return Err(FormulaError::new(
+                position,
+                format!("follow at most {} lookups", limits::HOPS),
+            ));
+        }
+        let (last, through) = segments
+            .split_last()
+            .ok_or_else(|| FormulaError::new(position, "expected a field"))?;
+        let object = self.object_through(through, position)?;
         let leaf = match Standard::parse(last) {
             Some(standard) => Leaf::Standard(standard),
             None => {
@@ -393,6 +403,63 @@ impl<'a> Catalog<'a> {
         })
     }
 
+    /// `PICKLISTWEIGHT(field)` or `PICKLISTOUTCOME(field)`: the weight
+    /// (a number, blank when the option has none) or the outcome (`open`,
+    /// `positive` or `negative`) of the field's current value. Blank when
+    /// the field is blank or holds a value that is no longer an option.
+    fn picklist_attribute(
+        &self,
+        function: Function,
+        name: &str,
+        argument: &Expr,
+    ) -> Result<(Node, Type), FormulaError> {
+        let position = argument.position;
+        let needs_picklist =
+            || FormulaError::new(position, format!("{name} needs a picklist field"));
+        let ExprKind::Path(segments) = &argument.kind else {
+            return Err(needs_picklist());
+        };
+        let (last, through) = segments.split_last().ok_or_else(needs_picklist)?;
+        let object = self.object_through(through, position)?;
+        let definition = object
+            .field(last)
+            .filter(|field| field.field_type == FieldType::Picklist)
+            .ok_or_else(needs_picklist)?;
+        let Reference::Field(field) = self.path(segments, position)? else {
+            return Err(needs_picklist());
+        };
+        let ty = if function == Function::PicklistWeight {
+            Type::Number
+        } else {
+            Type::Text
+        };
+        let mut arguments = vec![Node::Field(field)];
+        for option in &definition.options {
+            let result = if function == Function::PicklistWeight {
+                match option.weight {
+                    Some(weight) => Value::Number(f64::from(weight)),
+                    None => continue,
+                }
+            } else {
+                Value::Text(
+                    match option.outcome {
+                        OptionOutcome::Open => "open",
+                        OptionOutcome::Positive => "positive",
+                        OptionOutcome::Negative => "negative",
+                    }
+                    .to_owned(),
+                )
+            };
+            arguments.push(Node::Const(Value::Text(option.value.clone())));
+            arguments.push(Node::Const(result));
+        }
+        if arguments.len() == 1 {
+            return Ok((Node::Const(Value::Null), ty));
+        }
+        arguments.push(Node::Const(Value::Null));
+        Ok((Node::Call(Function::Case, arguments), ty))
+    }
+
     fn call(
         &self,
         name: &str,
@@ -460,6 +527,17 @@ impl<'a> Catalog<'a> {
                 },
                 ty,
             ));
+        }
+        // Functions that read a picklist field's option metadata (ADR 0037
+        // §1). Each becomes a CASE over the field's options, so a formula
+        // follows the options as they are when it is checked: formulas are
+        // checked again on every read and save.
+        if matches!(
+            function,
+            Function::PicklistWeight | Function::PicklistOutcome
+        ) {
+            arity(1, Some(1))?;
+            return self.picklist_attribute(function, name, &arguments[0]);
         }
         if function == Function::Regex {
             arity(2, Some(2))?;
@@ -681,9 +759,11 @@ impl<'a> Catalog<'a> {
                 arity(0, Some(0))?;
                 Type::Boolean
             }
-            Function::IsChanged | Function::PriorValue | Function::Regex => {
-                return Err(FormulaError::new(position, "unreachable"))
-            }
+            Function::IsChanged
+            | Function::PriorValue
+            | Function::Regex
+            | Function::PicklistWeight
+            | Function::PicklistOutcome => return Err(FormulaError::new(position, "unreachable")),
             Function::IsNumber => {
                 arity(1, Some(1))?;
                 want(0, Type::Text)?;

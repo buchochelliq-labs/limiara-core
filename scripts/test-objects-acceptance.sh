@@ -1119,10 +1119,12 @@ expect 400 "$(call "$member_cookie" POST "$opportunity_api/records" '{"name":"In
 expect 201 "$(call "$member_cookie" POST "$opportunity_api/records" "{\"name\":\"Initech renewal\",\"platform.sales:close_date\":\"$tomorrow\",\"platform.sales:amount\":\"12000.00\"}")" "an opportunity"
 deal=$(field '.id')
 deal_version=$(field '.version')
-[[ "$deal" == opp* && "$(field '."platform.sales:stage"')" == prospecting ]] || fail "a deal starts prospecting: $(cat "$body")"
+[[ "$deal" == opp* && "$(field '."platform.sales:stage"')" == prospecting && "$(field '."platform.sales:probability" == 10')" == true ]] || fail "a deal starts prospecting, at its weight: $(cat "$body")"
 expect 400 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"signed\"}")" "only the path's stages are values"
 expect 200 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"expected_version\":$deal_version,\"platform.sales:stage\":\"closed_won\"}")" "the deal closes won"
-[[ "$(field '."platform.sales:stage"')" == closed_won ]] || fail "a won deal: $(cat "$body")"
+[[ "$(field '."platform.sales:stage"')" == closed_won && "$(field '."platform.sales:probability" == 100')" == true ]] || fail "a won deal, at 100: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$opportunity_api/automations")" "the opportunity's automations"
+[[ "$(field '[.data[].name] | join(",")')" == probability_from_stage ]] || fail "the starting automation is a workspace automation: $(cat "$body")"
 expect 200 "$(call "$member_cookie" GET "$workspace/reports")" "reports after enabling Sales"
 [[ "$(field '[.data[] | select(.owner_plugin == "platform.sales") | .name] | sort | join(",")')" == "Leads by source,Open pipeline by forecast category,Open pipeline by stage,Won this year" ]] || fail "Sales adds its reports: $(cat "$body")"
 won_report=$(field '.data[] | select(.name == "Won this year") | .id')
