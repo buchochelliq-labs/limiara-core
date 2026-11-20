@@ -345,6 +345,7 @@ export function ObjectManagerDetail({client, apiName, onNavigate, headingRef}: {
       {canManage && <Automations client={client} object={object} onNotice={setNotice} />}
       {canManage && <AssistantAccess client={client} object={object} onNotice={setNotice} actionsRevision={actionsRevision} />}
       {canManage && <RecordAccessSettings client={client} object={object} onSaved={message => { setNotice(message); retry(); }} />}
+      {canManage && <PathSettings client={client} object={object} onSaved={message => { setNotice(message); retry(); }} />}
       {canManage && <ObjectPermissions client={client} object={object} />}
     </>}
   </div>;
@@ -704,6 +705,46 @@ function RecordAccessSettings({client, object, onSaved}: {client: ObjectsClient;
       : <RecordAccessFields sharingModel={sharingModel} grantHierarchy={grantHierarchy} onSharingModel={setSharingModel} onGrantHierarchy={setGrantHierarchy} />}
     <label className="object-checkbox"><input type="checkbox" checked={trackHistory} onChange={event => setTrackHistory(event.target.checked)} />Track field history: when records are created, deleted and restored, name and owner changes, and the fields marked below</label>
     <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!changed}>Save record settings</Button></div>
+  </form>;
+}
+
+/**
+ * The object's path field (ADR 0037 §2): the single-value picklist shown as
+ * a path on record pages and grouped by on the board. A plugin's object
+ * keeps the plugin's choice.
+ */
+export function PathSettings({client, object, onSaved}: {client: Pick<ObjectsClient, 'updateObject'>; object: ObjectDescription; onSaved: (message: string) => void}) {
+  const picklists = object.fields.filter(field => field.type === 'picklist');
+  const [pathField, setPathField] = useState(object.pathField ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const owned = object.origin === 'plugin';
+  const changed = pathField !== (object.pathField ?? '');
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      await client.updateObject(object.apiName, object.version, {path_field: pathField || null});
+      const chosen = picklists.find(field => field.apiName === pathField);
+      onSaved(chosen ? `Records of ${object.pluralLabel.toLowerCase()} now show ${chosen.label} as their path.` : `Records of ${object.pluralLabel.toLowerCase()} no longer show a path.`);
+    } catch (reason) {
+      setError(issuesText(reason, 'The path could not be saved.').message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <form className="object-section object-form" onSubmit={event => void save(event)} aria-labelledby="path-heading">
+    <h2 id="path-heading">Path</h2>
+    <p>Record pages show the path field's values as steps, so members can move a record along with one tap. Values marked as closing are shown last.</p>
+    {error && <Alert variant="danger" title={error} />}
+    {picklists.length === 0
+      ? <p className="object-form__meta">Add a picklist field to show a path.</p>
+      : <Select label="Path field" description={owned ? 'Set by the plugin that provides this object.' : 'A single-value picklist. Choose None to show no path.'} value={pathField} disabled={owned || saving} onChange={event => setPathField(event.target.value)}>
+        <option value="">None</option>
+        {picklists.map(field => <option key={field.apiName} value={field.apiName}>{field.label}</option>)}
+      </Select>}
+    {!owned && picklists.length > 0 && <div className="object-page__actions"><Button type="submit" loading={saving} disabled={!changed}>Save path</Button></div>}
   </form>;
 }
 
