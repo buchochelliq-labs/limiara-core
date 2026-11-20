@@ -77,7 +77,7 @@ base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
 On Windows, in PowerShell in the folder holding the file:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_XXXXXXXXXX.p8")) | Set-Clipboard
+[Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path "AuthKey_XXXXXXXXXX.p8").Path)) | Set-Clipboard
 ```
 
 On Linux or WSL, `base64 -w0 AuthKey_XXXXXXXXXX.p8` prints it on one line.
