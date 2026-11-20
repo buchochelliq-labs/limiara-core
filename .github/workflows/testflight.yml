@@ -155,10 +155,28 @@ jobs:
           # APPLE_API_KEY_PATH, and altool finds AuthKey_<id>.p8 in
           # API_PRIVATE_KEYS_DIR.
           key="$SIGNING_DIR/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | base64 --decode >"$key"
-          chmod 600 "$key"
-          grep -q 'BEGIN PRIVATE KEY' "$key" ||
+          # Whitespace and line breaks in the pasted secret are ignored.
+          decoded="$SIGNING_DIR/AuthKey.decoded"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_P8_BASE64" | tr -d ' \t\r\n' | base64 --decode >"$decoded" ||
+            { echo "::error::APP_STORE_CONNECT_API_KEY_P8_BASE64 is not valid base64"; exit 1; }
+          grep -q 'BEGIN PRIVATE KEY' "$decoded" ||
             { echo "::error::APP_STORE_CONNECT_API_KEY_P8_BASE64 does not decode to a .p8 private key"; exit 1; }
+          # Xcode reads the key with CryptoKit, which accepts only a clean
+          # PEM document. A file saved or encoded on Windows can carry a
+          # byte-order mark or CRLF line endings, so re-write the key
+          # through OpenSSL, which also checks it is an EC private key.
+          # Only these facts are logged, never the key.
+          if LC_ALL=C grep -q $'\r' "$decoded"; then echo "The decoded key had CRLF line endings; normalising them."; fi
+          if [[ "$(head -c 3 "$decoded" | od -An -tx1 | tr -d ' \n')" == efbbbf ]]; then echo "The decoded key began with a byte-order mark; removing it."; fi
+          LC_ALL=C sed -e $'1s/^\xef\xbb\xbf//' -e $'s/\r$//' "$decoded" >"$decoded.lf"
+          if ! openssl pkey -in "$decoded.lf" -out "$key" 2>/dev/null ||
+            ! openssl pkey -in "$key" -noout -text 2>/dev/null | grep -q 'ASN1 OID: prime256v1'; then
+            rm -f "$decoded" "$decoded.lf" "$key"
+            echo "::error::APP_STORE_CONNECT_API_KEY_P8_BASE64 decodes to a file that is not a valid App Store Connect key (an EC P-256 private key); encode the AuthKey_<Key ID>.p8 file exactly as downloaded"
+            exit 1
+          fi
+          rm -f "$decoded" "$decoded.lf"
+          chmod 600 "$key"
           {
             echo "APPLE_API_KEY_PATH=$key"
             echo "API_PRIVATE_KEYS_DIR=$SIGNING_DIR/private_keys"
