@@ -108,6 +108,25 @@ describe('the board view (ADR 0037 §3)', () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({id: '0000000000000001'}));
   });
 
+  it('shows a card moved into a partly loaded column once, when Load more brings it again', async () => {
+    const client = createFixtureObjectsClient();
+    for (let index = 0; index < BOARD_PAGE + 2; index += 1) await client.createRecord('custom:project', {name: `Extra ${String(index).padStart(2, '0')}`, 'custom:status': 'won'});
+    // "Zulu" sorts after every loaded "Won" card, so the next page returns it again.
+    await client.createRecord('custom:project', {name: 'Zulu', 'custom:status': 'open'});
+    await board(client);
+    const toggle = container.querySelector('.record-board__toolbar input') as HTMLInputElement;
+    await act(async () => { toggle.click(); });
+    await settle();
+    await moveTo('Zulu', 'won');
+    expect(cards('Won')[0]).toBe('Zulu');
+    const more = [...(column('Won')?.querySelectorAll('button') ?? [])].find(item => item.textContent === 'Load more') as HTMLButtonElement;
+    await act(async () => { more.click(); });
+    await settle();
+    const won = cards('Won');
+    expect(won.filter(name => name === 'Zulu')).toHaveLength(1);
+    expect(new Set(won).size).toBe(won.length);
+  });
+
   it('is read-only without edit access', async () => {
     const client = createFixtureObjectsClient();
     const object = await client.describe('custom:project');

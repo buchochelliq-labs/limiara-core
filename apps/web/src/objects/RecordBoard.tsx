@@ -70,7 +70,12 @@ export function RecordBoard({client, object, field, search, status = 'active', o
     setColumns(current => ({...current, [value]: {...column, more: true}}));
     try {
       const page = await load(value, column.next);
-      setColumns(current => ({...current, [value]: {records: [...(current[value]?.records ?? []), ...page.records], next: page.nextCursor, status: 'ready', more: false}}));
+      setColumns(current => {
+        // A card moved into this column may come back in a later page: keep one of each record.
+        const shown = current[value]?.records ?? [];
+        const ids = new Set(shown.map(record => record.id));
+        return {...current, [value]: {records: [...shown, ...page.records.filter(record => !ids.has(record.id))], next: page.nextCursor, status: 'ready', more: false}};
+      });
     } catch {
       setColumns(current => ({...current, [value]: {...column, more: false}}));
       setError(`More ${object.pluralLabel.toLowerCase()} could not be loaded. Try again.`);
