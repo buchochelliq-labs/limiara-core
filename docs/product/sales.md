@@ -1,6 +1,6 @@
 # Using Sales
 
-**Status:** experimental. Design: ADR 0037 (sales pipeline), slice 2.
+**Status:** experimental. Design: [ADR 0037](../adr/0037-sales-pipeline.md), slice 2.
 Plugin: `platform.sales`, in `plugins/sales`.
 
 Sales tracks the deals a workspace works on. The plugin ships two objects,
@@ -85,4 +85,4 @@ Leads and opportunities stand alone for now. Their links to accounts and
 contacts arrive when Contacts moves onto the object engine. Converting a
 qualified lead into an account, contact and opportunity, contact roles on
 opportunities, filling in probability from the stage, products and quotes,
-multiple currencies and forecasts follow in later slices of ADR 0037.
+multiple currencies and forecasts follow in later slices of [ADR 0037](../adr/0037-sales-pipeline.md).
