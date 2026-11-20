@@ -67,7 +67,7 @@ In the GitHub repository, open **Settings → Environments → New environment**
 | `APP_STORE_CONNECT_API_KEY_P8_BASE64` | The `.p8` file, base64-encoded (below). |
 
 4. Optionally, add the environment **variable** (not a secret) `APP_STORE_APP_ID` with the Apple ID from step 2.
-5. Once App Store Connect issues an export compliance code (see Export compliance below), add it as the environment **variable** `APP_STORE_EXPORT_COMPLIANCE_CODE`.
+5. Only if App Store Connect issues an export compliance code (see Export compliance below): add it as the environment **variable** `APP_STORE_EXPORT_COMPLIANCE_CODE`.
 
 To base64-encode the key on a Mac and copy it to the clipboard, run this in Terminal, in the folder holding the file, and paste the clipboard into the secret's value:
 
@@ -119,21 +119,20 @@ App Store Connect then processes the build, which usually takes 5 to 30 minutes,
 
 Every app uploaded to App Store Connect must declare whether it uses encryption, because the upload counts as an export from the United States. Apple's `ITSAppUsesNonExemptEncryption` key in `Info.plist` answers this in advance: `NO` means the app uses no encryption or only encryption that is exempt from export documentation, typically the encryption built into iOS, such as HTTPS through Apple's networking APIs; `YES` means anything else. Apple's guidance is in [Complying with encryption export regulations](https://developer.apple.com/documentation/security/complying-with-encryption-export-regulations).
 
-The app sets the key to **`YES`** (`apps/device-shell/src-tauri/Info.ios.plist`), because it brings its own encryption rather than relying only on the encryption in iOS:
+The app brings its own encryption rather than relying only on the encryption in iOS:
 
 - the on-device copy of the workspace is encrypted with SQLCipher, built with its own copy of OpenSSL (ADR 0024, "Encryption at rest");
 - its connections to the server use TLS through rustls, not Apple's networking stack.
 
-Both use standard, published algorithms (AES and the TLS cipher suites); nothing is proprietary. Declaring `NO` would claim an exemption, and Apple makes the developer responsible for an inaccurate claim, so the accurate declaration is `YES`.
+Both use standard, published algorithms (AES and the TLS cipher suites); nothing is proprietary.
+
+The account holder answered App Store Connect's encryption questions (**App Information → App Encryption Documentation**) with **standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system**, and not distributed in France. App Store Connect concluded that no documents need to be uploaded and issued no compliance code. On that basis the account holder decided to declare the key as **`NO`** (`apps/device-shell/src-tauri/Info.ios.plist`), as App Store Connect suggests, so that builds do not ask the encryption questions again. The release check fails if the built app declares anything else.
 
 What this means in practice:
 
-1. In App Store Connect, under **Apps → Limiara → App Information → App Encryption Documentation**, choose **+** and answer the questions once. For this app the type of encryption is **standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system**. App Store Connect then says whether documentation must be uploaded, which depends on where the app is distributed: for example, distribution in France needs a French encryption declaration.
-2. Until that is answered, each new build shows **Missing Compliance** in TestFlight; choose **Manage** next to the build to answer for it.
-3. When the encryption documentation is set up, App Store Connect shows an export compliance code for the app (under **App Information → App Encryption Documentation**) and from then on refuses uploads without it: altool fails with error 90592, "Invalid Export Compliance Code". Add the code, exactly as shown, as the `testflight` environment variable `APP_STORE_EXPORT_COMPLIANCE_CODE`. The workflow writes it into the app's `Info.plist` as `ITSEncryptionExportComplianceCode`, and the release check confirms it is there. It is not secret, since every build carries it, but it belongs to one App Store Connect account, so it is not committed.
-4. Using standard encryption can also require a yearly self-classification report to the US Bureau of Industry and Security. Apple's guidance covers when; the account holder, with legal advice if needed, decides whether it applies.
-
-If the questionnaire concludes that the app needs no documentation and its use is exempt, the key may be changed to `NO`. That is a compliance decision for the account holder, not a build setting.
+1. **Distribution in France** needs a French encryption declaration. Before adding France, answer the encryption questions again in App Store Connect. If Apple then issues an export compliance code, change the key back to `YES` and add the code as the `testflight` environment variable `APP_STORE_EXPORT_COMPLIANCE_CODE`: the workflow writes it into the app's `Info.plist` as `ITSEncryptionExportComplianceCode` and the release check confirms it. Without the code, uploads fail with altool error 90592, "Invalid Export Compliance Code".
+2. **A change in the app's encryption**, such as a proprietary algorithm or encryption offered to users as a feature, means answering the questions again and reviewing this declaration.
+3. Using standard encryption can also require a yearly self-classification report to the US Bureau of Industry and Security. Apple's guidance covers when; the account holder, with legal advice if needed, decides whether it applies.
 
 ## What only a real run can confirm
 

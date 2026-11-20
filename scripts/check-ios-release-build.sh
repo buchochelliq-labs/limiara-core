@@ -130,7 +130,7 @@ check_ipa() {
   value=$(plist_value "$info" CFBundleShortVersionString)
   [[ "$value" == "$expected_short" ]] || fail "CFBundleShortVersionString is '$value', expected $expected_short"
   value=$(plist_value "$info" ITSAppUsesNonExemptEncryption)
-  [[ "$value" == true ]] || fail "ITSAppUsesNonExemptEncryption is '$value', expected true (docs/operations/testflight.md)"
+  [[ "$value" == false ]] || fail "ITSAppUsesNonExemptEncryption is '$value', expected false (docs/operations/testflight.md, Export compliance)"
   # EXPORT_COMPLIANCE_CODE (the workflow's APP_STORE_EXPORT_COMPLIANCE_CODE),
   # when set, must be the app's ITSEncryptionExportComplianceCode.
   if [[ -n "${EXPORT_COMPLIANCE_CODE:-}" ]]; then
