@@ -1,0 +1,234 @@
+manifest_version = 1
+id = "platform.sales"
+name = "Sales"
+version = "0.1.0"
+description = "Leads and opportunities, with stages on a path and a board (ADR 0037)"
+# A manifest-only plugin, like Activities (ADR 0033 §3): it links no backend
+# code. Its objects are engine objects the kernel installs through the object
+# engine, so every read and write goes through the engine's tenancy,
+# permissions, sharing, validation, audit and events, on the server and on
+# device replicas alike. The artifact is a marker the registry verifies like
+# any other package.
+#
+# ADR 0037 slice 2: leads and opportunities stand alone. Their links to
+# people and organisations come with Contacts on the object engine (ADR 0035,
+# slice 4), the lead conversion with slice 5, contact roles with slice 6.
+runtime = "native"
+
+[compatibility]
+platform = ">=0.1.0,<0.2.0"
+
+[supply_chain]
+distribution = "core-oob"
+source_repository = "https://github.com/buchochelliq-labs/limiara-core"
+source_revision = "1813f80d406837204b55ee89bb30f50ec1fff3eb"
+build_provenance = "https://github.com/buchochelliq-labs/limiara-core/attestations/platform.sales.intoto.jsonl"
+artifact_digest = "sha256:8a2c7a490719431b746530bf4ae44a02ce2e835a84feff8071c59c0957497b13"
+artifact_path = "artifact/native.link"
+signature = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.sales-0.1.0/platform.sales.sig"
+sbom = "https://github.com/buchochelliq-labs/limiara-core/releases/download/platform.sales-0.1.0/platform.sales.spdx.json"
+
+# Its records live in the object engine, which both stores host.
+[storage]
+backends = ["postgres", "sqlite"]
+
+# No code runs, so the plugin asks for nothing. Who may read or write leads
+# and opportunities is each workspace's object permissions per role.
+[capabilities]
+database = false
+audit = false
+event_publish = []
+event_consume = []
+outbound_http = []
+secrets = []
+object_storage = false
+
+# --- Lead -----------------------------------------------------------------
+
+[[objects]]
+name = "lead"
+label = "Lead"
+plural_label = "Leads"
+description = "Someone who may become a customer, before they are qualified"
+name_label = "Name"
+key_prefix = "led"
+sharing_model = "private"
+track_history = true
+in_navigation = true
+# The record page shows the lead's status as a path; the board groups by it.
+path_field = "status"
+
+[[objects.fields]]
+name = "status"
+label = "Status"
+field_type = "picklist"
+required = true
+indexed = true
+track_history = true
+options = [
+  { value = "new", label = "New", default = true },
+  { value = "working", label = "Working" },
+  { value = "nurturing", label = "Nurturing" },
+  { value = "qualified", label = "Qualified", outcome = "positive" },
+  { value = "unqualified", label = "Unqualified", outcome = "negative" },
+]
+
+[[objects.fields]]
+name = "company"
+label = "Company"
+field_type = "text"
+max_length = 255
+searchable = true
+
+[[objects.fields]]
+name = "title"
+label = "Title"
+field_type = "text"
+max_length = 128
+
+[[objects.fields]]
+name = "email"
+label = "Email"
+field_type = "email"
+searchable = true
+
+[[objects.fields]]
+name = "phone"
+label = "Phone"
+field_type = "phone"
+
+[[objects.fields]]
+name = "website"
+label = "Website"
+field_type = "url"
+
+[[objects.fields]]
+name = "source"
+label = "Lead source"
+field_type = "picklist"
+indexed = true
+options = [
+  { value = "web", label = "Web" },
+  { value = "referral", label = "Referral" },
+  { value = "event", label = "Event" },
+  { value = "partner", label = "Partner" },
+  { value = "other", label = "Other" },
+]
+
+[[objects.fields]]
+name = "rating"
+label = "Rating"
+field_type = "picklist"
+options = [
+  { value = "hot", label = "Hot" },
+  { value = "warm", label = "Warm" },
+  { value = "cold", label = "Cold" },
+]
+
+[[objects.fields]]
+name = "description"
+label = "Description"
+field_type = "long_text"
+
+# --- Opportunity ----------------------------------------------------------
+
+[[objects]]
+name = "opportunity"
+label = "Opportunity"
+plural_label = "Opportunities"
+description = "A deal in progress, moving through stages until it is won or lost"
+name_label = "Opportunity name"
+key_prefix = "opp"
+sharing_model = "private"
+track_history = true
+in_navigation = true
+path_field = "stage"
+
+# Each stage's weight is its usual probability of closing; won and lost close
+# the deal (ADR 0037 §1).
+[[objects.fields]]
+name = "stage"
+label = "Stage"
+field_type = "picklist"
+required = true
+indexed = true
+track_history = true
+options = [
+  { value = "prospecting", label = "Prospecting", default = true, weight = 10 },
+  { value = "qualification", label = "Qualification", weight = 20 },
+  { value = "needs_analysis", label = "Needs analysis", weight = 40 },
+  { value = "proposal", label = "Proposal", weight = 60 },
+  { value = "negotiation", label = "Negotiation", weight = 80 },
+  { value = "closed_won", label = "Closed won", outcome = "positive", weight = 100 },
+  { value = "closed_lost", label = "Closed lost", outcome = "negative", weight = 0 },
+]
+
+[[objects.fields]]
+name = "amount"
+label = "Amount"
+field_type = "currency"
+scale = 2
+track_history = true
+
+[[objects.fields]]
+name = "close_date"
+label = "Close date"
+field_type = "date"
+required = true
+indexed = true
+track_history = true
+
+[[objects.fields]]
+name = "probability"
+label = "Probability"
+field_type = "percent"
+scale = 0
+
+[[objects.fields]]
+name = "forecast_category"
+label = "Forecast category"
+field_type = "picklist"
+indexed = true
+options = [
+  { value = "pipeline", label = "Pipeline", default = true },
+  { value = "best_case", label = "Best case" },
+  { value = "commit", label = "Commit" },
+  { value = "closed", label = "Closed" },
+  { value = "omitted", label = "Omitted" },
+]
+
+[[objects.fields]]
+name = "next_step"
+label = "Next step"
+field_type = "text"
+max_length = 255
+
+[[objects.fields]]
+name = "lead_source"
+label = "Lead source"
+field_type = "picklist"
+indexed = true
+options = [
+  { value = "web", label = "Web" },
+  { value = "referral", label = "Referral" },
+  { value = "event", label = "Event" },
+  { value = "partner", label = "Partner" },
+  { value = "other", label = "Other" },
+]
+
+[[objects.fields]]
+name = "loss_reason"
+label = "Loss reason"
+field_type = "picklist"
+options = [
+  { value = "price", label = "Price" },
+  { value = "competitor", label = "Lost to a competitor" },
+  { value = "no_decision", label = "No decision" },
+  { value = "timing", label = "Timing" },
+  { value = "other", label = "Other" },
+]
+
+[[objects.fields]]
+name = "description"
+label = "Description"
+field_type = "long_text"

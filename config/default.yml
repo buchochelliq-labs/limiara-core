@@ -48,6 +48,7 @@ platform:
     manifest_paths:
       - plugins/contacts/plugin.toml
       - plugins/activities/plugin.toml
+      - plugins/sales/plugin.toml
     reserved_namespaces:
       - platform
     trusted_core_repositories:

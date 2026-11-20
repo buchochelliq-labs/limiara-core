@@ -558,6 +558,7 @@ platform = ">=0.1.0,<0.2.0"
         let paths = [
             root.join("plugins/contacts/plugin.toml"),
             root.join("plugins/activities/plugin.toml"),
+            root.join("plugins/sales/plugin.toml"),
         ];
         for backend in [
             plugin_contract::StorageBackend::Postgres,
@@ -577,6 +578,7 @@ platform = ">=0.1.0,<0.2.0"
                 .map(|plugin| plugin.manifest.id.as_str())
                 .collect();
             assert!(ids.contains(&"platform.activities"), "{ids:?}");
+            assert!(ids.contains(&"platform.sales"), "{ids:?}");
         }
     }
 
