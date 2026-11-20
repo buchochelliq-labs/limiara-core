@@ -355,10 +355,15 @@ fn run_with(plugins: ExtraPlugins<tauri::App<tauri::Wry>>, context: tauri::Conte
             let url = start_url()
                 .parse()
                 .map_err(|error| format!("the start URL is invalid: {error}"))?;
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::CustomProtocol(url))
-                .title("Limiara")
-                .inner_size(1200.0, 800.0)
-                .build()?;
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::CustomProtocol(url))
+                .title("Limiara");
+            // A size is for desktop windows only. On a phone the window must
+            // fill the screen: iOS gives a window a fixed size in points
+            // when it is given one, which left a 1200 by 800 point page,
+            // cut off on the right, with a black band below it.
+            #[cfg(desktop)]
+            let window = window.inner_size(1200.0, 800.0);
+            window.build()?;
             Ok(())
         })
         .run(context);
