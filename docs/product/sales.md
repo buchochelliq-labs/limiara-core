@@ -64,9 +64,22 @@ Each stage carries its usual probability of closing:
 | Closed won | 100% | Won |
 | Closed lost | 0% | Lost |
 
-Probability is not filled in from the stage yet; set it on the record. A
-workspace can rename stages and change their weights in the Object Manager
-like any picklist.
+**Probability follows the stage.** A new opportunity starts at its stage's
+probability, and moving it to another stage sets the probability to that
+stage's. A member can still set the probability by hand: a save that changes
+it keeps the member's value, and so do later saves that leave the stage alone.
+A save that moves the stage and sends the probability it already had counts
+as not changing it, so the new stage's probability applies.
+
+This is an ordinary automation, **probability_from_stage**, that the plugin
+adds when it creates the Opportunity object. Administrators find it in the
+object's automations and may change it, turn it off or delete it. Upgrading
+the plugin never adds it back or changes it.
+
+The stages and their probabilities come with the plugin, like all of its
+fields: a workspace cannot rename stages or change their probabilities yet.
+On a custom object's own picklist, administrators set each option's
+probability (its weight) through the objects API.
 
 ## Moving along the path
 
@@ -84,5 +97,5 @@ validation rules, field history and audit apply to it as to any other edit.
 Leads and opportunities stand alone for now. Their links to accounts and
 contacts arrive when Contacts moves onto the object engine. Converting a
 qualified lead into an account, contact and opportunity, contact roles on
-opportunities, filling in probability from the stage, products and quotes,
+opportunities, products and quotes,
 multiple currencies and forecasts follow in later slices of [ADR 0037](../adr/0037-sales-pipeline.md).

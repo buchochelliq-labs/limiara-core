@@ -1523,11 +1523,101 @@ delete_behaviour = "restrict""#,
             .expect("close date");
         assert!(close_date.required);
         assert_eq!(close_date.field_type, ObjectFieldType::Date);
+        // Probability follows the stage through a starting automation.
+        assert!(lead.automations.is_empty());
+        let [probability] = opportunity.automations.as_slice() else {
+            panic!("one starting automation");
+        };
+        assert_eq!(probability.name, "probability_from_stage");
+        assert_eq!(
+            probability.trigger,
+            crate::objects::ObjectAutomationTrigger::CreateOrUpdate
+        );
+        assert_eq!(probability.set.len(), 1);
+        assert_eq!(probability.set[0].field, "probability");
+        assert_eq!(
+            probability.set[0].formula,
+            "PICKLISTWEIGHT(platform.sales:stage)"
+        );
         // Stored manifests are JSON and read back unchanged.
         let round_trip: Manifest =
             serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
                 .expect("stored manifests read back");
         assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    #[test]
+    fn starting_automations_are_validated_when_the_manifest_is_read() {
+        let manifest = |automation: &str| {
+            objects_manifest(
+                "example.work",
+                &format!(
+                    r#"{TASK}
+[[objects.fields]]
+name = "hours"
+label = "Hours"
+field_type = "number"
+
+[[objects.fields]]
+name = "note"
+label = "Note"
+field_type = "text"
+max_length = 10
+
+[[objects.automations]]
+{automation}
+"#
+                ),
+            )
+        };
+        let valid = r#"name = "estimate"
+trigger = "create"
+condition = "ISBLANK(example.work:hours)"
+set = [{ field = "hours", formula = "1" }, { field = "note", formula = "'estimated'" }]"#;
+        let parsed = manifest(valid).expect("a valid automation");
+        let automation = &parsed.objects[0].automations[0];
+        assert_eq!(
+            automation.trigger,
+            crate::objects::ObjectAutomationTrigger::Create
+        );
+        assert_eq!(automation.set.len(), 2);
+        let refused = |change: &str| object_reason(manifest(change));
+        assert!(refused(&valid.replace("\"estimate\"", "\"Estimate\"")).contains("name"));
+        assert!(refused(&valid.replace("field = \"note\"", "field = \"nope\"")).contains("own"));
+        assert!(refused(&valid.replace("field = \"note\"", "field = \"hours\"")).contains("once"));
+        assert!(refused(&valid.replace("formula = \"1\"", "formula = \" \"")).contains("formula"));
+        assert!(refused(&valid.replace(
+            "condition = \"ISBLANK(example.work:hours)\"",
+            "condition = \"\""
+        ))
+        .contains("condition"));
+        let set_line = valid.lines().last().expect("set line");
+        assert!(refused(&valid.replace(set_line, "set = []")).contains("between"));
+        assert!(manifest(&valid.replace("trigger = \"create\"", "trigger = \"delete\"")).is_err());
+        assert!(manifest(&format!("{valid}\nfoo = 1")).is_err());
+        // Names are unique per object.
+        let twice = objects_manifest(
+            "example.work",
+            &format!(
+                r#"{TASK}
+[[objects.fields]]
+name = "hours"
+label = "Hours"
+field_type = "number"
+
+[[objects.automations]]
+name = "estimate"
+trigger = "create"
+set = [{{ field = "hours", formula = "1" }}]
+
+[[objects.automations]]
+name = "estimate"
+trigger = "update"
+set = [{{ field = "hours", formula = "2" }}]
+"#
+            ),
+        );
+        assert!(object_reason(twice).contains("duplicate"));
     }
 
     #[test]

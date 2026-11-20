@@ -238,7 +238,7 @@ with fields:
   needs analysis 40, proposal 60, negotiation 80, closed won (positive,
   100), closed lost (negative, 0);
 - probability (percent; filled from the stage's weight when the stage
-  changes, and editable);
+  changes, and editable, by a starting automation, below);
 - next step, lead source, forecast category (pipeline, best case, commit,
   closed, omitted), and loss reason.
 
@@ -249,6 +249,16 @@ The plugin also ships:
 - **Activities:** it names Lead and Opportunity in Activities' starting
   allowlist (ADR 0035 §7, gap G18), so "Log a call" and the Activity
   timeline appear on both from the start.
+
+**Starting automations.** A manifest may declare, per object,
+`[[objects.automations]]`: before-save automations that set fields of the
+record being saved from formulas (ADR 0022). The kernel adds them as
+workspace automations when it creates the object, through the same checks
+as an administrator's, and never adds, changes or deletes them afterwards:
+they are the workspace's. Sales declares one, `probability_from_stage`,
+setting probability to `PICKLISTWEIGHT(stage)` when the stage changes
+unless the same save changes it. Updating other records, creating records and
+publishing events stay out of manifests.
 
 **Opportunity contact role** (`key_prefix = "ocr"`, sharing controlled by
 its opportunity), the people involved in a deal, with fields:

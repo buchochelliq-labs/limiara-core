@@ -166,6 +166,8 @@ pub enum Function {
     Trunc,
     Weekday,
     DateTimeValue,
+    PicklistWeight,
+    PicklistOutcome,
 }
 
 impl Function {
@@ -222,6 +224,8 @@ impl Function {
             "TRUNC" => Self::Trunc,
             "WEEKDAY" => Self::Weekday,
             "DATETIMEVALUE" => Self::DateTimeValue,
+            "PICKLISTWEIGHT" => Self::PicklistWeight,
+            "PICKLISTOUTCOME" => Self::PicklistOutcome,
             _ => return None,
         })
     }
@@ -791,7 +795,11 @@ fn call(function: Function, arguments: &[Node], env: &dyn Env) -> Result<Value, 
             )
         }
         Function::IsNew => Value::Bool(env.is_new()),
-        Function::IsChanged | Function::PriorValue | Function::Regex => Value::Null,
+        Function::IsChanged
+        | Function::PriorValue
+        | Function::Regex
+        | Function::PicklistWeight
+        | Function::PicklistOutcome => Value::Null,
         Function::IsNumber => Value::Bool(
             string(arg(0)?)
                 .is_some_and(|text| text.trim().parse::<f64>().is_ok_and(f64::is_finite)),

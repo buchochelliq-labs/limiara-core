@@ -695,9 +695,17 @@ remove one with `PATCH` / `DELETE …/validation-rules/{name}` and
   `TEXT`, `VALUE`, `ABS`, `FLOOR`, `CEILING`, `ROUND`, `MOD`, `MIN`, `MAX`,
   `TODAY`, `NOW`, `DATE`, `DATEVALUE`, `YEAR`, `MONTH`, `DAY`, `ADDMONTHS`,
   `REGEX`, `ISNUMBER`, `FIND`, `LPAD`, `RPAD`, `SQRT`, `EXP`, `LN`, `LOG`,
-  `TRUNC`, `WEEKDAY`, `DATETIMEVALUE`, `ISNEW`, `ISCHANGED` and
-  `PRIORVALUE`. Formula fields can be used like other fields; their
-  formulas are inlined, with cycles refused.
+  `TRUNC`, `WEEKDAY`, `DATETIMEVALUE`, `PICKLISTWEIGHT`,
+  `PICKLISTOUTCOME`, `ISNEW`, `ISCHANGED` and `PRIORVALUE`. Formula fields
+  can be used like other fields; their formulas are inlined, with cycles
+  refused.
+- `PICKLISTWEIGHT(field)` and `PICKLISTOUTCOME(field)` read a single-value
+  picklist's current option (ADR 0037 §1), on the record or through
+  lookups: its weight, a number (blank when the option has none), or its
+  outcome, `open`, `positive` or `negative`. Both are blank when the field
+  is blank or holds a value that is no longer an option. They follow the
+  options as they are when the formula runs, so changing a weight changes
+  the results.
 - Active rules run on every create, update and owner change. A save that
   breaks rules fails with `400 validation.failed`; each broken rule is an
   error with `code: records.validation_rule`, its message, and its
