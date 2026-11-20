@@ -74,8 +74,10 @@ adds when it creates the Opportunity object. Administrators find it in the
 object's automations and may change it, turn it off or delete it. Upgrading
 the plugin never adds it back or changes it.
 
-A workspace can change the stages' probabilities through the objects API,
-like any picklist option's weight; the Object Manager does not edit them yet.
+The stages and their probabilities come with the plugin, like all of its
+fields: a workspace cannot rename stages or change their probabilities yet.
+On a custom object's own picklist, administrators set each option's
+probability (its weight) through the objects API.
 
 ## Moving along the path
 
