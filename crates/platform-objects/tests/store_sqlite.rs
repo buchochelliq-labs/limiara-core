@@ -54,6 +54,17 @@ async fn sqlite_store_passes_the_query_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_path_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::paths::run(store, uuid::Uuid::now_v7()).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_search_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

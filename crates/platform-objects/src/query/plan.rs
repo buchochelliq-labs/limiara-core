@@ -1399,6 +1399,7 @@ mod tests {
 
     fn object(api: &str) -> ObjectDefinition {
         ObjectDefinition {
+            path_field: None,
             id: Uuid::now_v7(),
             api_name: api.into(),
             label: api.into(),

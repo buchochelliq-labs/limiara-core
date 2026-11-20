@@ -92,6 +92,10 @@ pub struct ObjectDecl {
     /// records they point at (ADR 0033 §4). At most one per object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline: Option<TimelineDecl>,
+    /// Short name of the single-value picklist the record page shows as a
+    /// path and the board groups by (ADR 0037 §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_field: Option<String>,
 }
 
 /// Fields a timeline declaration reaches the viewed record through.
@@ -308,6 +312,37 @@ pub struct ObjectFieldOption {
     pub label: String,
     #[serde(default)]
     pub default: bool,
+    /// Whether the value closes the record, and how (ADR 0037 §1). Only a
+    /// single-value picklist's options may close it.
+    #[serde(default, skip_serializing_if = "ObjectOptionOutcome::is_open")]
+    pub outcome: ObjectOptionOutcome,
+    /// A percentage from 0 to 100 the value carries (ADR 0037 §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u8>,
+}
+
+/// What a picklist value means for a record's progress (ADR 0037 §1).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectOptionOutcome {
+    #[default]
+    Open,
+    Positive,
+    Negative,
+}
+
+impl ObjectOptionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Positive => "positive",
+            Self::Negative => "negative",
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        *self == Self::Open
+    }
 }
 
 /// Why a declared object or field is refused.
@@ -502,6 +537,18 @@ pub fn validate_objects<'a>(
                 field: Some(format!("timeline/{part}")),
                 reason,
             })?;
+        }
+        if let Some(path_field) = &object.path_field {
+            let is_picklist = object.fields.iter().any(|field| {
+                field.name == *path_field && field.field_type == ObjectFieldType::Picklist
+            });
+            if !is_picklist {
+                return Err(ObjectDeclIssue {
+                    object: object.name.clone(),
+                    field: Some("path_field".to_owned()),
+                    reason: "path_field must name one of the object's single-value picklist fields",
+                });
+            }
         }
     }
     Ok(())
@@ -760,6 +807,18 @@ fn validate_field(
             && field.options.iter().filter(|option| option.default).count() > 1
         {
             return Err("a picklist has at most one default option");
+        }
+        if field
+            .options
+            .iter()
+            .any(|option| option.weight.is_some_and(|weight| weight > 100))
+        {
+            return Err("an option's weight is a percentage from 0 to 100");
+        }
+        if kind != ObjectFieldType::Picklist
+            && field.options.iter().any(|option| !option.outcome.is_open())
+        {
+            return Err("only a single-value picklist's options may have an outcome");
         }
     } else if !field.options.is_empty() {
         return Err("only picklist fields take options");

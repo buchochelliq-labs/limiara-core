@@ -111,11 +111,23 @@ pub fn picklist_options(
             return Err(invalid("option values must be unique, ignoring case"));
         }
         let label = label("options", &option.label, NAME_MAX)?;
+        if option.weight.is_some_and(|weight| weight > 100) {
+            return Err(invalid("an option's weight is a percentage from 0 to 100"));
+        }
+        // A record holds several values of a multi-select picklist at once,
+        // so its values cannot close it.
+        if field_type == FieldType::MultiPicklist && option.outcome.is_closed() {
+            return Err(invalid(
+                "only a single-value picklist's options may have an outcome",
+            ));
+        }
         normalised.push(PicklistOption {
             value: value.to_owned(),
             label,
             active: option.active,
             default: option.default && option.active,
+            outcome: option.outcome,
+            weight: option.weight,
         });
     }
     if field_type == FieldType::Picklist
@@ -975,18 +987,24 @@ mod tests {
             options: if matches!(kind, FieldType::Picklist | FieldType::MultiPicklist) {
                 vec![
                     PicklistOption {
+                        outcome: Default::default(),
+                        weight: None,
                         value: "Open".into(),
                         label: "Open".into(),
                         active: true,
                         default: true,
                     },
                     PicklistOption {
+                        outcome: Default::default(),
+                        weight: None,
                         value: "Won".into(),
                         label: "Won".into(),
                         active: true,
                         default: false,
                     },
                     PicklistOption {
+                        outcome: Default::default(),
+                        weight: None,
                         value: "Old".into(),
                         label: "Old".into(),
                         active: false,
@@ -1020,6 +1038,7 @@ mod tests {
 
     fn object(fields: Vec<FieldDefinition>) -> ObjectDefinition {
         ObjectDefinition {
+            path_field: None,
             id: Uuid::nil(),
             api_name: "custom:project".into(),
             label: "Project".into(),

@@ -356,6 +356,7 @@ mod tests {
 
     fn object(fields: Vec<FieldDefinition>) -> ObjectDefinition {
         ObjectDefinition {
+            path_field: None,
             id: Uuid::nil(),
             api_name: "custom:account".into(),
             label: "Account".into(),

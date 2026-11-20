@@ -491,6 +491,8 @@ impl ObjectService {
             track_history: input.track_history.unwrap_or(false),
             searchable: input.searchable.unwrap_or(true),
             in_navigation: input.in_navigation.unwrap_or(true),
+            // A new object has no fields yet; its path field is chosen later.
+            path_field: None,
             status: DefinitionStatus::Active,
             suspended: false,
             version: 1,
@@ -525,7 +527,8 @@ impl ObjectService {
                 || input.name_label.is_some()
                 || input.track_history.is_some()
                 || input.searchable.is_some()
-                || input.in_navigation.is_some())
+                || input.in_navigation.is_some()
+                || input.path_field.is_some())
         {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
         }
@@ -552,6 +555,21 @@ impl ObjectService {
             match values::description(description.as_deref()) {
                 Ok(description) => object.description = description,
                 Err(issue) => issues.push(issue),
+            }
+        }
+        if let Some(path_field) = input.path_field {
+            match path_field {
+                None => object.path_field = None,
+                Some(name) => match object.field(&name) {
+                    Some(field) if field.field_type == FieldType::Picklist => {
+                        object.path_field = Some(field.api_name.clone());
+                    }
+                    _ => issues.push(ValidationIssue::new(
+                        "path_field",
+                        "objects.path_field_invalid",
+                        "the path field must be one of the object's active single-value picklist fields",
+                    )),
+                },
             }
         }
         if !issues.is_empty() {
@@ -1194,8 +1212,11 @@ impl ObjectService {
         if field.version != expected_version {
             return Err(ObjectError::VersionConflict);
         }
-        // A roll-up summary that reads the field keeps it (ADR 0026).
-        if rollup_uses(tx.as_mut(), &object, Some(field.id)).await? {
+        // A roll-up summary that reads the field keeps it (ADR 0026), and
+        // so does the object's path (ADR 0037 §2).
+        if rollup_uses(tx.as_mut(), &object, Some(field.id)).await?
+            || object.path_field.as_deref() == Some(field.api_name.as_str())
+        {
             return Err(ObjectError::Conflict("objects.field_in_use"));
         }
         let mut rules_before = crate::rules::compiling_dependents(tx.as_mut()).await?;

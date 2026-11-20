@@ -1572,6 +1572,82 @@ presets = { "example.work:stage" = "done", "example.work:due" = "2026-11-10", "n
     }
 
     #[test]
+    fn paths_and_outcomes_are_validated_when_the_manifest_is_read() {
+        let manifest = |path_field: &str, stage_options: &str, tag_options: &str| {
+            objects_manifest(
+                "example.work",
+                &format!(
+                    r#"{TASK}path_field = "{path_field}"
+
+[[objects.fields]]
+name = "stage"
+label = "Stage"
+field_type = "picklist"
+options = {stage_options}
+
+[[objects.fields]]
+name = "tags"
+label = "Tags"
+field_type = "multi_picklist"
+options = {tag_options}
+
+[[objects.fields]]
+name = "note"
+label = "Note"
+field_type = "text"
+"#
+                ),
+            )
+        };
+        let stages = r#"[{ value = "open", label = "Open", weight = 10 }, { value = "won", label = "Won", outcome = "positive", weight = 100 }, { value = "lost", label = "Lost", outcome = "negative", weight = 0 }]"#;
+        let tags = r#"[{ value = "vip", label = "VIP" }]"#;
+        let parsed = manifest("stage", stages, tags).expect("a path with outcomes");
+        let object = &parsed.objects[0];
+        assert_eq!(object.path_field.as_deref(), Some("stage"));
+        let won = &object.fields[0].options[1];
+        assert_eq!(won.outcome, crate::objects::ObjectOptionOutcome::Positive);
+        assert_eq!(won.weight, Some(100));
+        assert_eq!(
+            object.fields[0].options[0].outcome,
+            crate::objects::ObjectOptionOutcome::Open,
+            "open is the default"
+        );
+        // Stored manifests read back with their outcomes and weights.
+        let round_trip: Manifest =
+            serde_json::from_value(serde_json::to_value(&parsed).expect("json"))
+                .expect("round trip");
+        assert_eq!(round_trip.objects, parsed.objects);
+
+        for wrong in ["tags", "note", "missing"] {
+            assert!(
+                object_reason(manifest(wrong, stages, tags)).contains("path_field"),
+                "{wrong}"
+            );
+        }
+        assert!(object_reason(manifest(
+            "stage",
+            r#"[{ value = "open", label = "Open", weight = 101 }]"#,
+            tags
+        ))
+        .contains("weight"));
+        assert!(object_reason(manifest(
+            "stage",
+            stages,
+            r#"[{ value = "done", label = "Done", outcome = "positive" }]"#
+        ))
+        .contains("outcome"));
+        assert!(
+            manifest(
+                "stage",
+                r#"[{ value = "x", label = "X", outcome = "maybe" }]"#,
+                tags
+            )
+            .is_err(),
+            "an unknown outcome"
+        );
+    }
+
+    #[test]
     fn timelines_are_validated_when_the_manifest_is_read() {
         let manifest = |timeline: &str| {
             objects_manifest(

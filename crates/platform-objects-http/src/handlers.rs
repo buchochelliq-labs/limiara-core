@@ -297,6 +297,7 @@ fn object_json(object: &ObjectDefinition, access: Option<AccessFlags>, with_fiel
         "track_history": object.track_history,
         "searchable": object.searchable,
         "in_navigation": object.in_navigation,
+        "path_field": object.path_field,
         "version": object.version,
         "created_at": object.created_at,
         "updated_at": object.updated_at,
