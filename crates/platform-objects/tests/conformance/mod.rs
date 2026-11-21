@@ -19,6 +19,7 @@ pub mod formulas;
 pub mod jobs;
 pub mod lease;
 pub mod names;
+pub mod optional_dependencies;
 pub mod paths;
 pub mod plugin_objects;
 pub mod push;

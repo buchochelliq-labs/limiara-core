@@ -2934,6 +2934,67 @@ impl ObjectTx for PostgresObjectTx {
         Ok(())
     }
 
+    async fn put_allowlist_offers(
+        &mut self,
+        field_id: Uuid,
+        names: &[String],
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "DELETE FROM field_allowlist_offers WHERE tenant_id = $1 AND field_id = $2 \
+             AND offered_at IS NULL AND NOT (object_api_name = ANY($3))",
+        )
+        .bind(self.tenant_id)
+        .bind(field_id)
+        .bind(names)
+        .execute(&mut *self.tx)
+        .await?;
+        for name in names {
+            sqlx::query(
+                "INSERT INTO field_allowlist_offers (tenant_id, field_id, object_api_name) \
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(self.tenant_id)
+            .bind(field_id)
+            .bind(name)
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn pending_allowlist_offers(&mut self) -> Result<Vec<(Uuid, Uuid, String)>, ObjectError> {
+        let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+            "SELECT f.object_id, o.field_id, o.object_api_name \
+             FROM field_allowlist_offers o \
+             JOIN field_definitions f ON f.tenant_id = o.tenant_id AND f.id = o.field_id \
+             WHERE o.tenant_id = $1 AND o.offered_at IS NULL \
+             ORDER BY o.field_id, o.object_api_name",
+        )
+        .bind(self.tenant_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn mark_allowlist_offered(
+        &mut self,
+        field_id: Uuid,
+        object: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "UPDATE field_allowlist_offers SET offered_at = $4 \
+             WHERE tenant_id = $1 AND field_id = $2 AND object_api_name = $3",
+        )
+        .bind(self.tenant_id)
+        .bind(field_id)
+        .bind(object)
+        .bind(at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     async fn has_records(&mut self, object_id: Uuid) -> Result<bool, ObjectError> {
         Ok(sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM records WHERE tenant_id = $1 AND object_id = $2)",

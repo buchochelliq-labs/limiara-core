@@ -492,10 +492,25 @@ pub fn validate_objects<'a>(
     dependencies: impl IntoIterator<Item = &'a str>,
     permissions: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), ObjectDeclIssue> {
+    validate_objects_with(plugin_id, objects, dependencies, [], permissions)
+}
+
+/// [`validate_objects`] for a plugin with optional dependencies (ADR 0035
+/// G18): a related-to field's starting allowlist may also name their
+/// objects, which the engine adds once they are in service. Lookups still
+/// need a plugin the manifest depends on.
+pub fn validate_objects_with<'a>(
+    plugin_id: &str,
+    objects: &[ObjectDecl],
+    dependencies: impl IntoIterator<Item = &'a str>,
+    optional: impl IntoIterator<Item = &'a str>,
+    permissions: impl IntoIterator<Item = &'a str>,
+) -> Result<(), ObjectDeclIssue> {
     if objects.is_empty() {
         return Ok(());
     }
     let dependencies: std::collections::BTreeSet<&str> = dependencies.into_iter().collect();
+    let optional: std::collections::BTreeSet<&str> = optional.into_iter().collect();
     let permissions: std::collections::BTreeSet<&str> = permissions.into_iter().collect();
     let object_issue = |object: &ObjectDecl, reason| ObjectDeclIssue {
         object: object.name.clone(),
@@ -581,7 +596,7 @@ pub fn validate_objects<'a>(
             if !fields.insert(field.name.as_str()) {
                 return Err(issue("duplicate field name"));
             }
-            validate_field(plugin_id, &names, &dependencies, field).map_err(issue)?;
+            validate_field(plugin_id, &names, &dependencies, &optional, field).map_err(issue)?;
             for permission in [&field.read_permission, &field.write_permission]
                 .into_iter()
                 .flatten()
@@ -923,6 +938,7 @@ fn validate_field(
     plugin_id: &str,
     own_objects: &std::collections::BTreeSet<&str>,
     dependencies: &std::collections::BTreeSet<&str>,
+    optional: &std::collections::BTreeSet<&str>,
     field: &ObjectFieldDecl,
 ) -> Result<(), &'static str> {
     let kind = field.field_type;
@@ -1031,8 +1047,13 @@ fn validate_field(
         }
         let mut seen = std::collections::BTreeSet::new();
         for target in &field.reference_objects {
-            if !target_allowed(target) {
-                return Err("related-to targets must be this plugin's objects, or objects of plugins it depends on");
+            // An optional dependency's objects join the allowlist once they
+            // are in service (ADR 0035 G18).
+            let optional_target = target.split_once(':').is_some_and(|(namespace, name)| {
+                valid_object_name(name) && optional.contains(namespace)
+            });
+            if !target_allowed(target) && !optional_target {
+                return Err("related-to targets must be this plugin's objects, or objects of plugins it depends on or optionally depends on");
             }
             if !seen.insert(target.as_str()) {
                 return Err("related-to targets must be distinct");

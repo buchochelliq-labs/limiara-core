@@ -118,10 +118,11 @@ impl ObjectService {
     ) -> Result<PluginObjectsInstalled, ObjectError> {
         self.require_installer(&manifest.id)?;
         let plugin_id = manifest.id.as_str();
-        plugin_contract::objects::validate_objects(
+        plugin_contract::objects::validate_objects_with(
             plugin_id,
             &manifest.objects,
             manifest.dependencies.keys().map(String::as_str),
+            manifest.optional_dependencies.keys().map(String::as_str),
             manifest
                 .permissions
                 .iter()
@@ -169,15 +170,30 @@ impl ObjectService {
                     .object_by_api_name(&api_name)
                     .await?
                     .ok_or(ObjectError::Invariant)?;
+                // An optional dependency's objects wait to join the
+                // allowlist until they are in service (ADR 0035 G18).
+                let (waiting, field) = split_optional(manifest, field);
                 self.put_plugin_field(
                     tx.as_mut(),
                     plugin_id,
                     &object,
-                    field,
+                    &field,
                     &mut installed,
                     context,
                 )
                 .await?;
+                if field.field_type == plugin_contract::ObjectFieldType::RelatedTo {
+                    let installed_field = tx
+                        .object_by_api_name(&api_name)
+                        .await?
+                        .and_then(|object| {
+                            object
+                                .field(&format!("{plugin_id}:{}", field.name))
+                                .map(|field| field.id)
+                        })
+                        .ok_or(ObjectError::Invariant)?;
+                    tx.put_allowlist_offers(installed_field, &waiting).await?;
+                }
             }
             // Related actions name the fields just installed. They are
             // offered once the objects are in service, when resuming.
@@ -230,8 +246,65 @@ impl ObjectService {
             self.put_plugin_automations(tx.as_mut(), plugin_id, &object, declared, context)
                 .await?;
         }
+        // Waiting entries whose objects are already in service join now.
+        self.offer_waiting_allowlists(tx.as_mut(), context).await?;
         tx.commit().await?;
         Ok(installed)
+    }
+
+    /// Adds each waiting allowlist entry (ADR 0035 G18) whose object is now
+    /// in service to its related-to field, once, through the same change as
+    /// an administrator's allowlist edit, which offers the field's related
+    /// actions to it. An entry that cannot be added yet, because the field
+    /// is gone or its allowlist is full, keeps waiting.
+    pub(crate) async fn offer_waiting_allowlists(
+        &self,
+        tx: &mut dyn ObjectTx,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let waiting = tx.pending_allowlist_offers().await?;
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        for (object_id, field_id, name) in waiting {
+            let active = tx
+                .object_by_api_name(&name)
+                .await?
+                .is_some_and(|target| target.is_active());
+            if !active {
+                continue;
+            }
+            // Loaded per entry, so each change sees the one before.
+            let Some(object) = tx.object_by_id(object_id).await? else {
+                continue;
+            };
+            let Some(field) = object
+                .fields
+                .iter()
+                .find(|field| field.id == field_id && field.is_active())
+                .cloned()
+            else {
+                continue;
+            };
+            if !field.reference_objects.contains(&name) {
+                let mut names = field.reference_objects.clone();
+                names.push(name.clone());
+                let change: UpdateField = serde_json::from_value(serde_json::json!({
+                    "expected_version": field.version,
+                    "reference_objects": names,
+                }))
+                .map_err(|_| ObjectError::Invariant)?;
+                match Box::pin(self.change_field_in(tx, &object, field, change, context)).await {
+                    Ok(_) => {}
+                    // A full allowlist: it waits for room.
+                    Err(ObjectError::Validation(_)) => continue,
+                    Err(other) => return Err(other),
+                }
+            }
+            tx.mark_allowlist_offered(field_id, &name, Utc::now())
+                .await?;
+        }
+        Ok(())
     }
 
     async fn put_plugin_object(
@@ -560,6 +633,9 @@ impl ObjectService {
             changed.push(object.api_name);
         }
         if !suspended {
+            // Optional allowlist entries naming objects that just came into
+            // service join their fields (ADR 0035 G18).
+            self.offer_waiting_allowlists(tx, context).await?;
             // Objects that entered a related-to allowlist while the plugin
             // was not enabled, or that a new declaration names, are offered
             // its related actions now (ADR 0033 §3).
@@ -594,6 +670,21 @@ impl ObjectService {
         }
         Ok(changed)
     }
+}
+
+/// Splits a related-to field's starting allowlist into the entries that
+/// name an optional dependency's objects, which wait until those are in
+/// service (ADR 0035 G18), and the field as installed now, without them.
+fn split_optional(manifest: &Manifest, field: &ObjectFieldDecl) -> (Vec<String>, ObjectFieldDecl) {
+    let mut field = field.clone();
+    let (waiting, now): (Vec<String>, Vec<String>) =
+        field.reference_objects.drain(..).partition(|target| {
+            target.split_once(':').is_some_and(|(namespace, _)| {
+                manifest.optional_dependencies.contains_key(namespace)
+            })
+        });
+    field.reference_objects = now;
+    (waiting, field)
 }
 
 /// The engine input a declared field stands for.
