@@ -74,7 +74,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `required`, `indexed`, `track_history` | As for workspace fields. |
 | `unique` | Text, email, phone, URL and number fields only. |
 | `searchable` | Text-like fields only. |
-| `max_length` | Text (1 to 255) and long text (1 to 131072) only. |
+| `max_length` | Text (1 to 255), long text (1 to 131072) and email (1 to 320; 255 when left out) only. |
 | `scale` | Number, currency and percent only; 0 to 8. |
 | `options` | Required for picklists and only allowed there: up to 200, each with `value`, `label` and optional `default`, `outcome` and `weight`. `outcome` is `open` (the default), `positive` or `negative`, and only a single-value picklist's options may close a record (ADR 0037 §1). `weight` is a percentage from 0 to 100. |
 | `reference_object` | A lookup's target. |

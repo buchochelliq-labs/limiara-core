@@ -19,6 +19,10 @@ pub const NAME_MAX: usize = 255;
 pub const TEXT_DEFAULT_MAX: i32 = 255;
 pub const TEXT_LIMIT: i32 = 255;
 pub const LONG_TEXT_DEFAULT_MAX: i32 = 32_768;
+/// The longest email address a field may allow (RFC 5321's 64-character
+/// local part, `@` and 255-character domain; ADR 0035 G8). Without a
+/// declared `max_length`, an email field allows 255, as before.
+pub const EMAIL_LIMIT: i32 = 320;
 pub const LONG_TEXT_LIMIT: i32 = 131_072;
 pub const OPTIONS_MAX: usize = 1000;
 pub const FIELDS_PER_OBJECT_MAX: usize = 500;
@@ -230,6 +234,7 @@ pub fn field_shape_for(
     let limit = match kind {
         FieldType::Text => Some(TEXT_LIMIT),
         FieldType::LongText => Some(LONG_TEXT_LIMIT),
+        FieldType::Email => Some(EMAIL_LIMIT),
         _ => None,
     };
     match (max_length, limit) {
@@ -243,7 +248,7 @@ pub fn field_shape_for(
         (Some(_), None) => issues.push(ValidationIssue::new(
             "max_length",
             "objects.max_length_not_allowed",
-            "only text fields have a maximum length",
+            "only text and email fields have a maximum length",
         )),
         _ => {}
     }
@@ -471,7 +476,10 @@ fn valid_email(value: &str) -> bool {
     let Some((local, domain)) = value.split_once('@') else {
         return false;
     };
-    value.len() <= 254
+    // RFC 5321's limits on the parts; the field's `max_length` bounds the
+    // whole address (255 unless the field allows up to 320, ADR 0035 G8).
+    local.len() <= 64
+        && domain.len() <= 255
         && !local.is_empty()
         && domain.contains('.')
         && !domain.starts_with('.')
@@ -1063,6 +1071,61 @@ mod tests {
             updated_by: None,
             fields,
         }
+    }
+
+    /// Email fields may allow up to 320 characters (ADR 0035 G8); without a
+    /// declared `max_length` they allow 255, as before.
+    #[test]
+    fn email_fields_allow_up_to_320_characters() {
+        let shape = |max_length: Option<i32>| {
+            let input: CreateField = serde_json::from_value(json!({
+                "name": "email", "label": "Email", "field_type": "email",
+                "max_length": max_length,
+            }))
+            .expect("input");
+            field_shape_for(&input, false).map(|shape| shape.max_length)
+        };
+        assert_eq!(shape(None).expect("default"), None);
+        assert_eq!(shape(Some(320)).expect("longest"), Some(320));
+        for refused in [0, 321] {
+            let issues = shape(Some(refused)).expect_err("out of range");
+            assert_eq!(issues[0].code, "objects.max_length_invalid");
+        }
+        let input: CreateField = serde_json::from_value(json!({
+            "name": "phone", "label": "Phone", "field_type": "phone", "max_length": 40,
+        }))
+        .expect("input");
+        let Err(issues) = field_shape_for(&input, false) else {
+            panic!("a phone field takes no max_length");
+        };
+        assert_eq!(issues[0].code, "objects.max_length_not_allowed");
+        // A 300-character address: refused by default, accepted at 320.
+        let label = "b".repeat(60);
+        let long = format!(
+            "{}@{label}.{label}.{label}.{}.example",
+            "a".repeat(64),
+            "c".repeat(44)
+        );
+        assert_eq!(long.chars().count(), 300);
+        let mut email = field("custom:email", FieldType::Email);
+        email.max_length = None;
+        assert_eq!(
+            normalise(&email, &json!(long)).expect_err("default").code,
+            "records.value_too_long"
+        );
+        email.max_length = Some(EMAIL_LIMIT);
+        assert_eq!(
+            normalise(&email, &json!(long)).expect("320"),
+            Some(json!(long))
+        );
+        // The parts keep RFC 5321's limits.
+        let local = format!("{}@example.com", "a".repeat(65));
+        assert_eq!(
+            normalise(&email, &json!(local))
+                .expect_err("local part")
+                .code,
+            "records.email_invalid"
+        );
     }
 
     #[test]
