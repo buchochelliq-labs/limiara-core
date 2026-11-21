@@ -109,7 +109,7 @@ Delivered:
   installations that already exist. Joining is an ordinary field change,
   so the declaring plugin's related actions are offered as for any new
   entry. An entry joins once: an administrator's removal sticks through
-  re-enabling and upgrades. A full allowlist leaves it waiting. Activities
+  re-enabling and upgrades. A full allowlist leaves it waiting until an administrator makes room. Activities
   names Sales' opportunity in Related to and lead in Who; Contacts' Person
   and Organisation follow with §7.
 

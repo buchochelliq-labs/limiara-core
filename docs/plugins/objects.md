@@ -128,7 +128,8 @@ allowlist through an ordinary field change, so the field's related actions
 are offered to it as to any object entering the allowlist. Each entry
 joins once per field: an administrator who removes it keeps it removed
 through re-enabling and upgrades of either plugin. An allowlist that is
-already full leaves the entry waiting until there is room.
+already full leaves the entry waiting until there is room: it joins as soon
+as an administrator's change to that allowlist makes some.
 
 While the allowlist is empty, the field holds no new values: writes answer
 `records.reference_object_not_allowed`, the candidates route refuses every

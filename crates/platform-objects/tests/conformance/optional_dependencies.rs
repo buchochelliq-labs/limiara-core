@@ -33,6 +33,34 @@ async fn allowlist(admin: &ObjectService, object: &str, field: &str) -> Vec<Stri
         .clone()
 }
 
+async fn set_allowlist(
+    admin: &ObjectService,
+    object: &str,
+    field: &str,
+    objects: &[String],
+) -> FieldDefinition {
+    let version = admin
+        .describe(object)
+        .await
+        .expect("describe")
+        .0
+        .field(field)
+        .expect("field")
+        .version;
+    admin
+        .update_field(
+            object,
+            field,
+            serde_json::from_value(
+                json!({"expected_version": version, "reference_objects": objects}),
+            )
+            .expect("change"),
+            context(),
+        )
+        .await
+        .expect("an administrator sets the allowlist")
+}
+
 async fn action_names(admin: &ObjectService, object: &str) -> Vec<String> {
     admin
         .quick_actions(object)
@@ -97,6 +125,19 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) {
         assert!(allowlist(&admin, object, RELATED_TO).await.is_empty());
         assert!(allowlist(&admin, object, WHO).await.is_empty());
     }
+    // A full allowlist: the task's Related to holds ten workspace objects.
+    let mut ten = Vec::new();
+    for n in 0..10 {
+        let created = admin
+            .create_object(
+                super::object(&format!("thing{n}"), &format!("Thing {n}")),
+                context(),
+            )
+            .await
+            .expect("an object");
+        ten.push(created.api_name);
+    }
+    set_allowlist(&admin, TASK, RELATED_TO, &ten).await;
 
     // --- Installing Sales alone does not offer: its objects are not active --
     let sales_installer = service(
@@ -107,34 +148,29 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) {
         .install_plugin_objects(&super::sales::sales(), context())
         .await
         .expect("install Sales");
-    assert!(allowlist(&admin, TASK, RELATED_TO).await.is_empty());
+    assert!(allowlist(&admin, EVENT, RELATED_TO).await.is_empty());
 
     // --- Enabling Sales: its objects join, with Log a call ------------------
     sales_installer
         .resume_plugin_objects(SALES, context())
         .await
         .expect("enable Sales");
+    // The task's full Related to leaves the opportunity waiting, until an
+    // administrator makes room.
+    assert_eq!(allowlist(&admin, TASK, RELATED_TO).await, ten);
+    assert_eq!(allowlist(&admin, EVENT, RELATED_TO).await, [OPPORTUNITY]);
+    assert!(action_names(&admin, OPPORTUNITY).await.is_empty());
+    let room = set_allowlist(&admin, TASK, RELATED_TO, &[]).await;
+    assert_eq!(
+        room.reference_objects,
+        [OPPORTUNITY],
+        "the change returns the joined entry"
+    );
     assert_joined(&admin).await;
 
     // --- An administrator's removal sticks ----------------------------------
-    let version = admin
-        .describe(TASK)
-        .await
-        .expect("task")
-        .0
-        .field(RELATED_TO)
-        .expect("related to")
-        .version;
-    admin
-        .update_field(
-            TASK,
-            RELATED_TO,
-            serde_json::from_value(json!({"expected_version": version, "reference_objects": []}))
-                .expect("change"),
-            context(),
-        )
-        .await
-        .expect("an administrator removes the opportunity");
+    let removed = set_allowlist(&admin, TASK, RELATED_TO, &[]).await;
+    assert!(removed.reference_objects.is_empty(), "not offered again");
     for plugin in [SALES, ACTIVITIES] {
         disable(&store, tenant_a, member, plugin).await;
         enable(&store, tenant_a, member, plugin).await;
