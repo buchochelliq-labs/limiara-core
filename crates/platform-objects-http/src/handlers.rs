@@ -274,6 +274,8 @@ fn field_json(field: &FieldDefinition) -> Value {
         "lookup_filter": field.lookup_filter,
         "read_permission": field.read_permission,
         "write_permission": field.write_permission,
+        // Governance declarations (ADR 0035 G9).
+        "governance": field.governance,
         "formula": field.formula,
         "formula_type": field.formula_type,
         "rollup": field.rollup,

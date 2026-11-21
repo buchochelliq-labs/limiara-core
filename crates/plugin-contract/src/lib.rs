@@ -1639,6 +1639,37 @@ delete_behaviour = "restrict""#,
     }
 
     #[test]
+    fn field_governance_is_validated_when_the_manifest_is_read() {
+        let manifest = |declared: &str| {
+            objects_manifest(
+                "example.work",
+                &format!("{TASK}\n[[objects.fields]]\nname = \"notes\"\nlabel = \"Notes\"\nfield_type = \"text\"\n{declared}\n"),
+            )
+        };
+        let parsed = manifest(
+            "data_classification = \"sensitive\"\npurpose = \"Care\"\nretention_days = 90\nencrypted = true",
+        )
+        .expect("consistent declarations (ADR 0035 G9)");
+        let notes = &parsed.objects[0].fields[0];
+        assert_eq!(
+            notes.data_classification,
+            Some(crate::objects::ObjectDataClassification::Sensitive)
+        );
+        assert_eq!(notes.retention_days, Some(90));
+        manifest("data_classification = \"public\"").expect("public needs no purpose");
+        manifest("").expect("unclassified");
+        let refused = |declared: &str| object_reason(manifest(declared));
+        assert!(refused("data_classification = \"personal\"").contains("purpose"));
+        assert!(
+            refused("data_classification = \"sensitive\"\npurpose = \"Care\"")
+                .contains("encrypted")
+        );
+        assert!(refused("purpose = \"  \"").contains("purpose"));
+        assert!(refused("retention_days = 0").contains("retention"));
+        assert!(manifest("data_classification = \"secret\"").is_err());
+    }
+
+    #[test]
     fn optional_dependencies_allow_naming_their_objects_in_allowlists() {
         let field = |field_type: &str, target: &str| {
             let reference = if field_type == "lookup" {

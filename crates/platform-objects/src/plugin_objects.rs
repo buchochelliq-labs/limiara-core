@@ -47,8 +47,9 @@ use crate::{
     ObjectDefinition, ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel,
     UpdateField, ValidationIssue,
 };
+use crate::{DataClassification, FieldGovernance};
 use chrono::Utc;
-use plugin_contract::objects::ObjectOptionOutcome;
+use plugin_contract::objects::{ObjectDataClassification, ObjectOptionOutcome};
 use plugin_contract::{Manifest, ObjectDecl, ObjectFieldDecl};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -729,6 +730,20 @@ fn create_input(declared: &ObjectFieldDecl) -> Result<CreateField, ObjectError> 
         lookup_filter: None,
         read_permission: declared.read_permission.clone(),
         write_permission: declared.write_permission.clone(),
+        governance: FieldGovernance {
+            data_classification: declared.data_classification.map(|class| match class {
+                ObjectDataClassification::Public => DataClassification::Public,
+                ObjectDataClassification::Internal => DataClassification::Internal,
+                ObjectDataClassification::Personal => DataClassification::Personal,
+                ObjectDataClassification::Sensitive => DataClassification::Sensitive,
+            }),
+            purpose: declared
+                .purpose
+                .as_deref()
+                .map(|purpose| purpose.trim().to_owned()),
+            retention_days: declared.retention_days,
+            encrypted: declared.encrypted,
+        },
         formula: None,
         formula_type: None,
         rollup: None,
@@ -769,6 +784,7 @@ fn field_update(
         read_permission: None,
         write_permission: None,
         reference_objects: None,
+        governance: None,
     };
     let mut changed = false;
     let label = declared.label.trim();
@@ -844,6 +860,11 @@ fn field_update(
     }
     if declared.write_permission != existing.write_permission {
         update.write_permission = Some(declared.write_permission.clone());
+        changed = true;
+    }
+    // So are its governance declarations (G9).
+    if declared.governance != existing.governance {
+        update.governance = Some(declared.governance.clone());
         changed = true;
     }
     // A related-to field's allowlist is the workspace's once the field

@@ -304,7 +304,35 @@ pub struct ObjectFieldDecl {
     /// field's values; one this plugin declares.
     #[serde(default)]
     pub write_permission: Option<String>,
+    /// How sensitive the values are (ADR 0035 G9): `public`, `internal`,
+    /// `personal` or `sensitive`; unclassified when left out.
+    #[serde(default)]
+    pub data_classification: Option<ObjectDataClassification>,
+    /// Why the values are processed; required unless the field is
+    /// unclassified or public.
+    #[serde(default)]
+    pub purpose: Option<String>,
+    /// How many days the values are meant to be kept.
+    #[serde(default)]
+    pub retention_days: Option<i32>,
+    /// Whether the values are declared as stored encrypted; required for
+    /// sensitive fields.
+    #[serde(default)]
+    pub encrypted: bool,
 }
+
+/// How sensitive a declared field's values are (ADR 0035 G9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectDataClassification {
+    Public,
+    Internal,
+    Personal,
+    Sensitive,
+}
+
+/// The longest purpose a declared field may state.
+pub const MAX_PURPOSE_CHARS: usize = 4000;
 
 /// The engine field types a plugin may declare. Formula, master-detail and
 /// roll-up summary fields are left out for now: they tie objects together
@@ -952,6 +980,26 @@ fn validate_field(
     let kind = field.field_type;
     if !printable(&field.label, MAX_LABEL_CHARS) {
         return Err("label must be 1 to 80 printable characters");
+    }
+    // Governance declarations, with the engine's rules (ADR 0035 G9).
+    let purpose = field.purpose.as_deref().map(str::trim);
+    if purpose
+        .is_some_and(|purpose| purpose.is_empty() || purpose.chars().count() > MAX_PURPOSE_CHARS)
+    {
+        return Err("purpose must be 1 to 4000 characters");
+    }
+    if field
+        .data_classification
+        .is_some_and(|class| class != ObjectDataClassification::Public)
+        && purpose.is_none()
+    {
+        return Err("a classified field that is not public states its purpose");
+    }
+    if field.data_classification == Some(ObjectDataClassification::Sensitive) && !field.encrypted {
+        return Err("a sensitive field is declared encrypted");
+    }
+    if field.retention_days.is_some_and(|days| days < 1) {
+        return Err("retention_days must be a positive number of days");
     }
     if field.description.as_deref().is_some_and(|description| {
         description.chars().count() > MAX_DESCRIPTION_CHARS

@@ -387,6 +387,8 @@ pub struct FieldDefinition {
     /// The permission a member needs, on top of reading the field, to
     /// change its values (G5); `None` lets everyone who edits the record.
     pub write_permission: Option<String>,
+    /// What the field holds and why (ADR 0035 G9). Declarations only.
+    pub governance: FieldGovernance,
     pub position: i32,
     pub status: DefinitionStatus,
     pub version: i64,
@@ -677,6 +679,9 @@ pub struct CreateField {
     /// The permission id a member needs to change the field (G5).
     #[serde(default)]
     pub write_permission: Option<String>,
+    /// What the field holds and why (ADR 0035 G9).
+    #[serde(default)]
+    pub governance: FieldGovernance,
 }
 
 /// A partial change to a field. The type, uniqueness and lookup target are
@@ -722,6 +727,48 @@ pub struct UpdateField {
     /// A new write permission, or `null` to remove it (G5).
     #[serde(default, deserialize_with = "crate::model::present")]
     pub write_permission: Option<Option<String>>,
+    /// New governance declarations, replacing the old ones (G9).
+    #[serde(default)]
+    pub governance: Option<FieldGovernance>,
+}
+
+/// How sensitive a field's values are (ADR 0035 G9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClassification {
+    Public,
+    Internal,
+    Personal,
+    Sensitive,
+}
+
+/// A field's data-governance declarations (ADR 0035 G9): what it holds,
+/// why it is kept, for how long, and whether it is stored encrypted.
+/// They are declarations for administrators and exports; the engine
+/// checks that they are consistent but enforces neither retention nor
+/// encryption yet. A field without a classification is unclassified.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldGovernance {
+    #[serde(default)]
+    pub data_classification: Option<DataClassification>,
+    /// Why the values are processed. Required for classified fields that
+    /// are not public.
+    #[serde(default)]
+    pub purpose: Option<String>,
+    /// How many days the values are meant to be kept.
+    #[serde(default)]
+    pub retention_days: Option<i32>,
+    /// Whether the values are declared as stored encrypted. Required for
+    /// sensitive fields.
+    #[serde(default)]
+    pub encrypted: bool,
+}
+
+impl FieldGovernance {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Effective access to one object, from object permissions and system

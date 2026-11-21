@@ -370,6 +370,7 @@ fn text_field(name: &str) -> CreateField {
         lookup_filter: None,
         read_permission: None,
         write_permission: None,
+        governance: Default::default(),
     }
 }
 

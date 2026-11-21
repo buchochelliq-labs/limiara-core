@@ -743,6 +743,67 @@ pub struct ValueChange {
 /// Checks that `name_from` names two or three distinct, active text fields
 /// of `object`, with a separator of at most five printable characters
 /// (ADR 0035 G17).
+/// The longest processing purpose a field may declare (ADR 0035 G9).
+pub const PURPOSE_LIMIT: usize = 4000;
+
+/// Checks a field's governance declarations (ADR 0035 G9), with the rules
+/// Contacts applies to its custom fields: a classified field that is not
+/// public states its purpose, a sensitive one is declared encrypted, and a
+/// retention period is a positive number of days.
+pub fn check_governance(governance: &crate::FieldGovernance) -> Vec<ValidationIssue> {
+    use crate::DataClassification;
+    let mut issues = Vec::new();
+    let purpose = governance
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|purpose| !purpose.is_empty());
+    if governance.purpose.is_some() && purpose.is_none() {
+        issues.push(ValidationIssue::new(
+            "governance.purpose",
+            "objects.purpose_invalid",
+            "a purpose is not blank".to_owned(),
+        ));
+    }
+    if purpose.is_some_and(|purpose| purpose.chars().count() > PURPOSE_LIMIT) {
+        issues.push(ValidationIssue::new(
+            "governance.purpose",
+            "objects.purpose_invalid",
+            format!("a purpose has at most {PURPOSE_LIMIT} characters"),
+        ));
+    }
+    let classification = governance.data_classification;
+    if classification.is_some_and(|class| class != DataClassification::Public) && purpose.is_none()
+    {
+        issues.push(ValidationIssue::new(
+            "governance.purpose",
+            "objects.purpose_required",
+            "a field that is not public states the purpose of processing it".to_owned(),
+        ));
+    }
+    if classification == Some(DataClassification::Sensitive) && !governance.encrypted {
+        issues.push(ValidationIssue::new(
+            "governance.encrypted",
+            "objects.encryption_required",
+            "a sensitive field is declared encrypted".to_owned(),
+        ));
+    }
+    if governance.retention_days.is_some_and(|days| days < 1) {
+        issues.push(ValidationIssue::new(
+            "governance.retention_days",
+            "objects.retention_invalid",
+            "retention is a positive number of days".to_owned(),
+        ));
+    }
+    issues
+}
+
+/// The declarations as stored: the purpose trimmed.
+pub fn normalise_governance(mut governance: crate::FieldGovernance) -> crate::FieldGovernance {
+    governance.purpose = governance.purpose.map(|purpose| purpose.trim().to_owned());
+    governance
+}
+
 pub fn check_name_from(
     object: &ObjectDefinition,
     name_from: &crate::NameFrom,
@@ -1101,6 +1162,7 @@ mod tests {
             lookup_filter: None,
             read_permission: None,
             write_permission: None,
+            governance: Default::default(),
             position: 0,
             status: DefinitionStatus::Active,
             version: 1,

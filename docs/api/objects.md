@@ -160,6 +160,48 @@ never bypass it: `records.view_all` and `records.modify_all` widen record
 access, not field access. Role-based field-level security (#316) is a
 follow-up that extends the same function.
 
+### Field governance
+
+A field may carry governance declarations (ADR 0035 G9): what it holds,
+why, for how long, and whether it is stored encrypted. Send them as
+`governance` when creating or changing a field; describing an object
+returns them on each field, with `null` and `false` for what was not
+declared.
+
+```http
+POST /api/v1/workspaces/{workspace}/objects/custom:patient/fields
+{"name": "diagnosis", "label": "Diagnosis", "field_type": "text",
+ "governance": {"data_classification": "sensitive", "purpose": "Providing care",
+                "retention_days": 3650, "encrypted": true}}
+```
+
+| Property | Meaning |
+| --- | --- |
+| `data_classification` | `public`, `internal`, `personal` or `sensitive`. Left out, the field is unclassified. |
+| `purpose` | Why the values are processed, at most 4,000 characters, trimmed. |
+| `retention_days` | How many days the values are meant to be kept: a positive number. |
+| `encrypted` | Whether the values are declared as stored encrypted. `false` by default. |
+
+The rules are those Contacts applies to its custom fields, each answering
+`400` with the issue on `governance.<property>`:
+
+- A field classified `internal`, `personal` or `sensitive` states a
+  purpose (`objects.purpose_required`).
+- A `sensitive` field is declared encrypted
+  (`objects.encryption_required`).
+- A blank or overlong purpose answers `objects.purpose_invalid`, and a
+  retention of zero days or fewer `objects.retention_invalid`. Unknown
+  properties and classifications are refused.
+
+A change sends the whole document, which replaces the old one; `{}` clears
+it, and a change without `governance` keeps it. A plugin's fields take
+their declarations from the manifest, so administrators cannot change
+them (`409 objects.plugin_owned`).
+
+These are declarations only. Nothing enforces retention or encryption
+yet, they do not hide or protect values (field permissions do that), and
+they stay on the server: device replicas do not carry them.
+
 ### Paths and outcomes
 
 A picklist option may carry an `outcome` (ADR 0037 §1): `open`, the default,
