@@ -347,6 +347,23 @@ async fn postgres_store_installs_the_sales_plugin() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_offers_optional_dependency_objects() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenants = [Uuid::now_v7(), Uuid::now_v7()];
+    for tenant in tenants {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Optional dependencies')")
+            .bind(tenant)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::optional_dependencies::run(store, tenants[0], tenants[1]).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_passes_the_field_type_conformance_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
@@ -459,6 +476,7 @@ async fn object_engine_suite() {
         "assistant_settings",
         "assistant_object_policies",
         "field_reference_objects",
+        "field_allowlist_offers",
         "related_actions",
         "timeline_sources",
         "automations",

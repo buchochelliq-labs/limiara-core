@@ -263,9 +263,11 @@ The plugin also ships:
   instead of "won this quarter", "pipeline by close month" and "lead
   conversion by source": the query language has no quarter literal and
   no grouping by month yet, and conversion comes with slice 5.)
-- **Activities:** it names Lead and Opportunity in Activities' starting
-  allowlist (ADR 0035 §7, gap G18), so "Log a call" and the Activity
-  timeline appear on both from the start.
+- **Activities:** Activities names Opportunity in Related to and Lead in
+  Who, as an optional dependency (ADR 0035 §7, gap G18, delivered
+  2026-11-21), so the Activity timeline appears on both and "Log a call"
+  on opportunities from the start. A lead is a person, not a subject, so
+  it is a Who and offers no "Log a call" of its own.
 
 **Starting automations.** A manifest may declare, per object,
 `[[objects.automations]]`: before-save automations that set fields of the
@@ -396,7 +398,7 @@ work is picked up.
    workspace's deals.
 2. **The Sales plugin, part one.** Lead and Opportunity without their
    Contacts lookups and without conversion, with the stage weights and
-   the probability automation. The Activities allowlist lands with G18.
+   the probability automation. The Activities allowlist landed with G18.
 3. **Plugin reports.** `[[reports]]` and the Sales reports.
 4. **Contacts on the engine.** ADR 0035's migration slices, which give
    Person and Organisation as engine objects; then the Sales lookups to

@@ -300,6 +300,12 @@ pub struct Manifest {
     pub entrypoints: Entrypoints,
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencyDecl>,
+    /// Plugins this one works with when a workspace has them, without
+    /// needing them (ADR 0035 G18). A related-to field's starting allowlist
+    /// may name their objects, which join it once they are in service. An
+    /// optional dependency grants nothing: it only allows naming.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub optional_dependencies: BTreeMap<String, DependencyDecl>,
     #[serde(default)]
     pub permissions: Vec<PermissionDecl>,
     #[serde(default)]
@@ -447,10 +453,19 @@ impl Manifest {
     }
 
     fn validate_objects(&self) -> Result<(), ManifestError> {
-        objects::validate_objects(
+        for optional in self.optional_dependencies.keys() {
+            if optional == &self.id || self.dependencies.contains_key(optional) {
+                return Err(ManifestError::InvalidObject {
+                    object: optional.clone(),
+                    reason: "an optional dependency cannot be the plugin itself or one of its dependencies",
+                });
+            }
+        }
+        objects::validate_objects_with(
             &self.id,
             &self.objects,
             self.dependencies.keys().map(String::as_str),
+            self.optional_dependencies.keys().map(String::as_str),
             self.permissions
                 .iter()
                 .map(|permission| permission.id.as_str()),
@@ -1433,6 +1448,15 @@ delete_behaviour = "restrict""#,
             Manifest::parse_toml(include_str!("../../../plugins/activities/plugin.toml"))
                 .expect("the Activities manifest parses");
         assert_eq!(manifest.id, "platform.activities");
+        assert!(manifest.dependencies.is_empty(), "it needs no other plugin");
+        assert_eq!(
+            manifest
+                .optional_dependencies
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["platform.sales"]
+        );
         assert_eq!(
             manifest.supply_chain.distribution,
             Some(PluginDistribution::CoreOob)
@@ -1450,10 +1474,14 @@ delete_behaviour = "restrict""#,
                     .find(|declared| declared.name == field)
                     .expect("related-to field");
                 assert_eq!(declared.field_type, ObjectFieldType::RelatedTo);
-                assert!(
-                    declared.reference_objects.is_empty(),
-                    "administrators choose the targets"
-                );
+                // Administrators choose the targets; Sales' objects join
+                // once Sales is enabled (ADR 0035 G18).
+                let sales = if field == "who" {
+                    "platform.sales:lead"
+                } else {
+                    "platform.sales:opportunity"
+                };
+                assert_eq!(declared.reference_objects, [sales]);
             }
         }
         let status = task
@@ -1608,6 +1636,43 @@ delete_behaviour = "restrict""#,
             serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
                 .expect("stored manifests read back");
         assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    #[test]
+    fn optional_dependencies_allow_naming_their_objects_in_allowlists() {
+        let field = |field_type: &str, target: &str| {
+            let reference = if field_type == "lookup" {
+                format!("reference_object = \"{target}\"")
+            } else {
+                format!("reference_objects = [\"{target}\"]")
+            };
+            format!("{TASK}\n[[objects.fields]]\nname = \"about\"\nlabel = \"About\"\nfield_type = \"{field_type}\"\n{reference}\n")
+        };
+        let optional = "[optional_dependencies.\"example.crm\"]\nversion = \">=0.1.0\"\n";
+        let manifest = |objects: String, extra: &str| {
+            objects_manifest("example.work", &format!("{extra}{objects}"))
+        };
+        manifest(field("related_to", "example.crm:deal"), optional)
+            .expect("a related-to field may name an optional dependency's object");
+        assert!(
+            object_reason(manifest(field("related_to", "example.crm:deal"), ""))
+                .contains("related-to targets")
+        );
+        assert!(
+            object_reason(manifest(field("lookup", "example.crm:deal"), optional))
+                .contains("lookup")
+        );
+        // Neither the plugin itself nor one of its dependencies.
+        assert!(object_reason(manifest(
+            TASK.to_owned(),
+            "[optional_dependencies.\"example.work\"]\nversion = \">=0.1.0\"\n"
+        ))
+        .contains("optional dependency"));
+        let stored = serde_json::to_value(
+            manifest(field("related_to", "example.crm:deal"), optional).expect("manifest"),
+        )
+        .expect("json");
+        assert!(stored["optional_dependencies"]["example.crm"].is_object());
     }
 
     #[test]

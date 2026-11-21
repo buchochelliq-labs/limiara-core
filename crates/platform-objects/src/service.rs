@@ -1014,8 +1014,20 @@ impl ObjectService {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
         }
         // Boxed: the field checks hold a large future.
-        let field =
+        let mut field =
             Box::pin(self.change_field_in(tx.as_mut(), &object, field, input, context)).await?;
+        // A smaller allowlist may make room for an optional dependency's
+        // object that was waiting (ADR 0035 G18).
+        if field.field_type == FieldType::RelatedTo {
+            Box::pin(self.offer_waiting_allowlists(tx.as_mut(), context)).await?;
+            if let Some(current) = tx
+                .object_by_id(object.id)
+                .await?
+                .and_then(|object| object.fields.into_iter().find(|f| f.id == field.id))
+            {
+                field = current;
+            }
+        }
         tx.commit().await?;
         Ok(field)
     }

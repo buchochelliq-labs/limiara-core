@@ -960,6 +960,21 @@ ALTER TABLE object_definitions ADD COLUMN name_from TEXT
   CHECK (name_from IS NULL OR (json_valid(name_from) AND length(name_from) <= 2000));
 "#,
     },
+    // Objects of an optional dependency a plugin's related-to field names,
+    // waiting to join its allowlist once in service (ADR 0035 G18).
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0041_field_allowlist_offers",
+        sql: r#"
+CREATE TABLE field_allowlist_offers (
+  tenant_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  object_api_name TEXT NOT NULL CHECK (length(object_api_name) BETWEEN 1 AND 255),
+  offered_at TEXT,
+  PRIMARY KEY (tenant_id, field_id, object_api_name)
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -3962,6 +3977,84 @@ impl ObjectTx for SqliteObjectTx {
         .bind(&self.tenant)
         .bind(plugin_id)
         .bind(report)
+        .bind(timestamp(at))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn put_allowlist_offers(
+        &mut self,
+        field_id: Uuid,
+        names: &[String],
+    ) -> Result<(), ObjectError> {
+        let waiting: Vec<String> = sqlx::query_scalar(
+            "SELECT object_api_name FROM field_allowlist_offers \
+             WHERE tenant_id = ?1 AND field_id = ?2 AND offered_at IS NULL",
+        )
+        .bind(&self.tenant)
+        .bind(field_id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for stale in waiting.iter().filter(|name| !names.contains(name)) {
+            sqlx::query(
+                "DELETE FROM field_allowlist_offers \
+                 WHERE tenant_id = ?1 AND field_id = ?2 AND object_api_name = ?3",
+            )
+            .bind(&self.tenant)
+            .bind(field_id.to_string())
+            .bind(stale)
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        for name in names {
+            sqlx::query(
+                "INSERT INTO field_allowlist_offers (tenant_id, field_id, object_api_name) \
+                 VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+            )
+            .bind(&self.tenant)
+            .bind(field_id.to_string())
+            .bind(name)
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn pending_allowlist_offers(&mut self) -> Result<Vec<(Uuid, Uuid, String)>, ObjectError> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT f.object_id, o.field_id, o.object_api_name \
+             FROM field_allowlist_offers o \
+             JOIN field_definitions f ON f.tenant_id = o.tenant_id AND f.id = o.field_id \
+             WHERE o.tenant_id = ?1 AND o.offered_at IS NULL \
+             ORDER BY o.field_id, o.object_api_name",
+        )
+        .bind(&self.tenant)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.into_iter()
+            .map(|(object, field, name)| {
+                match (Uuid::parse_str(&object), Uuid::parse_str(&field)) {
+                    (Ok(object), Ok(field)) => Ok((object, field, name)),
+                    _ => Err(ObjectError::Invariant),
+                }
+            })
+            .collect()
+    }
+
+    async fn mark_allowlist_offered(
+        &mut self,
+        field_id: Uuid,
+        object: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "UPDATE field_allowlist_offers SET offered_at = ?4 \
+             WHERE tenant_id = ?1 AND field_id = ?2 AND object_api_name = ?3",
+        )
+        .bind(&self.tenant)
+        .bind(field_id.to_string())
+        .bind(object)
         .bind(timestamp(at))
         .execute(&mut *self.tx)
         .await?;
