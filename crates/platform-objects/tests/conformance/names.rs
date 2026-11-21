@@ -22,6 +22,92 @@ fn names(first: &str, second: &str, separator: &str) -> Value {
     json!({"fields": [first, second], "separator": separator})
 }
 
+/// A device composes names offline and pushes only the fields; the server
+/// composes the same name (ADR 0035 G17). On SQLite, which devices use; the
+/// server is another workspace in the same store.
+pub async fn pushed_offline(store: &Arc<dyn ObjectStore>) {
+    let member = Uuid::now_v7();
+    let permissions = [OBJECTS_MANAGE_PERMISSION, RECORDS_MODIFY_ALL_PERMISSION];
+    let server = service(store, caller(Uuid::now_v7(), member, &permissions, &[]));
+    let device = service(store, caller(Uuid::now_v7(), member, &permissions, &[]))
+        .with_replica()
+        .with_client_ids();
+    for engine in [&server, &device] {
+        engine
+            .create_object(object("person", "Person"), context())
+            .await
+            .expect("object");
+        for name in ["first", "last"] {
+            engine
+                .create_field(PERSON, field(name, FieldType::Text), context())
+                .await
+                .expect("field");
+        }
+        let version = engine.describe(PERSON).await.expect("describe").0.version;
+        engine
+            .update_object(
+                PERSON,
+                change(version, names("custom:first", "custom:last", " ")),
+                context(),
+            )
+            .await
+            .expect("compose names");
+    }
+    let offline = device
+        .create_record(
+            PERSON,
+            &body(json!({"custom:first": "Katherine", "custom:last": "Johnson"})),
+            context(),
+        )
+        .await
+        .expect("made offline");
+    assert_eq!(offline.name, "Katherine Johnson", "composed on the device");
+    let batch = device.push_queue().await.expect("queue");
+    let platform_objects::composite::CompositeOperation::Create { values, .. } =
+        &batch.operations[0].operation
+    else {
+        panic!("a create");
+    };
+    assert!(
+        !values.contains_key("name"),
+        "the server composes it: {values:?}"
+    );
+    let report = super::push::flush(&device, &server, &batch).await;
+    assert_eq!(report.stored.len(), 1, "{report:?}");
+    assert!(report.failed.is_empty(), "{report:?}");
+    let stored = server
+        .get_record(PERSON, &offline.public_id, false)
+        .await
+        .expect("on the server");
+    assert_eq!(stored.name, "Katherine Johnson");
+    // An offline edit to a name field pushes too.
+    let current = device
+        .get_record(PERSON, &offline.public_id, false)
+        .await
+        .expect("on the device");
+    device
+        .update_record(
+            PERSON,
+            &current.public_id,
+            current.version,
+            &body(json!({"custom:last": "Goble Johnson"})),
+            context(),
+        )
+        .await
+        .expect("edited offline");
+    let batch = device.push_queue().await.expect("queue");
+    let report = super::push::flush(&device, &server, &batch).await;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert_eq!(
+        server
+            .get_record(PERSON, &offline.public_id, false)
+            .await
+            .expect("on the server")
+            .name,
+        "Katherine Goble Johnson"
+    );
+}
+
 pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
     let member = Uuid::now_v7();
     let admin = service(&store, caller(tenant, member, &ADMIN_PERMISSIONS, &[]));
@@ -259,6 +345,67 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect("a member renames");
     assert_eq!(renamed.name, "Countess of Lovelace");
+
+    // --- Automations set the name's fields, never the name -----------------
+    admin
+        .update_object(
+            PERSON,
+            change(
+                version(&admin).await,
+                names("custom:first", "custom:last", " "),
+            ),
+            context(),
+        )
+        .await
+        .expect("compose names again");
+    admin
+        .create_object(object("visit", "Visit"), context())
+        .await
+        .expect("visit");
+    let automation = |values: Value| -> CreateAutomation {
+        serde_json::from_value(json!({
+            "name": "visitor", "trigger": "create", "timing": "after_save",
+            "actions": [{"type": "create_record", "object": PERSON, "values": values}]
+        }))
+        .expect("automation")
+    };
+    for refused in [
+        json!([{"field": "name", "formula": "name"}, {"field": "custom:first", "formula": "name"}]),
+        json!([{"field": "custom:age", "formula": "1"}]),
+    ] {
+        let error = admin
+            .create_automation("custom:visit", automation(refused.clone()), context())
+            .await
+            .expect_err("the name is composed");
+        assert!(!codes(&error).is_empty(), "{refused}: {error:?}");
+    }
+    admin
+        .create_automation(
+            "custom:visit",
+            automation(json!([{"field": "custom:first", "formula": "name"}])),
+            context(),
+        )
+        .await
+        .expect("a create action that sets a name field");
+    admin
+        .create_record("custom:visit", &body(json!({"name": "Hedy"})), context())
+        .await
+        .expect("a visit");
+    let visitors = admin
+        .query(QueryRequest {
+            q: "SELECT name FROM custom:person WHERE name = 'Hedy'".into(),
+            cursor: None,
+            page_size: None,
+            include_deleted: false,
+            include_archived: false,
+        })
+        .await
+        .expect("query");
+    assert_eq!(
+        visitors.rows.len(),
+        1,
+        "the automation made a person named Hedy"
+    );
 
     // --- Plugins declare it, and an upgrade renames ------------------------
     let plugin = "example.people";
