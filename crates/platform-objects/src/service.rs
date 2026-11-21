@@ -830,6 +830,8 @@ impl ObjectService {
                 .map_err(|issue| issues.push(issue))
                 .ok()
                 .flatten();
+        issues.extend(values::check_governance(&input.governance));
+        let governance = values::normalise_governance(input.governance.clone());
         let read_permission = crate::field_security::permission_id(
             "read_permission",
             input.read_permission.as_deref(),
@@ -923,6 +925,7 @@ impl ObjectService {
             lookup_filter,
             read_permission,
             write_permission,
+            governance,
             formula: shape.formula,
             formula_type: rollup
                 .as_ref()
@@ -1153,6 +1156,10 @@ impl ObjectService {
         }
         if let Err(issue) = crate::field_security::check_permissions(&field) {
             issues.push(issue);
+        }
+        if let Some(governance) = input.governance {
+            issues.extend(values::check_governance(&governance));
+            field.governance = values::normalise_governance(governance);
         }
         if let Some(track) = input.track_history {
             field.track_history = track;
@@ -4016,6 +4023,7 @@ fn only_allowlist(field: &FieldDefinition, input: &UpdateField) -> bool {
         reference_objects,
         read_permission,
         write_permission,
+        governance,
     } = input;
     field.field_type == FieldType::RelatedTo
         && reference_objects.is_some()
@@ -4033,6 +4041,7 @@ fn only_allowlist(field: &FieldDefinition, input: &UpdateField) -> bool {
         && lookup_filter.is_none()
         && read_permission.is_none()
         && write_permission.is_none()
+        && governance.is_none()
 }
 
 /// The active objects a related-to field's allowlist names, in its order,

@@ -174,7 +174,11 @@ expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fiel
   '{"name":"status","label":"Status","field_type":"picklist","options":[{"value":"open","label":"Open","default":true},{"value":"won","label":"Won"}]}')" "status field"
 [[ "$(field '.api_name')" == custom:status ]] || fail "field api name"
 expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fields" \
-  '{"name":"code","label":"Code","field_type":"text","unique":true,"max_length":20}')" "code field"
+  '{"name":"code","label":"Code","field_type":"text","unique":true,"max_length":20,"governance":{"data_classification":"internal","purpose":"Billing","retention_days":2555}}')" "code field"
+[[ "$(field '.governance.data_classification')" == internal && "$(field '.governance.purpose')" == Billing && "$(field '.governance.retention_days')" == 2555 && "$(field '.governance.encrypted')" == false ]] || fail "field governance (ADR 0035 G9): $(cat "$body")"
+expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fields" \
+  '{"name":"notes","label":"Notes","field_type":"text","governance":{"data_classification":"sensitive","purpose":"Care"}}')" "a sensitive field that is not encrypted"
+[[ "$(field '.errors[0].code')" == objects.encryption_required && "$(field '.errors[0].field')" == governance.encrypted ]] || fail "governance error: $(cat "$body")"
 expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fields" \
   '{"name":"budget","label":"Budget","field_type":"currency","scale":2,"indexed":true}')" "budget field"
 expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fields" \
@@ -186,6 +190,7 @@ expect 400 "$(call "$member_cookie" POST "$workspace/objects/custom:project/fiel
 [[ "$(field '.errors[0].code')" == objects.options_not_allowed ]] || fail "options error code"
 expect 200 "$(call "$member_cookie" GET "$workspace/objects/custom:project")" "describe project"
 [[ "$(field '[.fields[].api_name] | join(",")')" == "custom:status,custom:code,custom:budget,custom:starts_on,custom:client" ]] || fail "fields in order: $(cat "$body")"
+[[ "$(field '.fields[] | select(.api_name == "custom:code") | .governance.purpose')" == Billing && "$(field '.fields[] | select(.api_name == "custom:budget") | .governance.data_classification')" == null ]] || fail "described governance: $(cat "$body")"
 
 log "records: create with defaults, validation, uniqueness and lookups"
 expect 201 "$(call "$member_cookie" POST "$workspace/objects/custom:client/records" '{"name":"Analytical Engines"}')" "create client record"

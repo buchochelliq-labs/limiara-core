@@ -195,6 +195,7 @@ impl World {
                     lookup_filter: None,
                     read_permission: None,
                     write_permission: None,
+                    governance: Default::default(),
                 },
                 context(),
             )
@@ -682,6 +683,7 @@ async fn quick_actions_reach_the_device_and_run_offline() {
                 lookup_filter: None,
                 read_permission: None,
                 write_permission: None,
+                governance: Default::default(),
             },
             context(),
         )
@@ -1216,6 +1218,7 @@ async fn lookups_restored_on_the_server_reach_the_replica() {
                 lookup_filter: None,
                 read_permission: None,
                 write_permission: None,
+                governance: Default::default(),
             },
             context(),
         )

@@ -491,6 +491,7 @@ mod tests {
             rollup: None,
             read_permission: None,
             write_permission: None,
+            governance: Default::default(),
             position: 0,
             status: crate::DefinitionStatus::Active,
             version: 1,

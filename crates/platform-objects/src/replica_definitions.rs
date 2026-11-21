@@ -7,9 +7,9 @@
 
 use crate::service::{reindex, ObjectService};
 use crate::{
-    AccessFlags, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, NameFrom,
-    ObjectDefinition, ObjectError, ObjectTx, Origin, PicklistOption, QuickAction, QuickActionKind,
-    RolePermission, Rollup, RollupFunction, SharingModel, ValidationRule,
+    AccessFlags, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldGovernance, FieldType,
+    NameFrom, ObjectDefinition, ObjectError, ObjectTx, Origin, PicklistOption, QuickAction,
+    QuickActionKind, RolePermission, Rollup, RollupFunction, SharingModel, ValidationRule,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -662,6 +662,8 @@ async fn put_field(
                 lookup_filter: remote.lookup_filter.clone(),
                 read_permission: remote.read_permission.clone(),
                 write_permission: remote.write_permission.clone(),
+                // Governance stays on the server (G9).
+                governance: FieldGovernance::default(),
                 formula: remote.formula.clone(),
                 formula_type: remote.formula_type,
                 rollup,
