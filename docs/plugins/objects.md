@@ -82,6 +82,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `reference_objects` | A related-to field's starting allowlist: 0 to 10 distinct targets. Workspace administrators choose the rest (see below). |
 | `delete_behaviour` | A lookup's: `clear` (the default) or `restrict`. |
 | `read_permission`, `write_permission` | Optional. A permission the plugin declares in `[[permissions]]` that a member needs to read the field, and on top of that to change it ([Field permissions](../api/objects.md#field-permissions)). Upgrades apply the manifest's; workspace administrators cannot change them. |
+| `data_classification`, `purpose`, `retention_days`, `encrypted` | Optional governance declarations ([Field governance](../api/objects.md#field-governance)): `data_classification` is `public`, `internal`, `personal` or `sensitive`; a classified field that is not public states a `purpose` (1 to 4,000 characters), a sensitive one sets `encrypted = true`, and `retention_days` is positive. Upgrades apply the manifest's; workspace administrators cannot change them. |
 
 A target is an API name: one of the plugin's own objects, or an object of a
 plugin the manifest declares a dependency on (or, in a related-to

@@ -16,6 +16,7 @@ pub mod draft_settings;
 pub mod field_permissions;
 pub mod field_types;
 pub mod formulas;
+pub mod governance;
 pub mod jobs;
 pub mod lease;
 pub mod names;
@@ -146,6 +147,7 @@ fn field(name: &str, kind: FieldType) -> CreateField {
         lookup_filter: None,
         read_permission: None,
         write_permission: None,
+        governance: Default::default(),
     }
 }
 
@@ -544,6 +546,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
                 lookup_filter: None,
                 read_permission: None,
                 write_permission: None,
+                governance: Default::default(),
                 reference_objects: None,
             },
             context(),

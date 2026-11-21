@@ -53,6 +53,10 @@ fn declared_field(name: &str, kind: ObjectFieldType) -> ObjectFieldDecl {
         delete_behaviour: None,
         read_permission: None,
         write_permission: None,
+        data_classification: None,
+        purpose: None,
+        retention_days: None,
+        encrypted: false,
     }
 }
 
@@ -841,6 +845,7 @@ fn update_field(version: i64) -> UpdateField {
         lookup_filter: None,
         read_permission: None,
         write_permission: None,
+        governance: Default::default(),
         reference_objects: None,
     }
 }

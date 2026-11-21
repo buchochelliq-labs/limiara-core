@@ -344,6 +344,7 @@ mod tests {
             lookup_filter: None,
             read_permission: None,
             write_permission: None,
+            governance: Default::default(),
             position: 0,
             status: DefinitionStatus::Active,
             version: 1,

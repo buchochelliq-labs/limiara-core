@@ -19,7 +19,7 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G8, G11, G17 and G18 are delivered too (below);
+`sync.server_only`. G2, G3, G5, G8, G9, G11, G17 and G18 are delivered too (below);
 every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
@@ -98,6 +98,19 @@ Delivered:
   after which it follows its plugin like any other object. Both stores keep
   the flag (`object_definitions.dormant`). No kernel route wakes objects
   yet: the Contacts cutover (slice 5) will.
+- G9, field governance metadata (2026-11-21). Every engine field may
+  declare `governance`: a `data_classification` (`public`, `internal`,
+  `personal` or `sensitive`; unclassified when left out), a `purpose`, a
+  positive `retention_days` and `encrypted`, through the field API and in
+  manifests, with Contacts' rules: a classified field that is not public
+  states its purpose, and a sensitive one is declared encrypted. Both
+  stores keep them as one JSON document (`field_definitions.governance`).
+  Engine fields may be unclassified where Contacts' fields always carry a
+  classification (`personal` by default); the migrator (G4) copies each
+  field's classification as it is. They stay declarations: nothing
+  enforces retention or encryption, and device replicas do not carry them.
+  Follow-up: the Object Manager does not show or edit them yet; the field
+  API does.
 - G18, optional dependencies (2026-11-21). A manifest may declare
   `optional_dependencies`, plugin ids with a version range, which may not
   be the plugin itself or one of its dependencies. A related-to field may

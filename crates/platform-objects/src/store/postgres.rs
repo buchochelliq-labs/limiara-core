@@ -140,7 +140,7 @@ const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.descripti
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
      f.delete_behaviour, f.position, f.status, f.version, f.created_at, f.created_by, \
-     f.updated_at, f.updated_by, f.track_history, f.formula, f.formula_type, f.lookup_filter, f.read_permission, f.write_permission, \
+     f.updated_at, f.updated_by, f.track_history, f.formula, f.formula_type, f.lookup_filter, f.read_permission, f.write_permission, f.governance, \
      f.rollup_function, f.rollup_relationship_id, f.rollup_field_id, \
      ro.api_name AS rollup_object, rr.api_name AS rollup_relationship, rf.api_name AS rollup_field, \
      (SELECT coalesce(jsonb_agg(jsonb_build_array(fa.object_id, oa.api_name) ORDER BY fa.position), \
@@ -218,7 +218,19 @@ fn report_from_row(row: &PgRow) -> Result<crate::Report, ObjectError> {
     })
 }
 
+/// A field's governance declarations as stored: NULL when it has none.
+fn governance_column(governance: &crate::FieldGovernance) -> Result<Option<Value>, ObjectError> {
+    if governance.is_empty() {
+        return Ok(None);
+    }
+    json(governance).map(Some)
+}
+
 fn field_from_row(row: &PgRow) -> Result<FieldDefinition, ObjectError> {
+    let governance = match row.try_get::<Option<Value>, _>("governance")? {
+        Some(stored) => serde_json::from_value(stored).map_err(|_| ObjectError::Invariant)?,
+        None => crate::FieldGovernance::default(),
+    };
     let options: Value = row.try_get("options")?;
     let options: Vec<PicklistOption> =
         serde_json::from_value(options).map_err(|_| ObjectError::Invariant)?;
@@ -252,6 +264,7 @@ fn field_from_row(row: &PgRow) -> Result<FieldDefinition, ObjectError> {
         lookup_filter: row.try_get("lookup_filter")?,
         read_permission: row.try_get("read_permission")?,
         write_permission: row.try_get("write_permission")?,
+        governance,
         formula: row.try_get("formula")?,
         formula_type: row
             .try_get::<Option<String>, _>("formula_type")?
@@ -857,9 +870,9 @@ impl ObjectTx for PostgresObjectTx {
                options, default_value, reference_object_id, delete_behaviour, position, status, \
                version, created_at, created_by, updated_at, updated_by, track_history, formula, formula_type, \
                rollup_function, rollup_relationship_id, rollup_field_id, lookup_filter, \
-               read_permission, write_permission) \
+               read_permission, write_permission, governance) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-               $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)",
+               $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)",
         )
         .bind(self.tenant_id)
         .bind(field.id)
@@ -895,6 +908,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(&field.lookup_filter)
         .bind(&field.read_permission)
         .bind(&field.write_permission)
+        .bind(governance_column(&field.governance)?)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -911,7 +925,7 @@ impl ObjectTx for PostgresObjectTx {
                searchable = $8, max_length = $9, options = $10, default_value = $11, position = $12, \
                status = $13, version = $14, updated_at = $15, updated_by = $16, \
                track_history = $17, formula = $18, lookup_filter = $19, \
-               read_permission = $20, write_permission = $21, \
+               read_permission = $20, write_permission = $21, governance = $22, \
                deleted_at = CASE WHEN $13 = 'deleted' THEN coalesce(deleted_at, $15) END \
              WHERE tenant_id = $1 AND id = $2 AND version = $3",
         )
@@ -936,6 +950,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(&field.lookup_filter)
         .bind(&field.read_permission)
         .bind(&field.write_permission)
+        .bind(governance_column(&field.governance)?)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
