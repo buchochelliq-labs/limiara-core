@@ -36,6 +36,12 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
             .await
             .expect("object");
     }
+    let mut client = field("client", FieldType::Lookup);
+    client.reference_object = Some(INVOICE.into());
+    admin
+        .create_field(PROJECT, client, context())
+        .await
+        .expect("a lookup to invoices");
     let role = Uuid::now_v7();
     let stored = admin
         .set_object_permission(
@@ -152,6 +158,69 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect("a customiser retires a field");
 
+    // Automations that write outside the object stay with administrators:
+    // creating records elsewhere, or updating the records a lookup points
+    // at, both write as the system.
+    for (name, action) in [
+        (
+            "spawn",
+            json!({"type": "create_record", "object": INVOICE,
+                   "values": [{"field": "name", "formula": "'x'"}]}),
+        ),
+        (
+            "reach",
+            json!({"type": "update_related", "lookup": "custom:client",
+                   "values": [{"field": "name", "formula": "'x'"}]}),
+        ),
+    ] {
+        denied(
+            customiser
+                .create_automation(
+                    PROJECT,
+                    parse(
+                        json!({"name": name, "trigger": "create", "timing": "after_save",
+                                 "actions": [action]}),
+                    ),
+                    context(),
+                )
+                .await,
+        );
+    }
+    let tidy = customiser
+        .automations(PROJECT)
+        .await
+        .expect("automations")
+        .into_iter()
+        .find(|automation| automation.name == "tidy")
+        .expect("tidy");
+    denied(
+        customiser
+            .update_automation(
+                PROJECT,
+                "tidy",
+                parse(json!({
+                    "expected_version": tidy.version,
+                    "actions": [{"type": "create_record", "object": INVOICE,
+                                 "values": [{"field": "name", "formula": "'x'"}]}],
+                })),
+                context(),
+            )
+            .await,
+    );
+    // An administrator may.
+    admin
+        .create_automation(
+            PROJECT,
+            parse(
+                json!({"name": "spawn", "trigger": "create", "timing": "after_save",
+                         "actions": [{"type": "create_record", "object": INVOICE,
+                                      "values": [{"field": "name", "formula": "'x'"}]}]}),
+            ),
+            context(),
+        )
+        .await
+        .expect("administrators keep cross-object automations");
+
     // --- Nothing beyond that object, and nothing on records -----------------
     denied(
         customiser
@@ -198,6 +267,38 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
             .await,
         Err(ObjectError::NotFound)
     ));
+
+    // --- A detail object: customising needs no read on its master ---------
+    admin
+        .create_object(object("line", "Line"), context())
+        .await
+        .expect("detail object");
+    let mut master = field("invoice", FieldType::MasterDetail);
+    master.reference_object = Some(INVOICE.into());
+    admin
+        .create_field("custom:line", master, context())
+        .await
+        .expect("master-detail");
+    admin
+        .set_object_permission(
+            "custom:line",
+            role,
+            AccessFlags {
+                customise: true,
+                ..AccessFlags::default()
+            },
+            context(),
+        )
+        .await
+        .expect("customise lines");
+    customiser
+        .create_field(
+            "custom:line",
+            field("quantity", FieldType::Number),
+            context(),
+        )
+        .await
+        .expect("a detail object's customiser need not read its master's records");
 
     // --- Taking the grant away takes the right away --------------------------
     admin

@@ -251,6 +251,15 @@ impl ObjectAccess {
         self.by_object.values().any(|flags| flags.customise)
     }
 
+    /// Whether a role grants the caller customising this object (G10).
+    /// An administrative grant, so it does not depend on reading a detail
+    /// object's masters, which governs records only.
+    pub fn customises(&self, object_id: Uuid) -> bool {
+        self.by_object
+            .get(&object_id)
+            .is_some_and(|flags| flags.customise)
+    }
+
     pub fn require(
         &self,
         object_id: Uuid,

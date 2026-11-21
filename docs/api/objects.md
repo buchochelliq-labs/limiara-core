@@ -47,9 +47,12 @@ it grants nothing on records, no record grant implies it, and
 `objects.manage` implies it on every object. It covers the object's
 workspace fields (not field permissions, which decide who reads what, and
 not a plugin field's allowlist), its validation rules, quick actions and
-automations, and nothing on any other object. Because automations write
-fields as the system, a role that customises an object can set every field
-of its records through one: grant it as the administrative right it is. A
+automations, and nothing on any other object: an automation that creates
+records on another object or updates the records a lookup points at needs
+`objects.manage`. Because automations write fields as the system, a role
+that customises an object can still set every field of its own records
+through one: grant it as the administrative right it is. It does not
+depend on reading a detail object's masters, which governs records only. A
 member who customises no object is refused with `403` before any object is
 looked up. An object the caller cannot read is reported as `404`, exactly
 like a missing one; an operation the caller may not perform on an object they

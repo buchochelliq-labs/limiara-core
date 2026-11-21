@@ -374,7 +374,9 @@ impl ObjectService {
             return Err(ObjectError::PermissionDenied);
         }
         let object = self.active_object(tx, api_name).await?;
-        access.require(object.id, |flags| flags.customise)?;
+        if !access.customises(object.id) {
+            return Err(ObjectError::PermissionDenied);
+        }
         Ok(object)
     }
 

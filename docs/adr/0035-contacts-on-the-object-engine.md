@@ -117,8 +117,10 @@ Delivered:
   retire the object's workspace fields, validation rules, quick actions
   and automations without `objects.manage`, which still implies it on
   every object. It grants nothing on records, and no record grant implies
-  it. Field permissions and a plugin field's allowlist stay with
-  `objects.manage`, as do object settings and permissions. The Object
+  it. Field permissions, a plugin field's allowlist and automations that
+  write outside the object (creating records elsewhere, updating related
+  records) stay with `objects.manage`, as do object settings and
+  permissions. The Object
   Manager's access table has a Customise column. Follow-up: the Object
   Manager itself is shown only to members with `objects.manage`, so a
   customiser works through the objects API until it opens to them.
