@@ -114,10 +114,13 @@ pub enum FieldType {
     /// A reference to a record of any object in the field's allowlist
     /// (ADR 0033 §1).
     RelatedTo,
+    /// Free-form tags (ADR 0035 G7): up to 50 distinct values of up to 80
+    /// characters, compared without case.
+    TextList,
 }
 
 impl FieldType {
-    pub const ALL: [FieldType; 18] = [
+    pub const ALL: [FieldType; 19] = [
         Self::Text,
         Self::LongText,
         Self::Email,
@@ -136,6 +139,7 @@ impl FieldType {
         Self::MasterDetail,
         Self::Rollup,
         Self::RelatedTo,
+        Self::TextList,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -158,6 +162,7 @@ impl FieldType {
             Self::MasterDetail => "master_detail",
             Self::Rollup => "rollup",
             Self::RelatedTo => "related_to",
+            Self::TextList => "text_list",
         }
     }
 
@@ -198,9 +203,10 @@ impl FieldType {
         )
     }
 
-    /// Picklists are always indexed, as Salesforce filters on them by default.
+    /// Picklists are always indexed, as Salesforce filters on them by
+    /// default, and so are text lists, per value (ADR 0035 G7).
     pub fn always_indexed(self) -> bool {
-        matches!(self, Self::Picklist | Self::MultiPicklist)
+        matches!(self, Self::Picklist | Self::MultiPicklist | Self::TextList)
     }
 }
 

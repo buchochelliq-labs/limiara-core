@@ -27,7 +27,7 @@ pub(crate) fn field_type(kind: FieldType) -> Type {
         FieldType::Boolean => Type::Boolean,
         FieldType::Date => Type::Date,
         FieldType::DateTime => Type::DateTime,
-        FieldType::MultiPicklist => Type::Multi,
+        FieldType::MultiPicklist | FieldType::TextList => Type::Multi,
         _ => Type::Text,
     }
 }

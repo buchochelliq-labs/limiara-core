@@ -355,6 +355,8 @@ pub enum ObjectFieldType {
     MultiPicklist,
     Lookup,
     RelatedTo,
+    /// Free-form tags (ADR 0035 G7).
+    TextList,
 }
 
 impl ObjectFieldType {
@@ -376,6 +378,7 @@ impl ObjectFieldType {
             Self::MultiPicklist => "multi_picklist",
             Self::Lookup => "lookup",
             Self::RelatedTo => "related_to",
+            Self::TextList => "text_list",
         }
     }
 
@@ -964,6 +967,21 @@ fn preset_fits(field: &ObjectFieldDecl, value: &Value) -> bool {
         ObjectFieldType::Picklist => value.as_str().is_some_and(option),
         ObjectFieldType::MultiPicklist => value.as_array().is_some_and(|items| {
             !items.is_empty() && items.iter().all(|item| item.as_str().is_some_and(option))
+        }),
+        // Up to 50 distinct values of up to 80 printable characters.
+        ObjectFieldType::TextList => value.as_array().is_some_and(|items| {
+            let mut seen = std::collections::BTreeSet::new();
+            !items.is_empty()
+                && items.len() <= 50
+                && items.iter().all(|item| {
+                    item.as_str().is_some_and(|text| {
+                        let text = text.trim();
+                        !text.is_empty()
+                            && text.chars().count() <= 80
+                            && !text.chars().any(char::is_control)
+                            && seen.insert(text.to_lowercase())
+                    })
+                })
         }),
         // A record id belongs to one workspace; a manifest cannot know it.
         ObjectFieldType::Lookup | ObjectFieldType::RelatedTo => false,

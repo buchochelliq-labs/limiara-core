@@ -705,6 +705,7 @@ pub fn normalise(field: &FieldDefinition, value: &Value) -> Result<Option<Value>
                 .collect();
             Ok(Some(Value::Array(ordered)))
         }
+        FieldType::TextList => text_list(field, value),
         FieldType::Lookup | FieldType::MasterDetail | FieldType::RelatedTo => {
             let text = value
                 .as_str()
@@ -967,6 +968,45 @@ fn number_key(value: f64) -> String {
     format!("{value}")
 }
 
+/// The most values a text list holds (ADR 0035 G7).
+pub const TEXT_LIST_MAX_VALUES: usize = 50;
+/// The longest value of a text list, in characters.
+pub const TEXT_LIST_MAX_CHARS: usize = 80;
+
+/// A text list's values (ADR 0035 G7): each trimmed, printable and at most
+/// 80 characters; duplicates ignoring case keep their first spelling; at
+/// most 50 remain. An empty list clears the field.
+fn text_list(field: &FieldDefinition, value: &Value) -> Result<Option<Value>, ValidationIssue> {
+    let list = || issue(field, "records.value_type", "enter a list of text values");
+    let items = value.as_array().ok_or_else(list)?;
+    let mut seen = BTreeSet::new();
+    let mut kept = Vec::new();
+    for item in items {
+        let text = item.as_str().ok_or_else(list)?.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if text.chars().count() > TEXT_LIST_MAX_CHARS || text.chars().any(char::is_control) {
+            return Err(issue(
+                field,
+                "records.text_list_value",
+                format!("each value has 1 to {TEXT_LIST_MAX_CHARS} printable characters"),
+            ));
+        }
+        if seen.insert(name_key(text)) {
+            kept.push(Value::String(text.to_owned()));
+        }
+    }
+    if kept.len() > TEXT_LIST_MAX_VALUES {
+        return Err(issue(
+            field,
+            "records.text_list_too_long",
+            format!("enter at most {TEXT_LIST_MAX_VALUES} distinct values"),
+        ));
+    }
+    Ok((!kept.is_empty()).then_some(Value::Array(kept)))
+}
+
 /// The typed index value one stored value contributes, if the field is
 /// indexed.
 pub fn index_values(field: &FieldDefinition, value: &Value) -> Vec<IndexValue> {
@@ -975,6 +1015,12 @@ pub fn index_values(field: &FieldDefinition, value: &Value) -> Vec<IndexValue> {
             .iter()
             .filter_map(Value::as_str)
             .map(|item| IndexValue::Text(item.to_owned()))
+            .collect(),
+        // Each value, without case (ADR 0035 G7).
+        (FieldType::TextList, Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|item| IndexValue::Text(name_key(item)))
             .collect(),
         (FieldType::Picklist, Value::String(text)) => vec![IndexValue::Text(text.clone())],
         (kind, Value::String(text)) if kind.is_textual() => vec![IndexValue::Text(name_key(text))],
@@ -1017,7 +1063,9 @@ pub fn filter_value(field: &FieldDefinition, raw: &str) -> Result<IndexValue, Va
         kind if kind.is_numeric() => serde_json::from_str::<Number>(raw)
             .map(Value::Number)
             .map_err(|_| issue(field, "records.filter_value", "filter with a number"))?,
-        FieldType::MultiPicklist => Value::Array(vec![Value::String(raw.to_owned())]),
+        FieldType::MultiPicklist | FieldType::TextList => {
+            Value::Array(vec![Value::String(raw.to_owned())])
+        }
         _ => Value::String(raw.to_owned()),
     };
     let normalised = normalise(field, &value)?

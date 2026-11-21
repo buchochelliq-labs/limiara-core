@@ -76,8 +76,8 @@ can read returns `403 auth.permission_denied`.
 
 Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,
 `currency`, `percent`, `boolean`, `date`, `date_time`, `picklist`,
-`multi_picklist`, `lookup`, `formula`, `master_detail`, `rollup` and
-`related_to`. A field may be `required`, `unique` (text,
+`multi_picklist`, `lookup`, `formula`, `master_detail`, `rollup`,
+`related_to` and `text_list`. A field may be `required`, `unique` (text,
 email, phone, URL and number types; case-insensitive), `indexed` (for filters
 and sorting) and `searchable`. Text fields take a `max_length` from 1 to
 255 (255 by default), long text from 1 to 131,072, and email fields from 1
@@ -87,6 +87,19 @@ its domain at most 255. Picklists take `options` with `value`, `label`,
 `active`, `default`, `outcome` and `weight` (see Paths below). Lookups take `reference_object` and a
 `delete_behaviour` of `clear` (the default) or `restrict`. A field's type,
 uniqueness and lookup target cannot change once it exists.
+
+A `text_list` field (ADR 0035 G7) holds free-form tags: a JSON array of up
+to 50 distinct values of up to 80 printable characters. Each value is
+trimmed, blanks are dropped, and values that differ only in case keep the
+spelling first given; an empty array clears the field. A value that is too
+long or holds a control character answers `records.text_list_value`, more
+than 50 distinct values `records.text_list_too_long`, and anything but an
+array of text `records.value_type`. A text list is always indexed, per
+value and without case, so queries filter it with `INCLUDES` and
+`EXCLUDES` (`custom:tags INCLUDES ('vip')` finds `VIP`), and formulas read
+it with `INCLUDES` and `ISBLANK`, also without case. It takes no options or
+`max_length` and is never unique. The Object Manager types it as one line
+of comma-separated values.
 
 A `master_detail` field (ADR 0025) is a lookup to the record's master. It
 takes `reference_object`, is always required, and has no delete behaviour,
@@ -723,7 +736,7 @@ LIMIT 500
   lookup, up to three hops.
 - Conditions: `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`,
   `NOT LIKE`, `= null`, `!= null`, and `INCLUDES` / `EXCLUDES` for
-  multi-select picklists, with `AND`, `OR`, `NOT` and parentheses. Text
+  multi-select picklists and text lists, with `AND`, `OR`, `NOT` and parentheses. Text
   compares without case. A negated condition includes records without a
   value.
 - Literals are typed: `'text'`, numbers, `true`, `false`, `null`, dates

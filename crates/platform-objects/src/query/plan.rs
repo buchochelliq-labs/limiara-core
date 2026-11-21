@@ -591,7 +591,9 @@ fn category(
             };
             let (category, kind) = match field_type {
                 FieldType::Picklist => (Category::Exact, PivotKind::Text),
-                FieldType::MultiPicklist => (Category::Multi, PivotKind::Text),
+                FieldType::MultiPicklist | FieldType::TextList => {
+                    (Category::Multi, PivotKind::Text)
+                }
                 FieldType::Boolean => (Category::Bool, PivotKind::Text),
                 FieldType::Date | FieldType::DateTime => (Category::Time, PivotKind::Time),
                 kind if kind.is_numeric() => (Category::Number, PivotKind::Number),
@@ -683,12 +685,18 @@ impl<'a> Catalog<'a> {
                 ),
             )
         };
+        let text_list =
+            matches!(leaf, Leaf::Field(field) if field.field_type == FieldType::TextList);
         Ok(Value::Point(match (category, literal) {
             (Category::Text, Literal::Text { value, .. }) => Param::Text(name_key(value)),
             (Category::Exact, Literal::Text { value, .. })
                 if matches!(leaf, Leaf::Standard(Standard::Id)) =>
             {
                 Param::Text(value.trim().to_ascii_lowercase())
+            }
+            // A text list's values are indexed without case (ADR 0035 G7).
+            (Category::Multi, Literal::Text { value, .. }) if text_list => {
+                Param::Text(name_key(value))
             }
             (Category::Exact | Category::Multi, Literal::Text { value, .. }) => {
                 Param::Text(value.clone())
@@ -881,7 +889,7 @@ impl<'a> Catalog<'a> {
             Operator::Includes { negated, values } => {
                 if category != Category::Multi {
                     return Err(operator_invalid(
-                        "INCLUDES or EXCLUDES, which need a multi-select picklist",
+                        "INCLUDES or EXCLUDES, which need a multi-select picklist or a text list",
                     ));
                 }
                 if values.len() > limits::IN_VALUES {
@@ -941,7 +949,9 @@ impl<'a> Catalog<'a> {
         };
         let (category, source) = self.category(leaf, position, clause)?;
         match category {
-            Category::Multi => Err(refuse("multi-select picklists hold several values")),
+            Category::Multi => Err(refuse(
+                "multi-select picklists and text lists hold several values",
+            )),
             Category::Reference if clause == "ORDER BY" => Err(refuse(
                 "sort by a field of the target, such as its name, once that is supported",
             )),
@@ -1322,7 +1332,9 @@ fn aggregate_expr(
     };
     match call.function {
         Aggregate::Count if category == Category::Multi => {
-            return Err(refuse("multi-select picklists hold several values"))
+            return Err(refuse(
+                "multi-select picklists and text lists hold several values",
+            ))
         }
         Aggregate::Count => {}
         Aggregate::Sum | Aggregate::Avg if category == Category::Number => {}

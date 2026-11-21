@@ -765,7 +765,10 @@ impl Session<'_> {
                 format!("Assistants can't filter on {}.", field.label),
             ));
         }
-        let multi = field.field_type == FieldType::MultiPicklist;
+        let multi = matches!(
+            field.field_type,
+            FieldType::MultiPicklist | FieldType::TextList
+        );
         Ok(match condition {
             Condition::Equals { value, .. } if multi => {
                 format!("{path} INCLUDES ({})", literal(value, false)?)
@@ -832,6 +835,7 @@ impl Session<'_> {
                                     field.field_type,
                                     FieldType::LongText
                                         | FieldType::MultiPicklist
+                                        | FieldType::TextList
                                         | FieldType::Lookup
                                         | FieldType::MasterDetail
                                         | FieldType::RelatedTo
@@ -1456,7 +1460,8 @@ fn literal(field: &FieldMeta, value: &Value, like: bool) -> Option<String> {
         | FieldType::Phone
         | FieldType::Url
         | FieldType::Picklist
-        | FieldType::MultiPicklist => {
+        | FieldType::MultiPicklist
+        | FieldType::TextList => {
             let text = value.as_str()?;
             (text.chars().count() <= VALUE_TEXT_MAX)
                 .then(|| quoted(text, like))

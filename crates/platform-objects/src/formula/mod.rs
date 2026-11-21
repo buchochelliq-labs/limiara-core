@@ -33,7 +33,8 @@ pub enum Type {
     Boolean,
     Date,
     DateTime,
-    /// A multi-select picklist value; only `INCLUDES` and `ISBLANK` take it.
+    /// A multi-select picklist or text list value; only `INCLUDES` and
+    /// `ISBLANK` take it.
     Multi,
     /// The type of `NULL`, which matches any other.
     Null,
@@ -47,7 +48,7 @@ impl Type {
             Self::Boolean => "true or false",
             Self::Date => "a date",
             Self::DateTime => "a date-time",
-            Self::Multi => "a multi-select picklist",
+            Self::Multi => "a list of values",
             Self::Null => "NULL",
         }
     }
@@ -62,6 +63,9 @@ pub enum Value {
     Date(NaiveDate),
     DateTime(DateTime<Utc>),
     Multi(Vec<String>),
+    /// A text list's values (ADR 0035 G7), which `INCLUDES` compares
+    /// without case.
+    Tags(Vec<String>),
 }
 
 impl Value {
@@ -69,7 +73,7 @@ impl Value {
         match self {
             Self::Null => true,
             Self::Text(text) => text.is_empty(),
-            Self::Multi(items) => items.is_empty(),
+            Self::Multi(items) | Self::Tags(items) => items.is_empty(),
             _ => false,
         }
     }
@@ -89,7 +93,9 @@ impl Value {
             Self::Bool(flag) => Json::Bool(*flag),
             Self::Date(date) => Json::String(date.format("%Y-%m-%d").to_string()),
             Self::DateTime(time) => Json::String(time.to_rfc3339_opts(SecondsFormat::Secs, true)),
-            Self::Multi(items) => Json::Array(items.iter().cloned().map(Json::String).collect()),
+            Self::Multi(items) | Self::Tags(items) => {
+                Json::Array(items.iter().cloned().map(Json::String).collect())
+            }
         }
     }
 }
@@ -397,8 +403,8 @@ fn json_value(value: Option<&Json>, field_type: FieldType) -> Value {
             .map_or(Value::Null, |time| {
                 Value::DateTime(time.with_timezone(&Utc))
             }),
-        FieldType::MultiPicklist => Value::Multi(
-            value
+        FieldType::MultiPicklist | FieldType::TextList => {
+            let items = value
                 .as_array()
                 .map(|items| {
                     items
@@ -407,8 +413,13 @@ fn json_value(value: Option<&Json>, field_type: FieldType) -> Value {
                         .map(str::to_owned)
                         .collect()
                 })
-                .unwrap_or_default(),
-        ),
+                .unwrap_or_default();
+            if field_type == FieldType::TextList {
+                Value::Tags(items)
+            } else {
+                Value::Multi(items)
+            }
+        }
         _ => value
             .as_str()
             .map_or(Value::Null, |text| Value::Text(text.to_owned())),
@@ -450,7 +461,7 @@ fn as_text(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Date(date) => date.format("%Y-%m-%d").to_string(),
         Value::DateTime(time) => time.to_rfc3339_opts(SecondsFormat::Secs, true),
-        Value::Multi(items) => items.join(";"),
+        Value::Multi(items) | Value::Tags(items) => items.join(";"),
     }
 }
 
@@ -628,6 +639,10 @@ fn call(function: Function, arguments: &[Node], env: &dyn Env) -> Result<Value, 
         )),
         Function::Includes => Value::Bool(match (arg(0)?, arg(1)?) {
             (Value::Multi(items), Value::Text(item)) => items.contains(&item),
+            (Value::Tags(items), Value::Text(item)) => {
+                let item = crate::values::name_key(&item);
+                items.iter().any(|tag| crate::values::name_key(tag) == item)
+            }
             _ => false,
         }),
         Function::Len => {

@@ -19,7 +19,7 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G8, G9, G10, G11, G17 and G18 are delivered too (below);
+`sync.server_only`. G2, G3, G5, G7, G8, G9, G10, G11, G17 and G18 are delivered too (below);
 every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
@@ -98,6 +98,15 @@ Delivered:
   after which it follows its plugin like any other object. Both stores keep
   the flag (`object_definitions.dormant`). No kernel route wakes objects
   yet: the Contacts cutover (slice 5) will.
+- G7, text lists (2026-11-21). A `text_list` field type holds up to 50
+  distinct values of up to 80 characters as a JSON array: values are
+  trimmed, and those that differ only in case keep the first spelling. It
+  is always indexed per value through the record index, without case, so
+  `INCLUDES` and `EXCLUDES` filter it in queries and formulas; it takes no
+  options and is never unique. Manifests may declare it, devices and the
+  assistant read it, and the web form types it as comma-separated values.
+  Device builds from before this change cannot read an object that has a
+  text list field, as with any new field type.
 - G9, field governance metadata (2026-11-21). Every engine field may
   declare `governance`: a `data_classification` (`public`, `internal`,
   `personal` or `sensitive`; unclassified when left out), a `purpose`, a
