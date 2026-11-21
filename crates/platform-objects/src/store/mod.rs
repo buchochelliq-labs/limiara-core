@@ -513,6 +513,23 @@ pub trait ObjectTx: Send {
         report: &str,
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), ObjectError>;
+    /// Brings a field's waiting allowlist entries (ADR 0035 G18) in line
+    /// with `names`: adds the missing ones and drops waiting ones no longer
+    /// named. Entries already offered stay, so they are never offered again.
+    async fn put_allowlist_offers(
+        &mut self,
+        field_id: Uuid,
+        names: &[String],
+    ) -> Result<(), ObjectError>;
+    /// Every allowlist entry still waiting, as `(field id, object API name)`.
+    async fn pending_allowlist_offers(&mut self) -> Result<Vec<(Uuid, Uuid, String)>, ObjectError>;
+    /// Records that an entry joined its field's allowlist.
+    async fn mark_allowlist_offered(
+        &mut self,
+        field_id: Uuid,
+        object: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError>;
     /// Whether the object has any record, the recycle bin included.
     async fn has_records(&mut self, object_id: Uuid) -> Result<bool, ObjectError>;
     /// `(detail object, master object)` for every active master-detail

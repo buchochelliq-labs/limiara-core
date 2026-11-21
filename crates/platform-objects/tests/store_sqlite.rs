@@ -91,6 +91,40 @@ async fn sqlite_store_passes_the_field_type_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_passes_the_name_conformance_suite() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::names::run(store, uuid::Uuid::now_v7()).await;
+}
+
+#[tokio::test]
+async fn sqlite_store_offers_optional_dependency_objects() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::optional_dependencies::run(store, uuid::Uuid::now_v7(), uuid::Uuid::now_v7())
+        .await;
+}
+
+#[tokio::test]
+async fn sqlite_store_pushes_composed_names_from_a_device() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases));
+    conformance::names::pushed_offline(&store).await;
+}
+
+#[tokio::test]
 async fn sqlite_store_passes_the_search_conformance_suite() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(

@@ -64,6 +64,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `sharing_model` | `private`, `read` or `read_write` (the default). Only the starting value: the workspace owns it afterwards. |
 | `searchable`, `in_navigation` | Default `true`. |
 | `track_history` | Default `false`. |
+| `name_from` | Optional. `{ fields = ["first_name", "last_name"], separator = " " }`: two or three distinct short names of the object's own `text` fields without a `read_permission`, and a separator of at most five printable characters (a space by default). The engine then composes every record's name from them and refuses writes to the name (ADR 0035 G17). An upgrade that changes it renames the object's records. |
 | `dormant` | Optional, default `false`. A dormant object is installed out of service and stays out of service when the plugin is enabled, until the plugin wakes it (see below; ADR 0035 G11). |
 | `path_field` | Optional. The short name of one of the object's single-value picklists: the record page shows it as a path and the board groups by it (ADR 0037 §2). Upgrades keep it in line with the manifest. |
 
@@ -83,7 +84,8 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `read_permission`, `write_permission` | Optional. A permission the plugin declares in `[[permissions]]` that a member needs to read the field, and on top of that to change it ([Field permissions](../api/objects.md#field-permissions)). Upgrades apply the manifest's; workspace administrators cannot change them. |
 
 A target is an API name: one of the plugin's own objects, or an object of a
-plugin the manifest declares a dependency on. A plugin cannot point at
+plugin the manifest declares a dependency on (or, in a related-to
+allowlist, an optional dependency: see below). A plugin cannot point at
 `custom` objects, which exist only in some workspaces, and cannot declare
 anything in the `custom` namespace. A manifest declares at most 20 objects
 and 100 fields per object. The manifest is refused when it is read if any
@@ -100,6 +102,34 @@ one property of a plugin's field administrators may change; anything else
 in the same request is refused with `objects.plugin_owned`. The manifest's
 list is only the starting value: an upgrade never changes an installed
 field's allowlist, as with `sharing_model`.
+
+### Objects of optional dependencies
+
+A plugin that works on its own but fits with another may declare it as an
+optional dependency (ADR 0035 G18):
+
+```toml
+[optional_dependencies."platform.sales"]
+version = ">=0.1.0"
+reasons = ["composition"]
+description = "Leads and opportunities in Related to and Who"
+```
+
+It takes the same keys as `[dependencies]`, but the plugin installs and
+enables without it, and it grants nothing. It may not name the plugin
+itself or one of its dependencies. Its only effect is that a related-to
+field's `reference_objects` may name that plugin's objects; a lookup may
+not, since it has one target and would not work without it.
+
+Such an entry is not part of the field at install. It waits until the
+named object is active in the workspace, at install if the other plugin is
+already enabled, or when that plugin is enabled later, and then joins the
+allowlist through an ordinary field change, so the field's related actions
+are offered to it as to any object entering the allowlist. Each entry
+joins once per field: an administrator who removes it keeps it removed
+through re-enabling and upgrades of either plugin. An allowlist that is
+already full leaves the entry waiting until there is room: it joins as soon
+as an administrator's change to that allowlist makes some.
 
 While the allowlist is empty, the field holds no new values: writes answer
 `records.reference_object_not_allowed`, the candidates route refuses every

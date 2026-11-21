@@ -493,6 +493,7 @@ impl ObjectService {
             in_navigation: input.in_navigation.unwrap_or(true),
             // A new object has no fields yet; its path field is chosen later.
             path_field: None,
+            name_from: None,
             status: DefinitionStatus::Active,
             suspended: false,
             dormant: false,
@@ -532,7 +533,8 @@ impl ObjectService {
                 || input.track_history.is_some()
                 || input.searchable.is_some()
                 || input.in_navigation.is_some()
-                || input.path_field.is_some())
+                || input.path_field.is_some()
+                || input.name_from.is_some())
         {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
         }
@@ -576,6 +578,18 @@ impl ObjectService {
                 },
             }
         }
+        let renaming = match input.name_from {
+            Some(name_from) if name_from != object.name_from => {
+                if let Some(name_from) = &name_from {
+                    if let Err(issue) = values::check_name_from(&object, name_from) {
+                        issues.push(issue);
+                    }
+                }
+                object.name_from = name_from;
+                true
+            }
+            _ => false,
+        };
         if !issues.is_empty() {
             return Err(ObjectError::Validation(issues));
         }
@@ -598,8 +612,70 @@ impl ObjectService {
             .await?;
         self.record_change(tx.as_mut(), context, Change::ObjectUpdated(&object))
             .await?;
+        if renaming {
+            self.rename_records(tx.as_mut(), &object, context).await?;
+        }
         tx.commit().await?;
         Ok(object)
+    }
+
+    /// Brings every record's name in line with the object's `name_from`
+    /// (ADR 0035 G17), in the transaction that changed it, as the engine
+    /// reindexes after a field change. Each renamed record is a system
+    /// update: the next version, fresh pivots and search terms, a change-log
+    /// entry and `record-updated` event, and history. A record whose name
+    /// fields are all empty keeps its name. Records in the recycle bin are
+    /// renamed too, so they come back consistent.
+    pub(crate) async fn rename_records(
+        &self,
+        tx: &mut dyn ObjectTx,
+        object: &ObjectDefinition,
+        context: MutationContext,
+    ) -> Result<usize, ObjectError> {
+        let Some(name_from) = &object.name_from else {
+            return Ok(0);
+        };
+        let system = context.with_source(crate::MutationSource::system());
+        let formulas = crate::formula_fields::stored_formulas(object);
+        let mut renamed = 0;
+        for id in tx.record_ids(object.id).await? {
+            let Some(mut record) = tx.record_by_id(id).await? else {
+                continue;
+            };
+            let Some(name) = name_from.compose(&record.values) else {
+                continue;
+            };
+            if name == record.name {
+                continue;
+            }
+            let before = record.clone();
+            let version = record.version;
+            record.name = name;
+            self.stamp(&mut record);
+            if !tx.update_record(&record, version).await? {
+                return Err(ObjectError::VersionConflict);
+            }
+            let references = current_references(tx, object, &record).await?;
+            tx.replace_index(
+                record.id,
+                &stored_index(object, &record, &references, &formulas),
+            )
+            .await?;
+            let changed = ["name".to_owned()];
+            self.record_change(tx, system, Change::RecordUpdated(object, &record, &changed))
+                .await?;
+            self.track(
+                tx,
+                object,
+                Some(&before),
+                &record,
+                crate::HistoryKind::Changed,
+                system,
+            )
+            .await?;
+            renamed += 1;
+        }
+        Ok(renamed)
     }
 
     async fn write_object(
@@ -938,8 +1014,20 @@ impl ObjectService {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
         }
         // Boxed: the field checks hold a large future.
-        let field =
+        let mut field =
             Box::pin(self.change_field_in(tx.as_mut(), &object, field, input, context)).await?;
+        // A smaller allowlist may make room for an optional dependency's
+        // object that was waiting (ADR 0035 G18).
+        if field.field_type == FieldType::RelatedTo {
+            Box::pin(self.offer_waiting_allowlists(tx.as_mut(), context)).await?;
+            if let Some(current) = tx
+                .object_by_id(object.id)
+                .await?
+                .and_then(|object| object.fields.into_iter().find(|f| f.id == field.id))
+            {
+                field = current;
+            }
+        }
         tx.commit().await?;
         Ok(field)
     }
@@ -1042,6 +1130,19 @@ impl ObjectService {
             match crate::field_security::permission_id("read_permission", permission.as_deref()) {
                 Ok(permission) => field.read_permission = permission,
                 Err(issue) => issues.push(issue),
+            }
+            // A field that makes the record's name is read with the name.
+            let names = object
+                .name_from
+                .as_ref()
+                .is_some_and(|name_from| name_from.fields.contains(&field.api_name));
+            if field.read_permission.is_some() && names {
+                issues.push(ValidationIssue::new(
+                    "read_permission",
+                    "objects.name_from_invalid",
+                    "this field makes the record's name, which every reader of the record sees"
+                        .to_owned(),
+                ));
             }
         }
         if let Some(permission) = input.write_permission {
@@ -1221,6 +1322,10 @@ impl ObjectService {
         // so does the object's path (ADR 0037 §2).
         if rollup_uses(tx.as_mut(), &object, Some(field.id)).await?
             || object.path_field.as_deref() == Some(field.api_name.as_str())
+            || object
+                .name_from
+                .as_ref()
+                .is_some_and(|name_from| name_from.fields.contains(&field.api_name))
         {
             return Err(ObjectError::Conflict("objects.field_in_use"));
         }

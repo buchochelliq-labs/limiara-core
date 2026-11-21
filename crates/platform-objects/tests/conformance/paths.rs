@@ -16,6 +16,7 @@ const STAGE: &str = "custom:stage";
 fn update(version: i64, path_field: Option<Option<&str>>) -> UpdateObject {
     UpdateObject {
         path_field: path_field.map(|field| field.map(str::to_owned)),
+        name_from: None,
         expected_version: version,
         label: None,
         plural_label: None,

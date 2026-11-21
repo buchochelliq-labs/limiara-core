@@ -43,9 +43,9 @@ use crate::events::Change;
 use crate::service::{MutationContext, ObjectService, OBJECTS_PER_WORKSPACE_MAX};
 use crate::values::{self, LABEL_MAX};
 use crate::{
-    CreateField, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, ObjectDefinition,
-    ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel, UpdateField,
-    ValidationIssue,
+    CreateField, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, NameFrom,
+    ObjectDefinition, ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel,
+    UpdateField, ValidationIssue,
 };
 use chrono::Utc;
 use plugin_contract::objects::ObjectOptionOutcome;
@@ -89,6 +89,15 @@ impl PluginObjectsInstalled {
     }
 }
 
+/// What one installation has done so far, across its objects.
+struct InstallProgress {
+    /// Key prefixes the workspace's objects use, the new ones included.
+    prefixes: Vec<String>,
+    /// Existing objects whose composed name changed (ADR 0035 G17), whose
+    /// records are renamed once every field is installed.
+    renamed: Vec<String>,
+}
+
 impl ObjectService {
     fn require_installer(&self, plugin_id: &str) -> Result<(), ObjectError> {
         if self.caller().installer() == Some(plugin_id) {
@@ -109,10 +118,11 @@ impl ObjectService {
     ) -> Result<PluginObjectsInstalled, ObjectError> {
         self.require_installer(&manifest.id)?;
         let plugin_id = manifest.id.as_str();
-        plugin_contract::objects::validate_objects(
+        plugin_contract::objects::validate_objects_with(
             plugin_id,
             &manifest.objects,
             manifest.dependencies.keys().map(String::as_str),
+            manifest.optional_dependencies.keys().map(String::as_str),
             manifest
                 .permissions
                 .iter()
@@ -135,18 +145,22 @@ impl ObjectService {
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
         // Objects first, so fields can point at any of them.
-        let mut prefixes = tx.key_prefixes().await?;
+        let mut progress = InstallProgress {
+            prefixes: tx.key_prefixes().await?,
+            renamed: Vec::new(),
+        };
         for declared in &manifest.objects {
             self.put_plugin_object(
                 tx.as_mut(),
                 plugin_id,
                 declared,
-                &mut prefixes,
+                &mut progress,
                 &mut installed,
                 context,
             )
             .await?;
         }
+        let renamed = progress.renamed;
         for declared in &manifest.objects {
             let api_name = format!("{plugin_id}:{}", declared.name);
             for field in &declared.fields {
@@ -156,15 +170,30 @@ impl ObjectService {
                     .object_by_api_name(&api_name)
                     .await?
                     .ok_or(ObjectError::Invariant)?;
+                // An optional dependency's objects wait to join the
+                // allowlist until they are in service (ADR 0035 G18).
+                let (waiting, field) = split_optional(manifest, field);
                 self.put_plugin_field(
                     tx.as_mut(),
                     plugin_id,
                     &object,
-                    field,
+                    &field,
                     &mut installed,
                     context,
                 )
                 .await?;
+                if field.field_type == plugin_contract::ObjectFieldType::RelatedTo {
+                    let installed_field = tx
+                        .object_by_api_name(&api_name)
+                        .await?
+                        .and_then(|object| {
+                            object
+                                .field(&format!("{plugin_id}:{}", field.name))
+                                .map(|field| field.id)
+                        })
+                        .ok_or(ObjectError::Invariant)?;
+                    tx.put_allowlist_offers(installed_field, &waiting).await?;
+                }
             }
             // Related actions name the fields just installed. They are
             // offered once the objects are in service, when resuming.
@@ -176,6 +205,30 @@ impl ObjectService {
                 .await?;
             self.put_plugin_timeline(tx.as_mut(), plugin_id, &object, declared)
                 .await?;
+        }
+        // Composed names (ADR 0035 G17) are checked once every field exists;
+        // an upgrade that changes one renames the object's records.
+        for declared in &manifest.objects {
+            if declared.name_from.is_none() {
+                continue;
+            }
+            let api_name = format!("{plugin_id}:{}", declared.name);
+            let object = tx
+                .object_by_api_name(&api_name)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            if let Some(name_from) = &object.name_from {
+                values::check_name_from(&object, name_from).map_err(|issue| {
+                    ObjectError::invalid(
+                        format!("{}/name_from", declared.name),
+                        PLUGIN_OBJECTS_INVALID,
+                        issue.detail,
+                    )
+                })?;
+            }
+            if renamed.contains(&api_name) {
+                self.rename_records(tx.as_mut(), &object, context).await?;
+            }
         }
         // Starting automations come with a new object only: afterwards they
         // belong to the workspace's administrators. They are checked once
@@ -193,8 +246,65 @@ impl ObjectService {
             self.put_plugin_automations(tx.as_mut(), plugin_id, &object, declared, context)
                 .await?;
         }
+        // Waiting entries whose objects are already in service join now.
+        self.offer_waiting_allowlists(tx.as_mut(), context).await?;
         tx.commit().await?;
         Ok(installed)
+    }
+
+    /// Adds each waiting allowlist entry (ADR 0035 G18) whose object is now
+    /// in service to its related-to field, once, through the same change as
+    /// an administrator's allowlist edit, which offers the field's related
+    /// actions to it. An entry that cannot be added yet, because the field
+    /// is gone or its allowlist is full, keeps waiting.
+    pub(crate) async fn offer_waiting_allowlists(
+        &self,
+        tx: &mut dyn ObjectTx,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        let waiting = tx.pending_allowlist_offers().await?;
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        for (object_id, field_id, name) in waiting {
+            let active = tx
+                .object_by_api_name(&name)
+                .await?
+                .is_some_and(|target| target.is_active());
+            if !active {
+                continue;
+            }
+            // Loaded per entry, so each change sees the one before.
+            let Some(object) = tx.object_by_id(object_id).await? else {
+                continue;
+            };
+            let Some(field) = object
+                .fields
+                .iter()
+                .find(|field| field.id == field_id && field.is_active())
+                .cloned()
+            else {
+                continue;
+            };
+            if !field.reference_objects.contains(&name) {
+                let mut names = field.reference_objects.clone();
+                names.push(name.clone());
+                let change: UpdateField = serde_json::from_value(serde_json::json!({
+                    "expected_version": field.version,
+                    "reference_objects": names,
+                }))
+                .map_err(|_| ObjectError::Invariant)?;
+                match Box::pin(self.change_field_in(tx, &object, field, change, context)).await {
+                    Ok(_) => {}
+                    // A full allowlist: it waits for room.
+                    Err(ObjectError::Validation(_)) => continue,
+                    Err(other) => return Err(other),
+                }
+            }
+            tx.mark_allowlist_offered(field_id, &name, Utc::now())
+                .await?;
+        }
+        Ok(())
     }
 
     async fn put_plugin_object(
@@ -202,10 +312,12 @@ impl ObjectService {
         tx: &mut dyn ObjectTx,
         plugin_id: &str,
         declared: &ObjectDecl,
-        prefixes: &mut Vec<String>,
+        progress: &mut InstallProgress,
         installed: &mut PluginObjectsInstalled,
         context: MutationContext,
     ) -> Result<(), ObjectError> {
+        let prefixes = &mut progress.prefixes;
+        let renamed = &mut progress.renamed;
         let api_name = format!("{plugin_id}:{}", declared.name);
         let mut issues = Vec::new();
         let mut checked = |field: &str, value: &str| {
@@ -246,6 +358,15 @@ impl ObjectService {
             .path_field
             .as_ref()
             .map(|field| format!("{plugin_id}:{field}"));
+        // Checked against the installed fields once they all exist.
+        let name_from = declared.name_from.as_ref().map(|decl| NameFrom {
+            fields: decl
+                .fields
+                .iter()
+                .map(|field| format!("{plugin_id}:{field}"))
+                .collect(),
+            separator: decl.separator.clone(),
+        });
         let now = Utc::now();
         match tx.object_by_api_name(&api_name).await? {
             None => {
@@ -275,6 +396,7 @@ impl ObjectService {
                     searchable,
                     in_navigation,
                     path_field,
+                    name_from,
                     status: DefinitionStatus::Active,
                     // Out of service until the plugin is enabled.
                     suspended: true,
@@ -311,6 +433,10 @@ impl ObjectService {
                 object.searchable = searchable;
                 object.in_navigation = in_navigation;
                 object.path_field = path_field;
+                if object.name_from != name_from {
+                    object.name_from = name_from;
+                    renamed.push(api_name.clone());
+                }
                 if object == existing {
                     return Ok(());
                 }
@@ -507,6 +633,9 @@ impl ObjectService {
             changed.push(object.api_name);
         }
         if !suspended {
+            // Optional allowlist entries naming objects that just came into
+            // service join their fields (ADR 0035 G18).
+            self.offer_waiting_allowlists(tx, context).await?;
             // Objects that entered a related-to allowlist while the plugin
             // was not enabled, or that a new declaration names, are offered
             // its related actions now (ADR 0033 §3).
@@ -541,6 +670,21 @@ impl ObjectService {
         }
         Ok(changed)
     }
+}
+
+/// Splits a related-to field's starting allowlist into the entries that
+/// name an optional dependency's objects, which wait until those are in
+/// service (ADR 0035 G18), and the field as installed now, without them.
+fn split_optional(manifest: &Manifest, field: &ObjectFieldDecl) -> (Vec<String>, ObjectFieldDecl) {
+    let mut field = field.clone();
+    let (waiting, now): (Vec<String>, Vec<String>) =
+        field.reference_objects.drain(..).partition(|target| {
+            target.split_once(':').is_some_and(|(namespace, _)| {
+                manifest.optional_dependencies.contains_key(namespace)
+            })
+        });
+    field.reference_objects = now;
+    (waiting, field)
 }
 
 /// The engine input a declared field stands for.

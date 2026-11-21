@@ -298,6 +298,7 @@ fn object_json(object: &ObjectDefinition, access: Option<AccessFlags>, with_fiel
         "searchable": object.searchable,
         "in_navigation": object.in_navigation,
         "path_field": object.path_field,
+        "name_from": object.name_from,
         "version": object.version,
         "created_at": object.created_at,
         "updated_at": object.updated_at,

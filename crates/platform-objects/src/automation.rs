@@ -223,6 +223,12 @@ pub const EVENT_BYTES_MAX: usize = 64 * 1024;
 /// The type a field takes and its decimal places, or why it cannot be set.
 fn assignable(target: &ObjectDefinition, field: &str) -> Result<(Type, Option<i32>), String> {
     if field == "name" {
+        if target.name_from.is_some() {
+            return Err(format!(
+                "the name of {} is made from its fields; set those instead",
+                target.api_name
+            ));
+        }
         return Ok((Type::Text, None));
     }
     let definition = target
@@ -524,7 +530,16 @@ fn check_automation(
             })
             .map(|field| field.api_name.as_str())
             .collect();
-        if !set.contains("name") {
+        let composed = target.name_from.as_ref();
+        // A composed name (ADR 0035 G17) needs one of its fields.
+        if composed.is_some_and(|name_from| {
+            !name_from
+                .fields
+                .iter()
+                .any(|field| set.contains(field.as_str()))
+        }) {
+            missing.insert(0, "one of the fields the name is made from");
+        } else if composed.is_none() && !set.contains("name") {
             missing.insert(0, "name");
         }
         if !missing.is_empty() {

@@ -18,6 +18,8 @@ pub mod field_types;
 pub mod formulas;
 pub mod jobs;
 pub mod lease;
+pub mod names;
+pub mod optional_dependencies;
 pub mod paths;
 pub mod plugin_objects;
 pub mod push;
@@ -1161,6 +1163,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) ->
             "custom:deal",
             UpdateObject {
                 path_field: None,
+                name_from: None,
                 expected_version: deal_definition.version,
                 label: None,
                 plural_label: None,

@@ -312,6 +312,18 @@ describe('workspace object pages', () => {
     expect(markup).toContain('<textarea');
   });
 
+  it('leaves the name to the engine when the object composes it (ADR 0035 G17)', async () => {
+    const composed = {...project, nameFrom: {fields: ['custom:code', 'custom:notes'], separator: ' '}};
+    const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={composed} onCancel={noop} onSaved={noop} />);
+    expect(markup).not.toContain('Project name');
+    expect(markup).toContain('Code');
+    const fetcher = respond(200, {api_name: 'custom:person', label: 'Person', plural_label: 'People', origin: 'plugin', key_prefix: 'per', name_label: 'Name', in_navigation: true, name_from: {fields: ['p:first', 'p:last'], separator: ', '}, version: 1});
+    const described = await createObjectsApiClient(workspace, fetcher).describe('custom:person');
+    expect(described.nameFrom).toEqual({fields: ['p:first', 'p:last'], separator: ', '});
+    const plain = respond(200, {api_name: 'custom:x', label: 'X', plural_label: 'Xs', origin: 'workspace', key_prefix: 'x00', name_label: 'Name', in_navigation: true, name_from: {fields: 'nope'}, version: 1});
+    expect((await createObjectsApiClient(workspace, plain).describe('custom:x')).nameFrom).toBeNull();
+  });
+
   it('offers Save, Save & New and Cancel, with Save & New only for those who may create', () => {
     const markup = renderToStaticMarkup(<RecordForm client={createFixtureObjectsClient()} object={project} onCancel={noop} onSaved={noop} />);
     expect(markup.match(/type="submit"/g)).toHaveLength(2);

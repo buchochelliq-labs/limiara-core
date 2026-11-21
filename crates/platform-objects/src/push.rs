@@ -615,7 +615,9 @@ fn record_values(
         fields.is_none_or(|fields| fields.contains(EVERY_FIELD) || fields.contains(name))
     };
     let mut values = Map::new();
-    if wanted("name") {
+    // A composed name (ADR 0035 G17) is the server's to write from the
+    // fields it is made of, which go below.
+    if wanted("name") && object.name_from.is_none() {
         values.insert("name".into(), Value::String(record.name.clone()));
     }
     for field in object.fields.iter().filter(|field| {

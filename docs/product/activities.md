@@ -53,8 +53,12 @@ platform.activities:starts_at`.
 ## Choosing what activities can point at
 
 *Related to* and *Who* start with no objects allowed, so they cannot hold a
-value until an administrator chooses their objects. Choose them through the
-objects API (an editor in the Object Manager follows):
+value until an administrator chooses their objects, with one exception:
+when Sales is enabled in the workspace, before or after Activities,
+Opportunities join *Related to* and Leads join *Who*, on tasks and events,
+and opportunities gain **Log a call**. Each joins once: an administrator
+who removes it keeps it removed. Choose the rest through the objects API
+(an editor in the Object Manager follows):
 
 ```http
 PATCH /api/v1/workspaces/{workspace}/objects/platform.activities:task/fields/platform.activities:related_to

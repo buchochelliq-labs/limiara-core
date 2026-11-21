@@ -19,8 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G8 and G11 are delivered too (below); every
-other gap and slice is still to do.
+`sync.server_only`. G2, G3, G5, G8, G11, G17 and G18 are delivered too (below);
+every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
 
@@ -74,6 +74,18 @@ Delivered:
   rules or automations, and counts restored and skipped links on the
   undelete response. The clear itself is unchanged (the accepted change).
   See [Recycle bin](../api/objects.md#recycle-bin).
+- G17, names composed from fields (2026-11-21). An object may declare
+  `name_from`: two or three of its own text fields and a separator, set by
+  administrators on workspace objects (`PATCH /objects/...`) and declared by
+  plugins in their manifests. The engine composes the name on every write
+  that touches those fields, refuses writes to the name
+  (`objects.name_composed`), keeps the fields from being deleted, and
+  carries the declaration to device replicas. Changing it renames the
+  object's records in the same transaction, as the engine already
+  reindexes on a field change, rather than in a background job; each rename
+  is a system change with history, a change-log entry and an event. A
+  background job can replace this if objects grow too large for one
+  transaction.
 - G8, long email addresses (2026-11-21). Email fields take a `max_length`
   from 1 to 320, declared on workspace fields, in manifests and when the
   field is changed; without one they allow 255, as before. An address's
@@ -86,6 +98,20 @@ Delivered:
   after which it follows its plugin like any other object. Both stores keep
   the flag (`object_definitions.dormant`). No kernel route wakes objects
   yet: the Contacts cutover (slice 5) will.
+- G18, optional dependencies (2026-11-21). A manifest may declare
+  `optional_dependencies`, plugin ids with a version range, which may not
+  be the plugin itself or one of its dependencies. A related-to field may
+  then name those plugins' objects in its allowlist; a lookup may not,
+  since it has one target and could not work without it. Each such entry
+  is kept in a tenant-scoped table with forced row-level security
+  (`field_allowlist_offers`) and joins the field when the named object is
+  active, at install or when its plugin is enabled, including on
+  installations that already exist. Joining is an ordinary field change,
+  so the declaring plugin's related actions are offered as for any new
+  entry. An entry joins once: an administrator's removal sticks through
+  re-enabling and upgrades. A full allowlist leaves it waiting until an administrator makes room. Activities
+  names Sales' opportunity in Related to and lead in Who; Contacts' Person
+  and Organisation follow with §7.
 
 ## Context
 
@@ -274,7 +300,7 @@ engine work that ships first (slice 1) or an accepted behaviour change.
 | G14 | **Disabled custom fields.** The engine's field lifecycle is active or deleted (retired, values kept). | Accepted change: disabled and archived definitions become retired fields. Their values stay in the record document, hidden as today's archived values are; a disabled field can no longer be read back. |
 | G15 | **Formula fields in manifests.** Not declarable (roadmap). | Not needed: Contacts declares none. |
 | G17 | **A name composed from fields.** An engine object's name is a stored field that members write directly. | Engine first: an object may declare `name_from` (two or three of its own text fields and a separator). The engine then computes the name on every write from those fields, refuses writes to the name itself (`objects.name_composed`), and recomputes every record's name in a batch job when the declaration changes. The name stays a stored, indexed, searchable column, so reads do not change. |
-| G18 | **Starting allowlist values for an optional plugin's objects.** A manifest may name only objects of plugins it depends on (ADR 0033 §2), and an upgrade never overwrites an installed allowlist. | Engine first: a manifest may declare `optional_dependencies` (plugin ids with a version range). A related-to or lookup field may then list objects of those plugins in its starting allowlist. Such an entry is added to the field when the named object first becomes active in the workspace, including on installations that already exist, and is tracked like an offered related action (ADR 0033 §2): added once per field, never re-added after an administrator removes it, and never required for the field to work. An optional dependency grants nothing; it only allows naming. |
+| G18 | **Starting allowlist values for an optional plugin's objects.** A manifest may name only objects of plugins it depends on (ADR 0033 §2), and an upgrade never overwrites an installed allowlist. | Engine first: a manifest may declare `optional_dependencies` (plugin ids with a version range). A related-to field may then list objects of those plugins in its starting allowlist (a lookup cannot: it has one target). Such an entry is added to the field when the named object first becomes active in the workspace, including on installations that already exist, and is tracked like an offered related action (ADR 0033 §2): added once per field, never re-added after an administrator removes it, and never required for the field to work. An optional dependency grants nothing; it only allows naming. |
 | G16 | **Workspace page layouts.** Contacts pages carry field zones and published customisation overlays; generic engine pages have no layouts yet. | Handled by the UI slice (§3): a workspace with published overlays or arranged field zones keeps the Contacts pages until the engine has record layouts. |
 
 Unique custom fields compare without case in the engine (ADR 0015 §2);

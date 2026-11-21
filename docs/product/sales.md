@@ -109,6 +109,15 @@ may see. They are the workspace's reports: members who manage reports can
 change or delete them. A changed report stays as the workspace made it
 when Sales is upgraded, and a deleted one is not added again.
 
+## Activities
+
+When Activities is enabled too, in either order, opportunities can be
+chosen in a task's or event's *Related to* and leads in its *Who*. Each
+opportunity's page offers **Log a call**, and both show the tasks and
+events that point at them in their **Activity** section. An administrator
+may take either out of Activities' lists; they are not added back. See
+[Using Activities](activities.md).
+
 ## Not yet
 
 Leads and opportunities stand alone for now. Their links to accounts and
