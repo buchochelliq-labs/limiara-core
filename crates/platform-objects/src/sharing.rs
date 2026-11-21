@@ -212,6 +212,7 @@ mod tests {
     fn object(sharing_model: SharingModel, grant_hierarchy: bool) -> ObjectDefinition {
         ObjectDefinition {
             path_field: None,
+            name_from: None,
             id: Uuid::nil(),
             api_name: "custom:deal".into(),
             label: "Deal".into(),

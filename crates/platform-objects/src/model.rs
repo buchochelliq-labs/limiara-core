@@ -459,6 +459,9 @@ pub struct ObjectDefinition {
     /// The picklist field whose values the record page shows as a path
     /// and the board groups by (ADR 0037 §2), by API name.
     pub path_field: Option<String>,
+    /// The fields the record name is composed from (ADR 0035 G17); the
+    /// engine then writes the name itself.
+    pub name_from: Option<NameFrom>,
     pub status: DefinitionStatus,
     /// Whether the object is out of service because its owning plugin is
     /// not enabled in the workspace (ADR 0033 §2). A suspended object is
@@ -566,6 +569,44 @@ pub struct UpdateObject {
     /// The path field's API name, or `null` to have none (ADR 0037 §2).
     #[serde(default, deserialize_with = "crate::model::present")]
     pub path_field: Option<Option<String>>,
+    /// The fields the name is composed from, or `null` to let members write
+    /// it again (ADR 0035 G17).
+    #[serde(default, deserialize_with = "crate::model::present")]
+    pub name_from: Option<Option<NameFrom>>,
+}
+
+/// A record name composed from two or three of the object's own text fields
+/// (ADR 0035 G17): their non-empty values, trimmed, joined by `separator`,
+/// and cut to 255 characters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameFrom {
+    /// Field API names, in order.
+    pub fields: Vec<String>,
+    #[serde(default = "NameFrom::default_separator")]
+    pub separator: String,
+}
+
+impl NameFrom {
+    pub fn default_separator() -> String {
+        " ".to_owned()
+    }
+
+    /// The name these fields make from `values`, or `None` when all are
+    /// empty.
+    pub fn compose(&self, values: &BTreeMap<String, Value>) -> Option<String> {
+        let parts: Vec<&str> = self
+            .fields
+            .iter()
+            .filter_map(|field| values.get(field).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        Some(parts.join(&self.separator).chars().take(255).collect())
+    }
 }
 
 /// Reads an update field that may be left out (keep the value), `null`

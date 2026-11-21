@@ -1611,6 +1611,32 @@ delete_behaviour = "restrict""#,
     }
 
     #[test]
+    fn composed_names_are_validated_when_the_manifest_is_read() {
+        let manifest = |name_from: &str| {
+            objects_manifest(
+                "example.work",
+                &format!(
+                    "{TASK}name_from = {name_from}\n\n[[objects.fields]]\nname = \"first\"\nlabel = \"First\"\nfield_type = \"text\"\n\n[[objects.fields]]\nname = \"last\"\nlabel = \"Last\"\nfield_type = \"text\"\n\n[[objects.fields]]\nname = \"age\"\nlabel = \"Age\"\nfield_type = \"number\"\n"
+                ),
+            )
+        };
+        let parsed = manifest("{ fields = [\"first\", \"last\"] }").expect("a composed name");
+        let declared = parsed.objects[0].name_from.as_ref().expect("name_from");
+        assert_eq!(declared.separator, " ", "a space by default");
+        manifest("{ fields = [\"last\", \"first\"], separator = \", \" }").expect("a separator");
+        let refused = |name_from: &str| object_reason(manifest(name_from));
+        assert!(refused("{ fields = [\"first\"] }").contains("two or three"));
+        assert!(refused("{ fields = [\"first\", \"age\"] }").contains("text fields"));
+        assert!(refused("{ fields = [\"first\", \"nope\"] }").contains("text fields"));
+        assert!(refused("{ fields = [\"first\", \"first\"] }").contains("once"));
+        assert!(
+            refused("{ fields = [\"first\", \"last\"], separator = \"------\" }")
+                .contains("separator")
+        );
+        assert!(manifest("{ fields = [\"first\", \"last\"], other = 1 }").is_err());
+    }
+
+    #[test]
     fn reports_are_validated_when_the_manifest_is_read() {
         let manifest = |report: &str| {
             objects_manifest("example.work", &format!("{TASK}\n[[reports]]\n{report}\n"))

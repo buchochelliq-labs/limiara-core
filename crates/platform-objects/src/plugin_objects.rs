@@ -43,9 +43,9 @@ use crate::events::Change;
 use crate::service::{MutationContext, ObjectService, OBJECTS_PER_WORKSPACE_MAX};
 use crate::values::{self, LABEL_MAX};
 use crate::{
-    CreateField, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, ObjectDefinition,
-    ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel, UpdateField,
-    ValidationIssue,
+    CreateField, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, NameFrom,
+    ObjectDefinition, ObjectError, ObjectTx, OptionOutcome, Origin, PicklistOption, SharingModel,
+    UpdateField, ValidationIssue,
 };
 use chrono::Utc;
 use plugin_contract::objects::ObjectOptionOutcome;
@@ -87,6 +87,15 @@ impl PluginObjectsInstalled {
             && self.created_fields.is_empty()
             && self.updated_fields.is_empty()
     }
+}
+
+/// What one installation has done so far, across its objects.
+struct InstallProgress {
+    /// Key prefixes the workspace's objects use, the new ones included.
+    prefixes: Vec<String>,
+    /// Existing objects whose composed name changed (ADR 0035 G17), whose
+    /// records are renamed once every field is installed.
+    renamed: Vec<String>,
 }
 
 impl ObjectService {
@@ -135,18 +144,22 @@ impl ObjectService {
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
         // Objects first, so fields can point at any of them.
-        let mut prefixes = tx.key_prefixes().await?;
+        let mut progress = InstallProgress {
+            prefixes: tx.key_prefixes().await?,
+            renamed: Vec::new(),
+        };
         for declared in &manifest.objects {
             self.put_plugin_object(
                 tx.as_mut(),
                 plugin_id,
                 declared,
-                &mut prefixes,
+                &mut progress,
                 &mut installed,
                 context,
             )
             .await?;
         }
+        let renamed = progress.renamed;
         for declared in &manifest.objects {
             let api_name = format!("{plugin_id}:{}", declared.name);
             for field in &declared.fields {
@@ -177,6 +190,30 @@ impl ObjectService {
             self.put_plugin_timeline(tx.as_mut(), plugin_id, &object, declared)
                 .await?;
         }
+        // Composed names (ADR 0035 G17) are checked once every field exists;
+        // an upgrade that changes one renames the object's records.
+        for declared in &manifest.objects {
+            if declared.name_from.is_none() {
+                continue;
+            }
+            let api_name = format!("{plugin_id}:{}", declared.name);
+            let object = tx
+                .object_by_api_name(&api_name)
+                .await?
+                .ok_or(ObjectError::Invariant)?;
+            if let Some(name_from) = &object.name_from {
+                values::check_name_from(&object, name_from).map_err(|issue| {
+                    ObjectError::invalid(
+                        format!("{}/name_from", declared.name),
+                        PLUGIN_OBJECTS_INVALID,
+                        issue.detail,
+                    )
+                })?;
+            }
+            if renamed.contains(&api_name) {
+                self.rename_records(tx.as_mut(), &object, context).await?;
+            }
+        }
         // Starting automations come with a new object only: afterwards they
         // belong to the workspace's administrators. They are checked once
         // every object's fields are installed, so a formula may follow a
@@ -202,10 +239,12 @@ impl ObjectService {
         tx: &mut dyn ObjectTx,
         plugin_id: &str,
         declared: &ObjectDecl,
-        prefixes: &mut Vec<String>,
+        progress: &mut InstallProgress,
         installed: &mut PluginObjectsInstalled,
         context: MutationContext,
     ) -> Result<(), ObjectError> {
+        let prefixes = &mut progress.prefixes;
+        let renamed = &mut progress.renamed;
         let api_name = format!("{plugin_id}:{}", declared.name);
         let mut issues = Vec::new();
         let mut checked = |field: &str, value: &str| {
@@ -246,6 +285,15 @@ impl ObjectService {
             .path_field
             .as_ref()
             .map(|field| format!("{plugin_id}:{field}"));
+        // Checked against the installed fields once they all exist.
+        let name_from = declared.name_from.as_ref().map(|decl| NameFrom {
+            fields: decl
+                .fields
+                .iter()
+                .map(|field| format!("{plugin_id}:{field}"))
+                .collect(),
+            separator: decl.separator.clone(),
+        });
         let now = Utc::now();
         match tx.object_by_api_name(&api_name).await? {
             None => {
@@ -275,6 +323,7 @@ impl ObjectService {
                     searchable,
                     in_navigation,
                     path_field,
+                    name_from,
                     status: DefinitionStatus::Active,
                     // Out of service until the plugin is enabled.
                     suspended: true,
@@ -311,6 +360,10 @@ impl ObjectService {
                 object.searchable = searchable;
                 object.in_navigation = in_navigation;
                 object.path_field = path_field;
+                if object.name_from != name_from {
+                    object.name_from = name_from;
+                    renamed.push(api_name.clone());
+                }
                 if object == existing {
                     return Ok(());
                 }

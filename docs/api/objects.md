@@ -52,7 +52,7 @@ can read returns `403 auth.permission_denied`.
 | `GET /objects` | Objects the caller can read, with their effective `access`, plus `can_manage` |
 | `POST /objects` | Create an object: `name`, `label`, `plural_label`, optional `description`, `name_label`, `sharing_model` (`private`, `read`, `read_write`), `grant_hierarchy`, `searchable`, `in_navigation` |
 | `GET /objects/{api_name}` | Describe an object with its active fields in order |
-| `PATCH /objects/{api_name}` | Change labels and settings, including `path_field`; send `expected_version` |
+| `PATCH /objects/{api_name}` | Change labels and settings, including `path_field` and `name_from`; send `expected_version` |
 | `DELETE /objects/{api_name}?expected_version=` | Delete an object; refused with `409 objects.object_referenced` while lookups, or related-to fields that allow nothing else, point to it, and `409 objects.object_in_use` while an automation creates its records |
 | `POST /objects/{api_name}/fields` | Create a field |
 | `PATCH /objects/{api_name}/fields/{field}` | Change a field; send `expected_version` |
@@ -180,6 +180,33 @@ cannot read the field (field permissions) is described an object with no
 `path_field`. Describing an object always returns `path_field`; device
 replicas carry it with the rest of the definition.
 
+### Composed names
+
+An object's `name_from` (ADR 0035 G17) makes the engine write every
+record's name from two or three of the object's own active text fields:
+
+```json
+{"expected_version": 4, "name_from": {"fields": ["custom:first_name", "custom:last_name"], "separator": " "}}
+```
+
+- The name is their non-empty values, trimmed, in order, joined by
+  `separator` (a space by default; at most five printable characters) and
+  cut to 255 characters. Anything else answers
+  `400 objects.name_from_invalid`; `null` clears it.
+- Writes compose the name on create and whenever one of the fields
+  changes. A body that sends `name` answers `400 objects.name_composed`,
+  and a record whose fields would all be empty answers
+  `400 records.name_required` on the first of them. The name stays a
+  stored column, so lists, sorting, queries and search are unchanged.
+- Setting or changing it renames every record, in the recycle bin too, in
+  the same request: each rename is a system change with its own version,
+  history entry, change-log entry and `record-updated` event. A record
+  whose fields are all empty keeps its name. Clearing it keeps every name
+  as it is and lets members write names again.
+- A field is not deleted while it makes the name
+  (`409 objects.field_in_use`). Describing an object returns `name_from`,
+  and device replicas compose names offline the same way.
+
 ### Plugin objects
 
 Plugins declare objects and fields in their manifest (`[[objects]]`, see
@@ -198,7 +225,7 @@ administrators add.
   `reference_objects` changes its allowlist (see Related-to fields).
 - `PATCH /objects/{api_name}` on a plugin object may change only
   `sharing_model` and `grant_hierarchy`; any other setting, `path_field`
-  included, answers `409 objects.plugin_owned`.
+  and `name_from` included, answers `409 objects.plugin_owned`.
 - Custom fields, validation rules, automations, quick actions and object
   permissions on plugin objects work as on any object. Role permissions
   start empty, as for a new workspace object.

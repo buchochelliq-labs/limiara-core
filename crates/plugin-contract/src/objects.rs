@@ -112,6 +112,10 @@ pub struct ObjectDecl {
     /// path and the board groups by (ADR 0037 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_field: Option<String>,
+    /// The fields the record name is composed from (ADR 0035 G17): the
+    /// engine then writes every record's name itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_from: Option<NameFromDecl>,
     /// Installed out of service: the object stays suspended when the plugin
     /// is enabled, until the plugin wakes it (ADR 0035 G11). Waking is for
     /// good; a later manifest cannot make an awake object dormant again.
@@ -140,6 +144,26 @@ pub struct ObjectAutomationDecl {
     pub condition: Option<String>,
     pub set: Vec<ObjectAutomationValue>,
 }
+
+/// A record name composed from two or three of the object's own text
+/// fields, joined by `separator` (ADR 0035 G17).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NameFromDecl {
+    /// Short names of the object's text fields, in order.
+    pub fields: Vec<String>,
+    #[serde(default = "NameFromDecl::default_separator")]
+    pub separator: String,
+}
+
+impl NameFromDecl {
+    fn default_separator() -> String {
+        " ".to_owned()
+    }
+}
+
+/// Characters in a composed name's separator.
+pub const MAX_NAME_SEPARATOR: usize = 5;
 
 /// The saves a starting automation runs on.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -622,6 +646,36 @@ pub fn validate_objects<'a>(
                 return Err(issue("duplicate automation name"));
             }
             validate_automation(object, automation).map_err(issue)?;
+        }
+        if let Some(name_from) = &object.name_from {
+            let issue = |reason| ObjectDeclIssue {
+                object: object.name.clone(),
+                field: Some("name_from".to_owned()),
+                reason,
+            };
+            if !(2..=3).contains(&name_from.fields.len()) {
+                return Err(issue("name_from names two or three fields"));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for name in &name_from.fields {
+                let text = object
+                    .fields
+                    .iter()
+                    .any(|field| field.name == *name && field.field_type == ObjectFieldType::Text);
+                if !text {
+                    return Err(issue("name_from names the object's own text fields"));
+                }
+                if !seen.insert(name.as_str()) {
+                    return Err(issue("name_from names each field once"));
+                }
+            }
+            if name_from.separator.chars().count() > MAX_NAME_SEPARATOR
+                || name_from.separator.chars().any(char::is_control)
+            {
+                return Err(issue(
+                    "name_from's separator has at most 5 printable characters",
+                ));
+            }
         }
         if let Some(path_field) = &object.path_field {
             let is_picklist = object.fields.iter().any(|field| {

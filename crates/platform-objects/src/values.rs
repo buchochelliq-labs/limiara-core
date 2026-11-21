@@ -740,6 +740,38 @@ pub struct ValueChange {
 /// Unknown keys and invalid values are rejected together; required fields
 /// must hold a value afterwards. On create, `existing` is empty and defaults
 /// fill absent fields.
+/// Checks that `name_from` names two or three distinct, active text fields
+/// of `object`, with a separator of at most five printable characters
+/// (ADR 0035 G17).
+pub fn check_name_from(
+    object: &ObjectDefinition,
+    name_from: &crate::NameFrom,
+) -> Result<(), ValidationIssue> {
+    let invalid = |detail: &str| {
+        ValidationIssue::new("name_from", "objects.name_from_invalid", detail.to_owned())
+    };
+    if !(2..=3).contains(&name_from.fields.len()) {
+        return Err(invalid("name two or three fields"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for api_name in &name_from.fields {
+        let text = object
+            .field(api_name)
+            .is_some_and(|field| field.is_active() && field.field_type == FieldType::Text);
+        if !text {
+            return Err(invalid("name text fields of this object"));
+        }
+        if !seen.insert(api_name.as_str()) {
+            return Err(invalid("name each field once"));
+        }
+    }
+    if name_from.separator.chars().count() > 5 || name_from.separator.chars().any(char::is_control)
+    {
+        return Err(invalid("use a separator of at most 5 printable characters"));
+    }
+    Ok(())
+}
+
 pub fn apply_values(
     object: &ObjectDefinition,
     existing: &BTreeMap<String, Value>,
@@ -755,6 +787,14 @@ pub fn apply_values(
     let mut changed = Vec::new();
     let mut name = None;
     for (key, raw) in body {
+        if key == "name" && object.name_from.is_some() {
+            issues.push(ValidationIssue::new(
+                "name",
+                "objects.name_composed",
+                "the name is made from other fields; change those instead",
+            ));
+            continue;
+        }
         if key == "name" {
             match record_name(raw) {
                 Ok(value) => name = Some(value),
@@ -786,7 +826,7 @@ pub fn apply_values(
         }
     }
     if creating {
-        if name.is_none() {
+        if name.is_none() && object.name_from.is_none() {
             issues.push(ValidationIssue::new(
                 "name",
                 "records.name_required",
@@ -808,6 +848,25 @@ pub fn apply_values(
                     values.insert(field.api_name.clone(), value);
                     changed.push(field.api_name.clone());
                 }
+            }
+        }
+    }
+    // A composed name follows its fields (ADR 0035 G17): written on create
+    // and whenever one of them changes, and never left empty.
+    if let Some(name_from) = &object.name_from {
+        let touched = creating || name_from.fields.iter().any(|field| changed.contains(field));
+        if touched {
+            match name_from.compose(&values) {
+                Some(composed) => name = Some(composed),
+                None => issues.push(ValidationIssue::new(
+                    name_from
+                        .fields
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "name".into()),
+                    "records.name_required",
+                    "enter at least one of the fields the name is made from",
+                )),
             }
         }
     }
@@ -1047,6 +1106,7 @@ mod tests {
     fn object(fields: Vec<FieldDefinition>) -> ObjectDefinition {
         ObjectDefinition {
             path_field: None,
+            name_from: None,
             id: Uuid::nil(),
             api_name: "custom:project".into(),
             label: "Project".into(),
@@ -1126,6 +1186,48 @@ mod tests {
                 .code,
             "records.email_invalid"
         );
+    }
+
+    /// A composed name (ADR 0035 G17) joins the non-empty, trimmed parts in
+    /// order and is cut to 255 characters.
+    #[test]
+    fn composed_names_join_their_parts() {
+        let name_from = crate::NameFrom {
+            fields: vec![
+                "custom:first".into(),
+                "custom:middle".into(),
+                "custom:last".into(),
+            ],
+            separator: " ".into(),
+        };
+        let values = |pairs: &[(&str, Value)]| -> BTreeMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect()
+        };
+        assert_eq!(
+            name_from.compose(&values(&[
+                ("custom:last", json!("Lovelace")),
+                ("custom:first", json!(" Ada ")),
+                ("custom:middle", json!("  ")),
+            ])),
+            Some("Ada Lovelace".into())
+        );
+        assert_eq!(name_from.compose(&values(&[])), None);
+        assert_eq!(
+            name_from.compose(&values(&[("custom:middle", json!(7))])),
+            None,
+            "only text counts"
+        );
+        let long = "x".repeat(200);
+        let composed = name_from
+            .compose(&values(&[
+                ("custom:first", json!(long)),
+                ("custom:last", json!(long)),
+            ]))
+            .expect("name");
+        assert_eq!(composed.chars().count(), 255);
     }
 
     #[test]
