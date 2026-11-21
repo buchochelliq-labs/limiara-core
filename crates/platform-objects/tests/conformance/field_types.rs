@@ -1,6 +1,7 @@
 //! Field types and their limits on every backend (ADR 0035 slice 1). An
 //! email field may allow addresses of up to 320 characters (G8): declared
-//! when the field is created or changed later, and kept by the store.
+//! when the field is created or changed later, and kept by the store. A
+//! plugin upgrade that drops an email field's limit brings it back to 255.
 
 use super::{body, caller, codes, context, field, object, service, ADMIN_PERMISSIONS};
 use platform_objects::*;
@@ -85,4 +86,62 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         .await
         .expect("raise the limit");
     assert_eq!(raised.max_length, Some(320));
+
+    // A plugin's email field follows its manifest's limit, and dropping the
+    // limit brings it back to the default.
+    let plugin = "example.mail";
+    let mut manifest = plugin_contract::Manifest::parse_toml(include_str!(
+        "../../../../plugins/sales/plugin.toml"
+    ))
+    .expect("base");
+    manifest.id = plugin.into();
+    let declared = |max_length: Option<i32>| {
+        serde_json::from_value(json!([{
+            "name": "contact", "label": "Contact", "plural_label": "Contacts", "key_prefix": "mlc",
+            "fields": [{"name": "email", "label": "Email", "field_type": "email", "max_length": max_length}]
+        }]))
+        .expect("objects")
+    };
+    manifest.objects = declared(Some(100));
+    let installer = service(
+        &store,
+        ObjectCaller::plugin_installer(tenant, Uuid::now_v7(), plugin),
+    );
+    installer
+        .install_plugin_objects(&manifest, context())
+        .await
+        .expect("install");
+    let email_limit = |admin: ObjectService| async move {
+        admin
+            .describe("example.mail:contact")
+            .await
+            .expect("describe")
+            .0
+            .field("example.mail:email")
+            .expect("email")
+            .max_length
+    };
+    installer
+        .resume_plugin_objects(plugin, context())
+        .await
+        .expect("resume");
+    assert_eq!(email_limit(admin.clone()).await, Some(100));
+    manifest.objects = declared(None);
+    let upgraded = installer
+        .install_plugin_objects(&manifest, context())
+        .await
+        .expect("upgrade");
+    assert_eq!(
+        upgraded.updated_fields,
+        ["example.mail:contact/example.mail:email"]
+    );
+    assert_eq!(email_limit(admin.clone()).await, Some(255));
+    assert!(
+        installer
+            .install_plugin_objects(&manifest, context())
+            .await
+            .expect("reinstall")
+            .is_empty(),
+        "the default matches an omitted limit"
+    );
 }

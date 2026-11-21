@@ -588,8 +588,15 @@ fn field_update(
         update.track_history = Some(declared.track_history);
         changed = true;
     }
-    if shape.max_length != existing.max_length {
-        update.max_length = shape.max_length;
+    // An email field without a limit allows the default (ADR 0035 G8), so a
+    // manifest that drops its limit brings the field back to it, and an
+    // omitted limit matches an installed default.
+    let effective = |length: Option<i32>| match existing.field_type {
+        FieldType::Email => length.or(Some(values::TEXT_DEFAULT_MAX)),
+        _ => length,
+    };
+    if effective(shape.max_length) != effective(existing.max_length) {
+        update.max_length = effective(shape.max_length);
         changed = true;
     }
     // Options the manifest no longer declares stay, inactive, so records
