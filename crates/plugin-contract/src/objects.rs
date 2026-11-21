@@ -43,6 +43,9 @@ pub const MAX_PLUGIN_OBJECTS: usize = 20;
 /// Fields per declared object. Workspace administrators may add their own
 /// `custom` fields on top, up to the engine's limit per object.
 pub const MAX_PLUGIN_OBJECT_FIELDS: usize = 100;
+/// The longest email address a plugin's email field may allow (ADR 0035
+/// G8); without `max_length` it allows 255.
+pub const MAX_PLUGIN_EMAIL_LENGTH: i32 = 320;
 /// Picklist options per field.
 pub const MAX_PLUGIN_FIELD_OPTIONS: usize = 200;
 /// Objects a related-to field may allow, as in the engine. A plugin's
@@ -945,8 +948,14 @@ fn validate_field(
         {
             return Err("max_length of a long text field must be between 1 and 131072");
         }
-        (ObjectFieldType::Text | ObjectFieldType::LongText, _) | (_, None) => {}
-        (_, Some(_)) => return Err("only text fields take max_length"),
+        (ObjectFieldType::Email, Some(length))
+            if !(1..=MAX_PLUGIN_EMAIL_LENGTH).contains(&length) =>
+        {
+            return Err("max_length of an email field must be between 1 and 320");
+        }
+        (ObjectFieldType::Text | ObjectFieldType::LongText | ObjectFieldType::Email, _)
+        | (_, None) => {}
+        (_, Some(_)) => return Err("only text and email fields take max_length"),
     }
     match (kind.is_numeric(), field.scale) {
         (true, Some(scale)) if !(0..=MAX_PLUGIN_FIELD_SCALE).contains(&scale) => {
