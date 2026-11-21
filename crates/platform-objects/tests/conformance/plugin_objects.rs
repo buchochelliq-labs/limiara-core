@@ -728,6 +728,97 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .await
         .expect("records are back after reinstalling");
 
+    // --- Dormant objects wait for their plugin to wake them (ADR 0035 G11) --
+    let vault_plugin = "example.vault";
+    let mut vault = fixture();
+    vault.id = vault_plugin.into();
+    vault.objects = serde_json::from_value(serde_json::json!([
+        {"name": "safe", "label": "Safe", "plural_label": "Safes", "key_prefix": "vlt",
+         "dormant": true},
+        {"name": "key", "label": "Key", "plural_label": "Keys", "key_prefix": "vky"}
+    ]))
+    .expect("objects");
+    assert!(vault.objects[0].dormant && !vault.objects[1].dormant);
+    let keeper = service(
+        &store,
+        ObjectCaller::plugin_installer(tenant, member, vault_plugin),
+    );
+    keeper
+        .install_plugin_objects(&vault, context())
+        .await
+        .expect("install");
+    keeper
+        .resume_plugin_objects(vault_plugin, context())
+        .await
+        .expect("enable");
+    admin
+        .describe("example.vault:key")
+        .await
+        .expect("an ordinary object comes into service");
+    assert!(
+        matches!(
+            admin.describe("example.vault:safe").await,
+            Err(ObjectError::NotFound)
+        ),
+        "a dormant object stays out of service when its plugin is enabled"
+    );
+    // Only its plugin's installer wakes it, and only its own objects.
+    assert!(matches!(
+        admin
+            .wake_plugin_objects(vault_plugin, &["example.vault:safe"], context())
+            .await,
+        Err(ObjectError::PermissionDenied)
+    ));
+    assert!(matches!(
+        keeper
+            .wake_plugin_objects(vault_plugin, &[TICKET], context())
+            .await,
+        Err(ObjectError::NotFound)
+    ));
+    assert_eq!(
+        keeper
+            .wake_plugin_objects(
+                vault_plugin,
+                &["example.vault:safe", "example.vault:key"],
+                context()
+            )
+            .await
+            .expect("wake"),
+        ["example.vault:safe"],
+        "only dormant objects are woken"
+    );
+    admin
+        .describe("example.vault:safe")
+        .await
+        .expect("in service once woken");
+    assert!(keeper
+        .wake_plugin_objects(vault_plugin, &["example.vault:safe"], context())
+        .await
+        .expect("waking again")
+        .is_empty());
+    // Waking is for good: it follows its plugin, and an upgrade that still
+    // declares it dormant leaves it awake.
+    keeper
+        .suspend_plugin_objects(vault_plugin, context())
+        .await
+        .expect("disable");
+    assert!(matches!(
+        admin.describe("example.vault:safe").await,
+        Err(ObjectError::NotFound)
+    ));
+    keeper
+        .install_plugin_objects(&vault, context())
+        .await
+        .expect("upgrade");
+    keeper
+        .resume_plugin_objects(vault_plugin, context())
+        .await
+        .expect("enable again");
+    admin
+        .describe("example.vault:safe")
+        .await
+        .expect("still awake after an upgrade");
+
     Report {
         record_ids: vec![apollo.id, launch.id],
     }

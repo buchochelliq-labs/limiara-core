@@ -495,6 +495,7 @@ impl ObjectService {
             path_field: None,
             status: DefinitionStatus::Active,
             suspended: false,
+            dormant: false,
             version: 1,
             created_at: now,
             created_by: Some(self.caller.user_id()),

@@ -32,6 +32,12 @@
 //! New objects are created suspended: the kernel resumes them once the
 //! plugin is enabled, so a failure between installing and enabling never
 //! shows objects of a plugin that is not enabled.
+//!
+//! An object the manifest marks `dormant` (ADR 0035 G11) is created
+//! suspended and stays suspended when the plugin is enabled, until the
+//! plugin wakes it ([`ObjectService::wake_plugin_objects`]); from then on it
+//! follows the plugin like any other object. An upgrade never changes
+//! whether an existing object is dormant.
 
 use crate::events::Change;
 use crate::service::{MutationContext, ObjectService, OBJECTS_PER_WORKSPACE_MAX};
@@ -272,6 +278,7 @@ impl ObjectService {
                     status: DefinitionStatus::Active,
                     // Out of service until the plugin is enabled.
                     suspended: true,
+                    dormant: declared.dormant,
                     version: 1,
                     created_at: now,
                     created_by: Some(self.caller().user_id()),
@@ -405,6 +412,51 @@ impl ObjectService {
             .await
     }
 
+    /// Wakes dormant objects of the caller's plugin (ADR 0035 G11): each
+    /// named object stops being dormant, for good, and comes into service
+    /// with the plugin's other objects. Only a plugin installer for
+    /// `plugin_id` may, and the kernel does so only while the plugin is
+    /// enabled. Objects already awake are left alone; an object the plugin
+    /// does not own is refused. Returns the objects woken.
+    pub async fn wake_plugin_objects(
+        &self,
+        plugin_id: &str,
+        objects: &[&str],
+        context: MutationContext,
+    ) -> Result<Vec<String>, ObjectError> {
+        self.require_installer(plugin_id)?;
+        let mut tx = self.begin().await?;
+        tx.lock_metadata().await?;
+        let owned = tx.objects_owned_by(plugin_id).await?;
+        let mut woken = Vec::new();
+        for api_name in objects {
+            let existing = owned
+                .iter()
+                .find(|object| object.api_name == *api_name)
+                .ok_or(ObjectError::NotFound)?;
+            if !existing.dormant {
+                continue;
+            }
+            let mut object = existing.clone();
+            object.dormant = false;
+            object.version += 1;
+            object.updated_at = Utc::now();
+            object.updated_by = Some(self.caller().user_id());
+            if !tx.update_object(&object, existing.version).await? {
+                return Err(ObjectError::VersionConflict);
+            }
+            self.record_change(tx.as_mut(), context, Change::ObjectWoken(&object))
+                .await?;
+            woken.push(object.api_name);
+        }
+        tx.commit().await?;
+        if !woken.is_empty() {
+            self.set_plugin_objects_suspended(plugin_id, false, context)
+                .await?;
+        }
+        Ok(woken)
+    }
+
     async fn set_plugin_objects_suspended(
         &self,
         plugin_id: &str,
@@ -419,7 +471,9 @@ impl ObjectService {
         tx.set_plugin_reports_suspended(plugin_id, suspended)
             .await?;
         for existing in tx.objects_owned_by(plugin_id).await? {
-            if existing.suspended == suspended {
+            // A dormant object stays out of service until its plugin wakes
+            // it (ADR 0035 G11).
+            if existing.suspended == suspended || (!suspended && existing.dormant) {
                 continue;
             }
             let mut object = existing.clone();

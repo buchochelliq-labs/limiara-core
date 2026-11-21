@@ -64,6 +64,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `sharing_model` | `private`, `read` or `read_write` (the default). Only the starting value: the workspace owns it afterwards. |
 | `searchable`, `in_navigation` | Default `true`. |
 | `track_history` | Default `false`. |
+| `dormant` | Optional, default `false`. A dormant object is installed out of service and stays out of service when the plugin is enabled, until the plugin wakes it (see below; ADR 0035 G11). |
 | `path_field` | Optional. The short name of one of the object's single-value picklists: the record page shows it as a path and the board groups by it (ADR 0037 §2). Upgrades keep it in line with the manifest. |
 
 | Field setting | Rule |
@@ -312,6 +313,16 @@ What the engine does with them:
 | Enable after disabling | They come back unchanged, records included. |
 | Remove | They stay suspended and keep their records for export. Reinstalling brings them back. No purge happens yet. |
 
+A **dormant** object (`dormant = true`, ADR 0035 G11) is created like any
+other but does not come into service when the plugin is enabled. The
+kernel brings it into service only when the plugin wakes it, as its own
+step (for Contacts, the cutover of a migrated workspace), through the
+engine's `wake_plugin_objects`, which only the plugin's installer may call.
+Waking is for good: from then on the object follows its plugin like any
+other, and an upgrade that still declares it dormant leaves it awake. Only
+a dormant object can be woken; waking an awake one does nothing, and an
+object the plugin does not own is refused.
+
 Enabling is refused, and the plugin stays as it was, when the workspace
 cannot take the objects:
 
@@ -330,7 +341,8 @@ with a member's permissions, and leaves the usual audit entry and
 `platform.objects.object-*.v1` or `field-*.v1` event. Their payloads carry
 `"plugin": "<plugin id>"`, and the actor is the member who changed the
 plugin's state. Suspending and resuming are audited as
-`objects.object.suspended` and `objects.object.resumed`.
+`objects.object.suspended` and `objects.object.resumed`, and waking a
+dormant object as `objects.object.woken`.
 
 ## What workspaces may change
 

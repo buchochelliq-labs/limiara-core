@@ -19,8 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3 and G5 are delivered too (below); every other gap
-and slice is still to do.
+`sync.server_only`. G2, G3, G5 and G11 are delivered too (below); every
+other gap and slice is still to do.
 
 Decided in review (2026-11-10):
 
@@ -74,6 +74,13 @@ Delivered:
   rules or automations, and counts restored and skipped links on the
   undelete response. The clear itself is unchanged (the accepted change).
   See [Recycle bin](../api/objects.md#recycle-bin).
+- G11, dormant plugin objects (2026-11-21). A manifest object may declare
+  `dormant = true`. It is installed suspended and stays suspended when the
+  plugin is enabled; the engine's installer-only `wake_plugin_objects`
+  brings it into service for good (audited as `objects.object.woken`),
+  after which it follows its plugin like any other object. Both stores keep
+  the flag (`object_definitions.dormant`). No kernel route wakes objects
+  yet: the Contacts cutover (slice 5) will.
 
 ## Context
 

@@ -466,6 +466,10 @@ pub struct ObjectDefinition {
     /// definitions are kept unchanged until the plugin is enabled again.
     #[serde(skip)]
     pub suspended: bool,
+    /// A plugin object kept out of service until its plugin wakes it (ADR
+    /// 0035 G11): it stays suspended when the plugin is enabled.
+    #[serde(skip)]
+    pub dormant: bool,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<Uuid>,

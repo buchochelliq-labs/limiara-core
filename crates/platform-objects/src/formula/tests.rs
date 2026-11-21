@@ -63,6 +63,7 @@ fn object(api: &str) -> ObjectDefinition {
         in_navigation: true,
         status: DefinitionStatus::Active,
         suspended: false,
+        dormant: false,
         version: 1,
         created_at: Utc::now(),
         created_by: None,

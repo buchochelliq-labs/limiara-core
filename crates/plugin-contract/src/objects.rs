@@ -109,6 +109,11 @@ pub struct ObjectDecl {
     /// path and the board groups by (ADR 0037 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_field: Option<String>,
+    /// Installed out of service: the object stays suspended when the plugin
+    /// is enabled, until the plugin wakes it (ADR 0035 G11). Waking is for
+    /// good; a later manifest cannot make an awake object dormant again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dormant: bool,
     /// Automations the engine adds when it creates the object.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automations: Vec<ObjectAutomationDecl>,

@@ -131,6 +131,9 @@ pub enum Change<'a> {
     /// came back when the plugin was enabled again (ADR 0033 §2). Its
     /// event is an `object-updated` one; the audit action says which.
     ObjectSuspended(&'a ObjectDefinition, bool),
+    /// A dormant plugin object woken by its plugin (ADR 0035 G11), for good.
+    /// Its event is an `object-updated` one.
+    ObjectWoken(&'a ObjectDefinition),
     FieldCreated(&'a ObjectDefinition, &'a FieldDefinition),
     FieldUpdated(&'a ObjectDefinition, &'a FieldDefinition),
     FieldDeleted(&'a ObjectDefinition, &'a FieldDefinition),
@@ -229,6 +232,16 @@ impl Change<'_> {
                     "object": object.api_name,
                     "version": object.version,
                     "suspended": suspended,
+                }),
+            ),
+            Self::ObjectWoken(object) => (
+                OBJECT_UPDATED_V1,
+                "objects.object.woken",
+                object_target(object),
+                json!({
+                    "object": object.api_name,
+                    "version": object.version,
+                    "dormant": false,
                 }),
             ),
             Self::FieldCreated(object, field) => (
@@ -474,6 +487,7 @@ impl Change<'_> {
                 | Self::ObjectUpdated(..)
                 | Self::ObjectDeleted(..)
                 | Self::ObjectSuspended(..)
+                | Self::ObjectWoken(..)
                 | Self::FieldCreated(..)
                 | Self::FieldUpdated(..)
                 | Self::FieldDeleted(..)
