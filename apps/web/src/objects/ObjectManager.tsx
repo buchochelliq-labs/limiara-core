@@ -616,14 +616,25 @@ function NewFieldForm({client, object, onCancel, onCreated}: {client: ObjectsCli
   </form>;
 }
 
-const accessColumns: {key: keyof ObjectAccess; label: string}[] = [
+export const accessColumns: {key: keyof ObjectAccess; label: string}[] = [
   {key: 'read', label: 'Read'},
   {key: 'create', label: 'Create'},
   {key: 'edit', label: 'Edit'},
   {key: 'delete', label: 'Delete'},
   {key: 'view_all', label: 'View all'},
   {key: 'modify_all', label: 'Modify all'},
+  {key: 'customise', label: 'Customise'},
 ];
+
+/** A role's access after one checkbox changes. Removing a weaker record grant removes the stronger ones that imply it; customising is independent of them (ADR 0035 G10). */
+export function toggledAccess(current: ObjectAccess, key: keyof ObjectAccess, checked: boolean): ObjectAccess {
+  const access = {...current, [key]: checked};
+  if (!checked && key === 'read') Object.assign(access, {create: false, edit: false, delete: false, view_all: false, modify_all: false});
+  if (!checked && key === 'edit') Object.assign(access, {delete: false, modify_all: false});
+  if (!checked && key === 'delete') Object.assign(access, {modify_all: false});
+  if (!checked && key === 'view_all') Object.assign(access, {modify_all: false});
+  return access;
+}
 
 function ObjectPermissions({client, object}: {client: ObjectsClient; object: ObjectDescription}) {
   const [load, setLoad] = useState<Load<RolePermission[]>>({status: 'loading'});
@@ -636,12 +647,7 @@ function ObjectPermissions({client, object}: {client: ObjectsClient; object: Obj
     return () => controller.abort();
   }, [client, object.apiName]);
   const toggle = async (row: RolePermission, key: keyof ObjectAccess, checked: boolean) => {
-    const access = {...row.access, [key]: checked};
-    // Removing a weaker grant removes the stronger ones that imply it.
-    if (!checked && key === 'read') Object.assign(access, {create: false, edit: false, delete: false, view_all: false, modify_all: false});
-    if (!checked && key === 'edit') Object.assign(access, {delete: false, modify_all: false});
-    if (!checked && key === 'delete') Object.assign(access, {modify_all: false});
-    if (!checked && key === 'view_all') Object.assign(access, {modify_all: false});
+    const access = toggledAccess(row.access, key, checked);
     try {
       const saved = await client.setPermission(object.apiName, row.roleId, access);
       setLoad(current => current.status === 'ready' ? {status: 'ready', value: current.value.map(item => item.roleId === row.roleId ? {...item, access: saved} : item)} : current);
@@ -652,7 +658,7 @@ function ObjectPermissions({client, object}: {client: ObjectsClient; object: Obj
   };
   return <section className="object-section" aria-labelledby="access-heading">
     <h2 id="access-heading">Access by role</h2>
-    <p>Stronger access includes weaker access: edit includes read, delete includes edit, and modify all includes everything. Members with the Manage objects, View all data or Modify all data permissions have that access to every object whatever their role shows here.</p>
+    <p>Stronger access includes weaker access: edit includes read, delete includes edit, and modify all includes every record. Customise lets the role add and change this object's fields, validation rules, quick actions and automations; it grants nothing on records. Members with the Manage objects, View all data or Modify all data permissions have that access to every object whatever their role shows here.</p>
     <div className="sr-only" aria-live="polite">{notice}</div>
     {load.status === 'loading' && <Skeleton label="Loading access" lines={2} />}
     {load.status !== 'loading' && load.status !== 'ready' && <Alert variant="danger" title="Access could not be loaded" />}
@@ -661,7 +667,7 @@ function ObjectPermissions({client, object}: {client: ObjectsClient; object: Obj
       <thead><tr><th scope="col">Role</th>{accessColumns.map(column => <th scope="col" key={column.key}>{column.label}</th>)}</tr></thead>
       <tbody>{load.value.map(row => <tr key={row.roleId}>
         <th scope="row">{row.roleName}</th>
-        {accessColumns.map(column => <td key={column.key}><input type="checkbox" aria-label={`${column.label} for ${row.roleName}`} checked={row.access[column.key]} onChange={event => void toggle(row, column.key, event.target.checked)} /></td>)}
+        {accessColumns.map(column => <td key={column.key}><input type="checkbox" aria-label={`${column.label} for ${row.roleName}`} checked={row.access[column.key] === true} onChange={event => void toggle(row, column.key, event.target.checked)} /></td>)}
       </tr>)}</tbody>
     </table></div>}
   </section>;

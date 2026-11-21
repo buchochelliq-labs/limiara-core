@@ -983,7 +983,8 @@ impl ObjectTx for PostgresObjectTx {
         let rows = sqlx::query(
             "SELECT object_id, bool_or(can_read) AS can_read, bool_or(can_create) AS can_create, \
                bool_or(can_edit) AS can_edit, bool_or(can_delete) AS can_delete, \
-               bool_or(view_all) AS view_all, bool_or(modify_all) AS modify_all \
+               bool_or(view_all) AS view_all, bool_or(modify_all) AS modify_all, \
+               bool_or(customise) AS customise \
              FROM object_permissions WHERE tenant_id = $1 AND role_id = ANY($2) GROUP BY object_id",
         )
         .bind(self.tenant_id)
@@ -1001,6 +1002,7 @@ impl ObjectTx for PostgresObjectTx {
                         delete: row.try_get("can_delete")?,
                         view_all: row.try_get("view_all")?,
                         modify_all: row.try_get("modify_all")?,
+                        customise: row.try_get("customise")?,
                     },
                 ))
             })
@@ -1012,7 +1014,7 @@ impl ObjectTx for PostgresObjectTx {
         object_id: Uuid,
     ) -> Result<Vec<RolePermission>, ObjectError> {
         let rows = sqlx::query(
-            "SELECT role_id, can_read, can_create, can_edit, can_delete, view_all, modify_all \
+            "SELECT role_id, can_read, can_create, can_edit, can_delete, view_all, modify_all, customise \
              FROM object_permissions WHERE tenant_id = $1 AND object_id = $2 ORDER BY role_id",
         )
         .bind(self.tenant_id)
@@ -1030,6 +1032,7 @@ impl ObjectTx for PostgresObjectTx {
                         delete: row.try_get("can_delete")?,
                         view_all: row.try_get("view_all")?,
                         modify_all: row.try_get("modify_all")?,
+                        customise: row.try_get("customise")?,
                     },
                 })
             })
@@ -1056,12 +1059,12 @@ impl ObjectTx for PostgresObjectTx {
         }
         sqlx::query(
             "INSERT INTO object_permissions (tenant_id, object_id, role_id, can_read, can_create, \
-               can_edit, can_delete, view_all, modify_all, updated_at, updated_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10) \
+               can_edit, can_delete, view_all, modify_all, customise, updated_at, updated_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11) \
              ON CONFLICT (tenant_id, object_id, role_id) DO UPDATE SET \
                can_read = EXCLUDED.can_read, can_create = EXCLUDED.can_create, \
                can_edit = EXCLUDED.can_edit, can_delete = EXCLUDED.can_delete, \
-               view_all = EXCLUDED.view_all, modify_all = EXCLUDED.modify_all, \
+               view_all = EXCLUDED.view_all, modify_all = EXCLUDED.modify_all, customise = EXCLUDED.customise, \
                updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by",
         )
         .bind(self.tenant_id)
@@ -1073,6 +1076,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(access.delete)
         .bind(access.view_all)
         .bind(access.modify_all)
+        .bind(access.customise)
         .bind(actor)
         .execute(&mut *self.tx)
         .await?;

@@ -357,6 +357,29 @@ impl ObjectService {
             .ok_or(ObjectError::NotFound)
     }
 
+    /// The active object, for a caller who may customise it (ADR 0035
+    /// G10): one with `objects.manage`, or one a role grants `customise` on
+    /// that object. A caller who may customise nothing is refused before the
+    /// object is looked up, so the answer says nothing about which exist.
+    pub(crate) async fn customisable_object(
+        &self,
+        tx: &mut dyn ObjectTx,
+        api_name: &str,
+    ) -> Result<ObjectDefinition, ObjectError> {
+        if self.caller.can_manage() {
+            return self.active_object(tx, api_name).await;
+        }
+        let access = self.access(tx).await?;
+        if !access.customises_any() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let object = self.active_object(tx, api_name).await?;
+        if !access.customises(object.id) {
+            return Err(ObjectError::PermissionDenied);
+        }
+        Ok(object)
+    }
+
     // --- Metadata -------------------------------------------------------
 
     /// Objects the caller can read records of, or every object for
@@ -773,7 +796,6 @@ impl ObjectService {
         input: CreateField,
         context: MutationContext,
     ) -> Result<FieldDefinition, ObjectError> {
-        self.caller.require_manage()?;
         let mut issues = Vec::new();
         let field_api = match custom_api_name("name", &input.name) {
             Ok(name) => Some(name),
@@ -785,7 +807,13 @@ impl ObjectService {
         };
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
+        // Field permissions decide who reads what: they stay with
+        // administrators, not with those who customise one object (G10).
+        let sets_permissions = input.read_permission.is_some() || input.write_permission.is_some();
+        if sets_permissions && !self.caller.can_manage() {
+            return Err(ObjectError::PermissionDenied);
+        }
         // Boxed: the field checks hold a large future.
         let field = Box::pin(self.insert_field_in(
             tx.as_mut(),
@@ -1001,11 +1029,10 @@ impl ObjectService {
         input: UpdateField,
         context: MutationContext,
     ) -> Result<FieldDefinition, ObjectError> {
-        self.caller.require_manage()?;
         let mut tx = self.begin().await?;
         // Serialised with field deletion when the formula changes (ADR 0021).
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let field = object
             .field(field_api_name)
             .cloned()
@@ -1015,6 +1042,14 @@ impl ObjectService {
         // workspace's to choose (ADR 0033 §2).
         if field.origin == Origin::Plugin && !only_allowlist(&field, &input) {
             return Err(ObjectError::Conflict(PLUGIN_OWNED));
+        }
+        // A plugin field's allowlist and every field's permissions are the
+        // administrators' (G10).
+        let administrative = field.origin == Origin::Plugin
+            || input.read_permission.is_some()
+            || input.write_permission.is_some();
+        if administrative && !self.caller.can_manage() {
+            return Err(ObjectError::PermissionDenied);
         }
         // Boxed: the field checks hold a large future.
         let mut field =
@@ -1309,12 +1344,11 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
     ) -> Result<FieldDefinition, ObjectError> {
-        self.caller.require_manage()?;
         let mut tx = self.begin().await?;
         // Serialised with metadata changes, so no rule or formula field can
         // start depending on a field while it is being deleted (ADR 0021).
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let mut field = object
             .field(field_api_name)
             .cloned()

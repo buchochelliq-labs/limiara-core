@@ -984,6 +984,14 @@ ALTER TABLE field_definitions ADD COLUMN governance TEXT
   CHECK (governance IS NULL OR json_type(governance) = 'object');
 "#,
     },
+    // Customising one object (ADR 0035 G10).
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0043_object_customise",
+        sql: r#"
+ALTER TABLE object_permissions ADD COLUMN customise INTEGER NOT NULL DEFAULT 0;
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1993,7 +2001,8 @@ impl ObjectTx for SqliteObjectTx {
         let mut sql: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT object_id, max(can_read) AS can_read, max(can_create) AS can_create, \
                max(can_edit) AS can_edit, max(can_delete) AS can_delete, \
-               max(view_all) AS view_all, max(modify_all) AS modify_all \
+               max(view_all) AS view_all, max(modify_all) AS modify_all, \
+               max(customise) AS customise \
              FROM object_permissions WHERE tenant_id = ",
         );
         sql.push_bind(self.tenant.clone()).push(" AND role_id IN (");
@@ -2014,6 +2023,7 @@ impl ObjectTx for SqliteObjectTx {
                         delete: flag(row, "can_delete")?,
                         view_all: flag(row, "view_all")?,
                         modify_all: flag(row, "modify_all")?,
+                        customise: flag(row, "customise")?,
                     },
                 ))
             })
@@ -2025,7 +2035,7 @@ impl ObjectTx for SqliteObjectTx {
         object_id: Uuid,
     ) -> Result<Vec<RolePermission>, ObjectError> {
         let rows = sqlx::query(
-            "SELECT role_id, can_read, can_create, can_edit, can_delete, view_all, modify_all \
+            "SELECT role_id, can_read, can_create, can_edit, can_delete, view_all, modify_all, customise \
              FROM object_permissions WHERE tenant_id = ?1 AND object_id = ?2 ORDER BY role_id",
         )
         .bind(&self.tenant)
@@ -2043,6 +2053,7 @@ impl ObjectTx for SqliteObjectTx {
                         delete: flag(row, "can_delete")?,
                         view_all: flag(row, "view_all")?,
                         modify_all: flag(row, "modify_all")?,
+                        customise: flag(row, "customise")?,
                     },
                 })
             })
@@ -2069,12 +2080,12 @@ impl ObjectTx for SqliteObjectTx {
         }
         sqlx::query(
             "INSERT INTO object_permissions (tenant_id, object_id, role_id, can_read, can_create, \
-               can_edit, can_delete, view_all, modify_all, updated_at, updated_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+               can_edit, can_delete, view_all, modify_all, customise, updated_at, updated_by) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
              ON CONFLICT (tenant_id, object_id, role_id) DO UPDATE SET \
                can_read = excluded.can_read, can_create = excluded.can_create, \
                can_edit = excluded.can_edit, can_delete = excluded.can_delete, \
-               view_all = excluded.view_all, modify_all = excluded.modify_all, \
+               view_all = excluded.view_all, modify_all = excluded.modify_all, customise = excluded.customise, \
                updated_at = excluded.updated_at, updated_by = excluded.updated_by",
         )
         .bind(&self.tenant)
@@ -2086,6 +2097,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(access.delete)
         .bind(access.view_all)
         .bind(access.modify_all)
+        .bind(access.customise)
         .bind(timestamp(Utc::now()))
         .bind(actor.to_string())
         .execute(&mut *self.tx)

@@ -400,10 +400,9 @@ impl ObjectService {
         input: CreateValidationRule,
         context: MutationContext,
     ) -> Result<ValidationRule, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         if tx.validation_rules(object.id).await?.len() >= RULES_PER_OBJECT_MAX {
             return Err(ObjectError::invalid(
                 "name",
@@ -450,11 +449,10 @@ impl ObjectService {
         input: UpdateValidationRule,
         context: MutationContext,
     ) -> Result<ValidationRule, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         // Serialised with field deletion, which checks what depends on a field.
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let mut rule = tx
             .validation_rules(object.id)
             .await?
@@ -508,9 +506,8 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
     ) -> Result<ValidationRule, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let rule = tx
             .validation_rules(object.id)
             .await?

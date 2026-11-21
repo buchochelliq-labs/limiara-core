@@ -1469,12 +1469,29 @@ impl ObjectService {
     // --- Administration -------------------------------------------------
 
     pub async fn automations(&self, api_name: &str) -> Result<Vec<Automation>, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let automations = tx.automations(object.id).await?;
         tx.commit().await?;
         Ok(automations)
+    }
+
+    /// A member who customises an object without `objects.manage` (ADR
+    /// 0035 G10) may give it automations that act on its own records only.
+    /// Creating records on another object, or updating the records a lookup
+    /// points at, writes outside that object as the system, so those
+    /// actions stay with `objects.manage`.
+    fn within_customise(&self, automation: &Automation) -> Result<(), ObjectError> {
+        let reaches_elsewhere = automation.actions.iter().any(|action| {
+            matches!(
+                action,
+                AutomationAction::UpdateRelated { .. } | AutomationAction::CreateRecord { .. }
+            )
+        });
+        if reaches_elsewhere && !self.caller().can_manage() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        Ok(())
     }
 
     async fn checked(
@@ -1499,11 +1516,10 @@ impl ObjectService {
         input: CreateAutomation,
         context: MutationContext,
     ) -> Result<Automation, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         // Serialised with field deletion, which checks what depends on a field.
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         if tx.automations(object.id).await?.len() >= AUTOMATIONS_PER_OBJECT_MAX {
             return Err(ObjectError::invalid(
                 "name",
@@ -1530,6 +1546,7 @@ impl ObjectService {
             updated_at: now,
             updated_by: actor,
         };
+        self.within_customise(&automation)?;
         self.checked(tx.as_mut(), &object, &automation).await?;
         tx.insert_automation(&automation).await?;
         self.record_change(
@@ -1626,10 +1643,9 @@ impl ObjectService {
         input: UpdateAutomation,
         context: MutationContext,
     ) -> Result<Automation, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let mut automation = tx
             .automations(object.id)
             .await?
@@ -1657,6 +1673,7 @@ impl ObjectService {
         if let Some(active) = input.active {
             automation.active = active;
         }
+        self.within_customise(&automation)?;
         self.checked(tx.as_mut(), &object, &automation).await?;
         automation.version += 1;
         automation.updated_at = Utc::now();
@@ -1684,9 +1701,8 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
     ) -> Result<Automation, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let automation = tx
             .automations(object.id)
             .await?

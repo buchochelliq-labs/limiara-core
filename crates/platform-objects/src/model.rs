@@ -787,9 +787,16 @@ pub struct AccessFlags {
     pub view_all: bool,
     #[serde(default)]
     pub modify_all: bool,
+    /// Customising the object (ADR 0035 G10): adding, changing and
+    /// retiring its workspace fields, validation rules, quick actions and
+    /// automations. It grants nothing on records, and record grants never
+    /// imply it; `objects.manage` does, on every object.
+    #[serde(default)]
+    pub customise: bool,
 }
 
 impl AccessFlags {
+    /// Every grant on records. Customising is not one of them.
     pub const FULL: Self = Self {
         read: true,
         create: true,
@@ -797,6 +804,7 @@ impl AccessFlags {
         delete: true,
         view_all: true,
         modify_all: true,
+        customise: false,
     };
 
     /// Each grant implies the weaker ones, as in Salesforce.
@@ -814,6 +822,7 @@ impl AccessFlags {
             delete,
             view_all,
             modify_all,
+            customise: self.customise,
         }
     }
 
@@ -825,6 +834,7 @@ impl AccessFlags {
             delete: self.delete || other.delete,
             view_all: self.view_all || other.view_all,
             modify_all: self.modify_all || other.modify_all,
+            customise: self.customise || other.customise,
         }
         .normalised()
     }

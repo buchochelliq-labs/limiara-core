@@ -19,7 +19,7 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G8, G9, G11, G17 and G18 are delivered too (below);
+`sync.server_only`. G2, G3, G5, G8, G9, G10, G11, G17 and G18 are delivered too (below);
 every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
@@ -111,6 +111,19 @@ Delivered:
   enforces retention or encryption, and device replicas do not carry them.
   Follow-up: the Object Manager does not show or edit them yet; the field
   API does.
+- G10, customising one object (2026-11-21). Object permissions gain a
+  `customise` flag, granted per role like the others (both stores keep it
+  on `object_permissions`). It lets the role's members add, change and
+  retire the object's workspace fields, validation rules, quick actions
+  and automations without `objects.manage`, which still implies it on
+  every object. It grants nothing on records, and no record grant implies
+  it. Field permissions, a plugin field's allowlist and automations that
+  write outside the object (creating records elsewhere, updating related
+  records) stay with `objects.manage`, as do object settings and
+  permissions. The Object
+  Manager's access table has a Customise column. Follow-up: the Object
+  Manager itself is shown only to members with `objects.manage`, so a
+  customiser works through the objects API until it opens to them.
 - G18, optional dependencies (2026-11-21). A manifest may declare
   `optional_dependencies`, plugin ids with a version range, which may not
   be the plugin itself or one of its dependencies. A related-to field may
