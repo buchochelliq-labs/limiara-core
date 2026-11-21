@@ -2,8 +2,8 @@
 import {act} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {createFixtureObjectsClient, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient} from './api';
-import {PathSettings} from './ObjectManager';
+import {createFixtureObjectsClient, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient} from './api';
+import {OptionOutcomesForm, PathSettings} from './ObjectManager';
 import {ObjectRecordPage} from './ObjectPages';
 import {pathFieldOf, pathSteps, RecordPath} from './RecordPath';
 
@@ -87,7 +87,7 @@ describe('the record path (ADR 0037 §2)', () => {
     act(() => button('Lost')?.click());
     expect(onClose).toHaveBeenCalledWith(expect.objectContaining({value: 'lost'}));
     act(() => root.render(<RecordPath object={deal} field={stage} record={record('won')} canEdit busy={false} onMove={vi.fn()} onClose={onClose} />));
-    expect(container.textContent).toContain('Closed as Won.');
+    expect(container.textContent).toContain('Closed as Won (100%).');
     expect(steps().filter(step => step.complete)).toEqual([]);
   });
 
@@ -114,7 +114,7 @@ describe('the path on the generic record page', () => {
   it('moves the record to an open value with its version, and says so', async () => {
     const client = createFixtureObjectsClient();
     await page(client, gemini);
-    expect(container.textContent).toContain('Closed as Won.');
+    expect(container.textContent).toContain('Closed as Won (100%).');
     const update = vi.spyOn(client, 'updateRecord');
     await act(async () => { button('Open')?.click(); });
     await settle();
@@ -159,7 +159,7 @@ describe('the path on the generic record page', () => {
     await act(async () => { button('Open')?.click(); });
     await settle();
     expect(container.textContent).toContain('This record changed since you opened it.');
-    expect(container.textContent).toContain('Closed as Won.');
+    expect(container.textContent).toContain('Closed as Won (100%).');
   });
 });
 
@@ -183,5 +183,59 @@ describe('the Object Manager path setting', () => {
     act(() => root.render(<PathSettings client={{updateObject: vi.fn()}} object={{...deal, origin: 'plugin'}} onSaved={vi.fn()} />));
     expect((container.querySelector('select') as HTMLSelectElement).disabled).toBe(true);
     expect(button('Save path')).toBeUndefined();
+  });
+});
+
+describe('the Object Manager outcomes and weights of a picklist', () => {
+  const change = (element: HTMLInputElement | HTMLSelectElement, value: string) => act(() => {
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', {bubbles: true}));
+  });
+  const control = <T extends Element>(label: string) => container.querySelector(`[aria-label="${label}"]`) as T;
+
+  it('saves each value\'s outcome and weight, keeping the rest of the option', async () => {
+    const updateField = vi.fn(async () => stage);
+    const onDone = vi.fn();
+    act(() => root.render(<OptionOutcomesForm client={{updateField}} object={deal} field={stage} onDone={onDone} />));
+    expect(control<HTMLInputElement>('Weight of Proposal').value).toBe('60');
+    expect(control<HTMLSelectElement>('Outcome of Retired').value).toBe('open');
+    expect(container.textContent).toContain('Inactive');
+    change(control<HTMLInputElement>('Weight of Proposal'), '65');
+    change(control<HTMLSelectElement>('Outcome of Retired'), 'negative');
+    change(control<HTMLInputElement>('Weight of Lost'), '');
+    await act(async () => { button('Save values')?.click(); });
+    expect(updateField).toHaveBeenCalledWith('custom:deal', 'custom:stage', 1, {options: [
+      {value: 'prospecting', label: 'Prospecting', active: true, default: true, outcome: 'open', weight: 10},
+      {value: 'proposal', label: 'Proposal', active: true, default: false, outcome: 'open', weight: 65},
+      {value: 'retired', label: 'Retired', active: false, default: false, outcome: 'negative'},
+      {value: 'won', label: 'Won', active: true, default: false, outcome: 'positive', weight: 100},
+      {value: 'lost', label: 'Lost', active: true, default: false, outcome: 'negative'},
+    ]});
+    expect(onDone).toHaveBeenCalledWith('The values of Stage were saved.');
+  });
+
+  it('refuses a weight outside 0 to 100 before saving', () => {
+    const updateField = vi.fn(async () => stage);
+    act(() => root.render(<OptionOutcomesForm client={{updateField}} object={deal} field={stage} onDone={vi.fn()} />));
+    for (const typed of ['101', '-5', '2.5', 'ten']) {
+      change(control<HTMLInputElement>('Weight of Won'), typed);
+      expect(control<HTMLInputElement>('Weight of Won').getAttribute('aria-invalid')).toBe('true');
+      expect(container.textContent).toContain('Enter a whole number from 0 to 100, or leave it blank.');
+      expect(button('Save values')?.disabled).toBe(true);
+    }
+    change(control<HTMLInputElement>('Weight of Won'), '100');
+    expect(button('Save values')?.disabled).toBe(false);
+    expect(updateField).not.toHaveBeenCalled();
+  });
+
+  it('shows what the server refused', async () => {
+    const updateField = vi.fn(async () => { throw new ObjectsApiError('invalid', 'validation.failed', [{field: 'options', code: 'objects.option_outcome_invalid', detail: 'only a single-value picklist closes records'}]); });
+    const onDone = vi.fn();
+    act(() => root.render(<OptionOutcomesForm client={{updateField}} object={deal} field={stage} onDone={onDone} />));
+    await act(async () => { button('Save values')?.click(); });
+    expect(container.textContent).toContain('Some values need attention.');
+    expect(container.textContent).toContain('only a single-value picklist closes records');
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

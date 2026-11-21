@@ -502,11 +502,13 @@ impl ObjectService {
                 .await?;
             woken.push(object.api_name);
         }
-        tx.commit().await?;
+        // Woken objects come into service in the same transaction, so a
+        // failure leaves them dormant and waking can be repeated.
         if !woken.is_empty() {
-            self.set_plugin_objects_suspended(plugin_id, false, context)
+            self.set_suspended_in(tx.as_mut(), plugin_id, false, context)
                 .await?;
         }
+        tx.commit().await?;
         Ok(woken)
     }
 
@@ -519,6 +521,22 @@ impl ObjectService {
         self.require_installer(plugin_id)?;
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
+        let changed = self
+            .set_suspended_in(tx.as_mut(), plugin_id, suspended, context)
+            .await?;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// [`Self::set_plugin_objects_suspended`] inside a transaction already
+    /// open, with the metadata lock held.
+    async fn set_suspended_in(
+        &self,
+        tx: &mut dyn ObjectTx,
+        plugin_id: &str,
+        suspended: bool,
+        context: MutationContext,
+    ) -> Result<Vec<String>, ObjectError> {
         let mut changed = Vec::new();
         // The plugin's reports (ADR 0037 §5) follow its objects.
         tx.set_plugin_reports_suspended(plugin_id, suspended)
@@ -537,12 +555,8 @@ impl ObjectService {
             if !tx.update_object(&object, existing.version).await? {
                 return Err(ObjectError::VersionConflict);
             }
-            self.record_change(
-                tx.as_mut(),
-                context,
-                Change::ObjectSuspended(&object, suspended),
-            )
-            .await?;
+            self.record_change(tx, context, Change::ObjectSuspended(&object, suspended))
+                .await?;
             changed.push(object.api_name);
         }
         if !suspended {
@@ -555,7 +569,7 @@ impl ObjectService {
                     .object_by_id(owned.id)
                     .await?
                     .ok_or(ObjectError::Invariant)?;
-                self.offer_related_actions(tx.as_mut(), &object, None, context)
+                self.offer_related_actions(tx, &object, None, context)
                     .await?;
             }
             // Other plugins' related actions that could not reach these
@@ -573,12 +587,11 @@ impl ObjectService {
             }
             for (object_id, field_id) in declaring {
                 if let Some(object) = tx.object_by_id(object_id).await? {
-                    self.offer_related_actions(tx.as_mut(), &object, Some(field_id), context)
+                    self.offer_related_actions(tx, &object, Some(field_id), context)
                         .await?;
                 }
             }
         }
-        tx.commit().await?;
         Ok(changed)
     }
 }
