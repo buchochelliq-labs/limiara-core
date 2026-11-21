@@ -119,6 +119,9 @@ struct ObjectBody {
     /// Servers before ADR 0037 send none.
     #[serde(default)]
     path_field: Option<String>,
+    /// Servers before ADR 0035 G17 send none.
+    #[serde(default)]
+    name_from: Option<platform_objects::NameFrom>,
     version: i64,
     #[serde(default)]
     access: Option<AccessFlags>,
@@ -275,6 +278,7 @@ pub fn remote_object(
         searchable: body.searchable,
         in_navigation: body.in_navigation,
         path_field: body.path_field,
+        name_from: body.name_from,
         version: body.version,
         access: body.access.unwrap_or_default(),
         fields: body
@@ -595,6 +599,44 @@ mod tests {
             remote_object(&described, None, None)
                 .expect("object")
                 .path_field,
+            None
+        );
+    }
+
+    #[test]
+    fn composed_names_reach_the_device() {
+        let mut described = json!({
+            "api_name": "custom:person",
+            "label": "Person",
+            "plural_label": "People",
+            "origin": "workspace",
+            "key_prefix": "a0P",
+            "name_label": "Name",
+            "sharing_model": "read_write",
+            "grant_hierarchy": true,
+            "track_history": false,
+            "searchable": true,
+            "in_navigation": true,
+            "name_from": {"fields": ["custom:first", "custom:last"], "separator": " "},
+            "version": 1,
+            "fields": []
+        });
+        let object = remote_object(&described, None, None).expect("object");
+        assert_eq!(
+            object.name_from,
+            Some(platform_objects::NameFrom {
+                fields: vec!["custom:first".into(), "custom:last".into()],
+                separator: " ".into(),
+            })
+        );
+        // A server from before ADR 0035 G17 sends none.
+        if let Some(map) = described.as_object_mut() {
+            map.remove("name_from");
+        }
+        assert_eq!(
+            remote_object(&described, None, None)
+                .expect("object")
+                .name_from,
             None
         );
     }

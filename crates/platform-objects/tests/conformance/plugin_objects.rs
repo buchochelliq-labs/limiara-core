@@ -848,6 +848,7 @@ fn update_field(version: i64) -> UpdateField {
 fn update_object(version: i64) -> UpdateObject {
     UpdateObject {
         path_field: None,
+        name_from: None,
         expected_version: version,
         label: None,
         plural_label: None,

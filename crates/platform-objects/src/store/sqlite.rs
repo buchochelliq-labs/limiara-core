@@ -951,6 +951,15 @@ CREATE TABLE plugin_report_removals (
 ALTER TABLE object_definitions ADD COLUMN dormant INTEGER NOT NULL DEFAULT 0 CHECK (dormant IN (0, 1));
 "#,
     },
+    // The fields a record name is composed from (ADR 0035 G17), as JSON.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0040_object_name_from",
+        sql: r#"
+ALTER TABLE object_definitions ADD COLUMN name_from TEXT
+  CHECK (name_from IS NULL OR (json_valid(name_from) AND length(name_from) <= 2000));
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1040,11 +1049,25 @@ impl SqliteObjectTx {
     }
 }
 
+/// An object's composed name (ADR 0035 G17), stored as JSON text.
+fn name_from(value: Option<String>) -> Result<Option<crate::NameFrom>, ObjectError> {
+    value
+        .map(|value| serde_json::from_str(&value).map_err(|_| ObjectError::Invariant))
+        .transpose()
+}
+
+fn name_from_json(object: &ObjectDefinition) -> Option<String> {
+    object
+        .name_from
+        .as_ref()
+        .and_then(|name_from| serde_json::to_string(name_from).ok())
+}
+
 const OBJECT_COLUMNS: &str =
     "id, api_name, label, plural_label, description, origin, owner_plugin, \
      key_prefix, name_label, sharing_model, searchable, in_navigation, status, version, \
      created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended, \
-     path_field, dormant";
+     path_field, dormant, name_from";
 const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.description, f.field_type, \
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
@@ -1130,6 +1153,7 @@ fn object_from_row(row: &SqliteRow) -> Result<ObjectDefinition, ObjectError> {
         searchable: flag(row, "searchable")?,
         in_navigation: flag(row, "in_navigation")?,
         path_field: row.try_get("path_field")?,
+        name_from: name_from(row.try_get("name_from")?)?,
         dormant: flag(row, "dormant")?,
         status: parse(DefinitionStatus::parse(
             &row.try_get::<String, _>("status")?,
@@ -1739,8 +1763,8 @@ impl ObjectTx for SqliteObjectTx {
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
                origin, owner_plugin, key_prefix, name_label, sharing_model, searchable, in_navigation, \
                status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, \
-               suspended, path_field, dormant) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+               suspended, path_field, dormant, name_from) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         )
         .bind(&self.tenant)
         .bind(object.id.to_string())
@@ -1766,6 +1790,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(object.suspended)
         .bind(&object.path_field)
         .bind(object.dormant)
+        .bind(name_from_json(object))
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -1781,7 +1806,7 @@ impl ObjectTx for SqliteObjectTx {
             "UPDATE object_definitions SET label = ?4, plural_label = ?5, description = ?6, \
                name_label = ?7, sharing_model = ?8, searchable = ?9, in_navigation = ?10, \
                status = ?11, version = ?12, updated_at = ?13, updated_by = ?14, \
-               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, path_field = ?18, dormant = ?19, \
+               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, path_field = ?18, dormant = ?19, name_from = ?20, \
                deleted_at = CASE WHEN ?11 = 'deleted' THEN coalesce(deleted_at, ?13) END \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
         )
@@ -1804,6 +1829,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(object.suspended)
         .bind(&object.path_field)
         .bind(object.dormant)
+        .bind(name_from_json(object))
         .execute(&mut *self.tx)
         .await?
         .rows_affected();

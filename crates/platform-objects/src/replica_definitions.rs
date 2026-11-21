@@ -7,9 +7,9 @@
 
 use crate::service::{reindex, ObjectService};
 use crate::{
-    AccessFlags, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, ObjectDefinition,
-    ObjectError, ObjectTx, Origin, PicklistOption, QuickAction, QuickActionKind, RolePermission,
-    Rollup, RollupFunction, SharingModel, ValidationRule,
+    AccessFlags, DefinitionStatus, DeleteBehaviour, FieldDefinition, FieldType, NameFrom,
+    ObjectDefinition, ObjectError, ObjectTx, Origin, PicklistOption, QuickAction, QuickActionKind,
+    RolePermission, Rollup, RollupFunction, SharingModel, ValidationRule,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -35,6 +35,9 @@ pub struct RemoteObject {
     pub in_navigation: bool,
     /// The picklist field the path and board use (ADR 0037 §2).
     pub path_field: Option<String>,
+    /// The fields the record name is composed from (ADR 0035 G17), so the
+    /// device composes names offline as the server does.
+    pub name_from: Option<NameFrom>,
     pub version: i64,
     pub access: AccessFlags,
     /// Active fields in display order.
@@ -110,6 +113,7 @@ impl RemoteObject {
             searchable: object.searchable,
             in_navigation: object.in_navigation,
             path_field: object.path_field.clone(),
+            name_from: object.name_from.clone(),
             version: object.version,
             access,
             fields: object
@@ -530,6 +534,7 @@ async fn put_object(
                 searchable: remote.searchable,
                 in_navigation: remote.in_navigation,
                 path_field: remote.path_field.clone(),
+                name_from: remote.name_from.clone(),
                 status: DefinitionStatus::Active,
                 suspended: false,
                 dormant: false,
@@ -561,6 +566,9 @@ async fn put_object(
             object.searchable = remote.searchable;
             object.in_navigation = remote.in_navigation;
             object.path_field = remote.path_field.clone();
+            // The server renames its records when this changes; the
+            // renamed records reach the device through sync.
+            object.name_from = remote.name_from.clone();
             object.status = DefinitionStatus::Active;
             object.version = remote.version.max(1);
             if object == local {

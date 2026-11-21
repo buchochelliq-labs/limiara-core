@@ -786,7 +786,8 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
   const initial = useMemo(() => initialDraft(object, base), [object, base]);
   const issueFor = (field: string) => issues.find(issue => issue.field === field)?.detail;
   // A quick action (ADR 0032) asks only for its fields; a parent preset stays visible, read-only.
-  const showsName = !only || only.includes('name');
+  // A composed name (ADR 0035 G17) is the engine's to write.
+  const showsName = (!only || only.includes('name')) && !object.nameFrom;
   const shown = editableFields(object).filter(field => !only || only.includes(field.apiName) || (!record && presets[field.apiName] !== undefined && holdsReference(field.type)));
 
   const latest = useRef({draft, base, lookupNames, chosenObjects});

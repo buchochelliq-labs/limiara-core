@@ -19,8 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5 and G11 are delivered too (below); every
-other gap and slice is still to do.
+`sync.server_only`. G2, G3, G5, G11 and G17 are delivered too (below);
+every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
 
@@ -74,6 +74,18 @@ Delivered:
   rules or automations, and counts restored and skipped links on the
   undelete response. The clear itself is unchanged (the accepted change).
   See [Recycle bin](../api/objects.md#recycle-bin).
+- G17, names composed from fields (2026-11-21). An object may declare
+  `name_from`: two or three of its own text fields and a separator, set by
+  administrators on workspace objects (`PATCH /objects/...`) and declared by
+  plugins in their manifests. The engine composes the name on every write
+  that touches those fields, refuses writes to the name
+  (`objects.name_composed`), keeps the fields from being deleted, and
+  carries the declaration to device replicas. Changing it renames the
+  object's records in the same transaction, as the engine already
+  reindexes on a field change, rather than in a background job; each rename
+  is a system change with history, a change-log entry and an event. A
+  background job can replace this if objects grow too large for one
+  transaction.
 - G11, dormant plugin objects (2026-11-21). A manifest object may declare
   `dormant = true`. It is installed suspended and stays suspended when the
   plugin is enabled; the engine's installer-only `wake_plugin_objects`

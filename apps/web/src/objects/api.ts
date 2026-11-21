@@ -229,6 +229,8 @@ export type ObjectSummary = {
   trackHistory: boolean;
   /** The single-value picklist shown as the record's path (ADR 0037 §2). */
   pathField: string | null;
+  /** The fields the record name is composed from (ADR 0035 G17): the engine writes the name. */
+  nameFrom?: NameFrom | null;
   version: number;
   access: ObjectAccess;
 };
@@ -294,6 +296,7 @@ const messages: Record<ObjectsErrorReason, string> = {
 };
 
 export type NewObject = {name: string; label: string; plural_label: string; description?: string; name_label?: string; in_navigation?: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean};
+export type NameFrom = {fields: string[]; separator: string};
 export type ObjectChanges = {sharing_model?: SharingModel; grant_hierarchy?: boolean; in_navigation?: boolean; track_history?: boolean; path_field?: string | null};
 export type FieldChanges = {track_history?: boolean; label?: string; required?: boolean; lookup_filter?: string | null; reference_objects?: string[]; read_permission?: string | null; write_permission?: string | null};
 export type NewField = {name: string; label: string; field_type: FieldType; required?: boolean; unique?: boolean; indexed?: boolean; track_history?: boolean; options?: {value: string; label: string; default?: boolean}[]; reference_object?: string; reference_objects?: string[]; delete_behaviour?: 'clear' | 'restrict'; lookup_filter?: string; formula?: string; formula_type?: FieldType; scale?: number; rollup?: {function: RollupFunction; object: string; relationship: string; field?: string}; read_permission?: string; write_permission?: string};
@@ -466,7 +469,7 @@ export type ObjectsClient = {
 
 type ApiField = {api_name: string; label: string; description: string | null; field_type: FieldType; origin: ObjectField['origin']; required: boolean; unique: boolean; indexed: boolean; track_history?: boolean; options?: PicklistOption[]; reference_object: string | null; reference_objects?: string[] | null; delete_behaviour: ObjectField['deleteBehaviour']; lookup_filter?: string | null; formula?: string | null; formula_type?: FieldType | null; rollup?: FieldRollup | null; read_permission?: string | null; write_permission?: string | null; access?: {read?: unknown; edit?: unknown}; version: number};
 type ApiHistory = {id: string; kind: HistoryEntry['kind']; field: string | null; old_value: unknown; new_value: unknown; old_user?: UserReference; new_user?: UserReference; changed_at: string; changed_by: UserReference; source?: unknown};
-type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; path_field?: string | null; version: number; access?: ObjectAccess; fields?: ApiField[]};
+type ApiObject = {api_name: string; label: string; plural_label: string; description: string | null; origin: ObjectSummary['origin']; key_prefix: string; name_label: string; in_navigation: boolean; sharing_model?: SharingModel; grant_hierarchy?: boolean; track_history?: boolean; path_field?: string | null; name_from?: NameFrom | null; version: number; access?: ObjectAccess; fields?: ApiField[]};
 type ApiShare = {grantee_kind: 'user' | 'role'; grantee_id: string; grantee_name: string | null; access: 'read' | 'edit'; created_at: string};
 type ApiRecord = Record<string, unknown> & {id: string; name: string; owner: UserReference; created_at: string; created_by: UserReference; updated_at: string; updated_by: UserReference; version: number; is_deleted: boolean; related?: Record<string, string>; access?: RecordRights};
 
@@ -504,8 +507,16 @@ function stringMap(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
-export function objectFromApi(object: ApiObject): ObjectDescription {
-  return {apiName: object.api_name, label: object.label, pluralLabel: object.plural_label, description: object.description ?? null, origin: object.origin, keyPrefix: object.key_prefix, nameLabel: object.name_label, inNavigation: object.in_navigation, sharingModel: object.sharing_model ?? 'read_write', grantHierarchy: object.grant_hierarchy !== false, trackHistory: object.track_history === true, pathField: typeof object.path_field === 'string' ? object.path_field : null, version: object.version, access: object.access ?? noAccess, fields: (object.fields ?? []).map(fieldFromApi)};
+export /** A composed name from the API, or `null` when the object has none or sent something else. */
+function nameFromApi(value: unknown): NameFrom | null {
+  if (!value || typeof value !== 'object') return null;
+  const {fields, separator} = value as {fields?: unknown; separator?: unknown};
+  if (!Array.isArray(fields) || !fields.every(field => typeof field === 'string')) return null;
+  return {fields, separator: typeof separator === 'string' ? separator : ' '};
+}
+
+function objectFromApi(object: ApiObject): ObjectDescription {
+  return {apiName: object.api_name, label: object.label, pluralLabel: object.plural_label, description: object.description ?? null, origin: object.origin, keyPrefix: object.key_prefix, nameLabel: object.name_label, inNavigation: object.in_navigation, sharingModel: object.sharing_model ?? 'read_write', grantHierarchy: object.grant_hierarchy !== false, trackHistory: object.track_history === true, pathField: typeof object.path_field === 'string' ? object.path_field : null, nameFrom: nameFromApi(object.name_from), version: object.version, access: object.access ?? noAccess, fields: (object.fields ?? []).map(fieldFromApi)};
 }
 
 type ApiReport = {id: string; name: string; description: string | null; query: string; chart: ReportChart; label_column: string | null; value_column: string | null; visibility: 'private' | 'workspace'; owner?: UserReference; version: number; updated_at: string; can_edit?: boolean; owner_plugin?: string | null};
