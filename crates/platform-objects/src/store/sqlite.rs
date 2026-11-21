@@ -918,6 +918,30 @@ ALTER TABLE object_definitions ADD COLUMN path_field TEXT
   CHECK (path_field IS NULL OR length(path_field) BETWEEN 1 AND 255);
 "#,
     },
+    // Reports a plugin declares (ADR 0037 §5), and the ones a workspace
+    // deleted, which the plugin never adds again.
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0038_plugin_reports",
+        sql: r#"
+ALTER TABLE reports ADD COLUMN owner_plugin TEXT
+  CHECK (owner_plugin IS NULL OR length(owner_plugin) BETWEEN 1 AND 255);
+ALTER TABLE reports ADD COLUMN plugin_report TEXT
+  CHECK (plugin_report IS NULL OR length(plugin_report) BETWEEN 1 AND 63);
+ALTER TABLE reports ADD COLUMN plugin_version INTEGER
+  CHECK (plugin_version IS NULL OR plugin_version >= 1);
+ALTER TABLE reports ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1));
+CREATE UNIQUE INDEX reports_plugin_report_idx ON reports (tenant_id, owner_plugin, plugin_report)
+  WHERE owner_plugin IS NOT NULL;
+CREATE TABLE plugin_report_removals (
+  tenant_id TEXT NOT NULL,
+  plugin_id TEXT NOT NULL CHECK (length(plugin_id) BETWEEN 1 AND 255),
+  report TEXT NOT NULL CHECK (length(report) BETWEEN 1 AND 63),
+  removed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, plugin_id, report)
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1111,7 +1135,8 @@ fn object_from_row(row: &SqliteRow) -> Result<ObjectDefinition, ObjectError> {
 }
 
 const REPORT_COLUMNS: &str = "id, name, description, query, chart, label_column, value_column, \
-     visibility, owner_id, version, created_at, created_by, updated_at, updated_by";
+     visibility, owner_id, version, created_at, created_by, updated_at, updated_by, \
+     owner_plugin, plugin_report, plugin_version, suspended";
 
 fn report_from_row(row: &SqliteRow) -> Result<crate::Report, ObjectError> {
     Ok(crate::Report {
@@ -1133,6 +1158,10 @@ fn report_from_row(row: &SqliteRow) -> Result<crate::Report, ObjectError> {
         created_by: optional_uuid(row, "created_by")?,
         updated_at: time(row, "updated_at")?,
         updated_by: optional_uuid(row, "updated_by")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        plugin_report: row.try_get("plugin_report")?,
+        plugin_version: row.try_get("plugin_version")?,
+        suspended: flag(row, "suspended")?,
     })
 }
 
@@ -3776,8 +3805,9 @@ impl ObjectTx for SqliteObjectTx {
     async fn insert_report(&mut self, report: &crate::Report) -> Result<(), ObjectError> {
         sqlx::query(
             "INSERT INTO reports (tenant_id, id, name, description, query, chart, label_column, \
-               value_column, visibility, owner_id, version, created_at, created_by, updated_at, updated_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+               value_column, visibility, owner_id, version, created_at, created_by, updated_at, updated_by, \
+               owner_plugin, plugin_report, plugin_version, suspended) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )
         .bind(&self.tenant)
         .bind(report.id.to_string())
@@ -3794,6 +3824,10 @@ impl ObjectTx for SqliteObjectTx {
         .bind(text(report.created_by))
         .bind(timestamp(report.updated_at))
         .bind(text(report.updated_by))
+        .bind(&report.owner_plugin)
+        .bind(&report.plugin_report)
+        .bind(report.plugin_version)
+        .bind(report.suspended)
         .execute(&mut *self.tx)
         .await?;
         Ok(())
@@ -3807,7 +3841,7 @@ impl ObjectTx for SqliteObjectTx {
         let updated = sqlx::query(
             "UPDATE reports SET name = ?3, description = ?4, query = ?5, chart = ?6, \
                label_column = ?7, value_column = ?8, visibility = ?9, version = ?10, \
-               updated_at = ?11, updated_by = ?12 \
+               updated_at = ?11, updated_by = ?12, plugin_version = ?14 \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?13",
         )
         .bind(&self.tenant)
@@ -3823,6 +3857,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(timestamp(report.updated_at))
         .bind(text(report.updated_by))
         .bind(expected_version)
+        .bind(report.plugin_version)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -3843,6 +3878,56 @@ impl ObjectTx for SqliteObjectTx {
                 .await?
                 .rows_affected();
         Ok(deleted == 1)
+    }
+
+    async fn set_plugin_reports_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError> {
+        sqlx::query("UPDATE reports SET suspended = ?3 WHERE tenant_id = ?1 AND owner_plugin = ?2")
+            .bind(&self.tenant)
+            .bind(plugin_id)
+            .bind(suspended)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn plugin_report_removed(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+    ) -> Result<bool, ObjectError> {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM plugin_report_removals \
+             WHERE tenant_id = ?1 AND plugin_id = ?2 AND report = ?3)",
+        )
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .bind(report)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        Ok(found != 0)
+    }
+
+    async fn remove_plugin_report(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO plugin_report_removals (tenant_id, plugin_id, report, removed_at) \
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
+        )
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .bind(report)
+        .bind(timestamp(at))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
     }
 
     async fn has_records(&mut self, object_id: Uuid) -> Result<bool, ObjectError> {

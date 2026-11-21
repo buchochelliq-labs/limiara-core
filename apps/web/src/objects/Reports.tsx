@@ -65,7 +65,7 @@ function ReportsHome({client, onNavigate, headingRef}: {client: ReportsClient; o
       <caption className="sr-only">Reports</caption>
       <thead><tr><th scope="col">Name</th><th scope="col">Shows</th><th scope="col">Shared with</th><th scope="col">Owner</th></tr></thead>
       <tbody>{load.reports.map(report => <tr key={report.id}>
-        <th scope="row"><a href={reportRoute(report.id)} onClick={event => { event.preventDefault(); onNavigate(reportRoute(report.id)); }}>{report.name}</a>{report.description && <div className="object-form__meta">{report.description}</div>}</th>
+        <th scope="row"><a href={reportRoute(report.id)} onClick={event => { event.preventDefault(); onNavigate(reportRoute(report.id)); }}>{report.name}</a>{report.ownerPlugin && <> <Badge title={`Provided by the ${report.ownerPlugin} plugin`}>Plugin</Badge></>}{report.description && <div className="object-form__meta">{report.description}</div>}</th>
         <td>{reportCharts.find(chart => chart.value === report.chart)?.label ?? report.chart}</td>
         <td>{report.visibility === 'workspace' ? <Badge>Workspace</Badge> : 'Only its owner'}</td>
         <td>{report.owner?.name ?? 'Workspace member'}</td>
@@ -116,7 +116,7 @@ function ReportView({client, reportId, onNavigate, headingRef}: {client: Reports
   };
   return <div className="content-canvas">
     <header className="page-header">
-      <div><p className="page-header__breadcrumb"><a href={reportsRoute} onClick={event => { event.preventDefault(); onNavigate(reportsRoute); }}>Reports</a></p><h1 ref={headingRef} tabIndex={-1}>{report.name}</h1>{report.description && <p>{report.description}</p>}</div>
+      <div><p className="page-header__breadcrumb"><a href={reportsRoute} onClick={event => { event.preventDefault(); onNavigate(reportsRoute); }}>Reports</a></p><h1 ref={headingRef} tabIndex={-1}>{report.name}</h1>{report.description && <p>{report.description}</p>}{report.ownerPlugin && <p className="object-form__meta">Provided by the <code>{report.ownerPlugin}</code> plugin. Once you change it, upgrades of the plugin leave it as you made it; once you delete it, the plugin does not add it again.</p>}</div>
       {report.canEdit && <div className="object-page__actions">
         <Button variant="secondary" onClick={() => onNavigate(`${reportRoute(report.id)}/edit`)}>Edit</Button>
         {confirming

@@ -438,6 +438,7 @@ async fn object_engine_suite() {
         "bulk_job_rows",
         "formula_index_marks",
         "record_draft_settings",
+        "plugin_report_removals",
     ] {
         let visible: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
             .fetch_one(&app)

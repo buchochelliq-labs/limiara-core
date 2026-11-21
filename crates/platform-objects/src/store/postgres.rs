@@ -176,7 +176,8 @@ fn object_from_row(row: &PgRow) -> Result<ObjectDefinition, ObjectError> {
 }
 
 const REPORT_COLUMNS: &str = "id, name, description, query, chart, label_column, value_column, \
-     visibility, owner_id, version, created_at, created_by, updated_at, updated_by";
+     visibility, owner_id, version, created_at, created_by, updated_at, updated_by, \
+     owner_plugin, plugin_report, plugin_version, suspended";
 
 fn report_from_row(row: &PgRow) -> Result<crate::Report, ObjectError> {
     Ok(crate::Report {
@@ -194,6 +195,10 @@ fn report_from_row(row: &PgRow) -> Result<crate::Report, ObjectError> {
         created_by: row.try_get("created_by")?,
         updated_at: row.try_get("updated_at")?,
         updated_by: row.try_get("updated_by")?,
+        owner_plugin: row.try_get("owner_plugin")?,
+        plugin_report: row.try_get("plugin_report")?,
+        plugin_version: row.try_get("plugin_version")?,
+        suspended: row.try_get("suspended")?,
     })
 }
 
@@ -2785,8 +2790,9 @@ impl ObjectTx for PostgresObjectTx {
     async fn insert_report(&mut self, report: &crate::Report) -> Result<(), ObjectError> {
         sqlx::query(
             "INSERT INTO reports (tenant_id, id, name, description, query, chart, label_column, \
-               value_column, visibility, owner_id, version, created_at, created_by, updated_at, updated_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+               value_column, visibility, owner_id, version, created_at, created_by, updated_at, updated_by, \
+               owner_plugin, plugin_report, plugin_version, suspended) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
         )
         .bind(self.tenant_id)
         .bind(report.id)
@@ -2803,6 +2809,10 @@ impl ObjectTx for PostgresObjectTx {
         .bind(report.created_by)
         .bind(report.updated_at)
         .bind(report.updated_by)
+        .bind(&report.owner_plugin)
+        .bind(&report.plugin_report)
+        .bind(report.plugin_version)
+        .bind(report.suspended)
         .execute(&mut *self.tx)
         .await?;
         Ok(())
@@ -2816,7 +2826,7 @@ impl ObjectTx for PostgresObjectTx {
         let updated = sqlx::query(
             "UPDATE reports SET name = $3, description = $4, query = $5, chart = $6, \
                label_column = $7, value_column = $8, visibility = $9, version = $10, \
-               updated_at = $11, updated_by = $12 \
+               updated_at = $11, updated_by = $12, plugin_version = $14 \
              WHERE tenant_id = $1 AND id = $2 AND version = $13",
         )
         .bind(self.tenant_id)
@@ -2832,6 +2842,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(report.updated_at)
         .bind(report.updated_by)
         .bind(expected_version)
+        .bind(report.plugin_version)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -2852,6 +2863,55 @@ impl ObjectTx for PostgresObjectTx {
                 .await?
                 .rows_affected();
         Ok(deleted == 1)
+    }
+
+    async fn set_plugin_reports_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError> {
+        sqlx::query("UPDATE reports SET suspended = $3 WHERE tenant_id = $1 AND owner_plugin = $2")
+            .bind(self.tenant_id)
+            .bind(plugin_id)
+            .bind(suspended)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn plugin_report_removed(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+    ) -> Result<bool, ObjectError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM plugin_report_removals \
+             WHERE tenant_id = $1 AND plugin_id = $2 AND report = $3)",
+        )
+        .bind(self.tenant_id)
+        .bind(plugin_id)
+        .bind(report)
+        .fetch_one(&mut *self.tx)
+        .await?)
+    }
+
+    async fn remove_plugin_report(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO plugin_report_removals (tenant_id, plugin_id, report, removed_at) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(self.tenant_id)
+        .bind(plugin_id)
+        .bind(report)
+        .bind(at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
     }
 
     async fn has_records(&mut self, object_id: Uuid) -> Result<bool, ObjectError> {

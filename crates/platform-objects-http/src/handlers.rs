@@ -1134,6 +1134,7 @@ fn report_json(report: &platform_objects::Report, can_edit: bool) -> Value {
         "created_by": crate::user_reference(report.created_by),
         "updated_at": report.updated_at,
         "updated_by": crate::user_reference(report.updated_by),
+        "owner_plugin": report.owner_plugin,
         "can_edit": can_edit,
     })
 }
