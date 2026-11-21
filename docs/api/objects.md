@@ -66,7 +66,11 @@ Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,
 `multi_picklist`, `lookup`, `formula`, `master_detail`, `rollup` and
 `related_to`. A field may be `required`, `unique` (text,
 email, phone, URL and number types; case-insensitive), `indexed` (for filters
-and sorting) and `searchable`. Picklists take `options` with `value`, `label`,
+and sorting) and `searchable`. Text fields take a `max_length` from 1 to
+255 (255 by default), long text from 1 to 131,072, and email fields from 1
+to 320, for the longest addresses mail allows (255 by default; ADR 0035 G8);
+it can be raised later. An email's local part has at most 64 characters and
+its domain at most 255. Picklists take `options` with `value`, `label`,
 `active`, `default`, `outcome` and `weight` (see Paths below). Lookups take `reference_object` and a
 `delete_behaviour` of `clear` (the default) or `restrict`. A field's type,
 uniqueness and lookup target cannot change once it exists.
