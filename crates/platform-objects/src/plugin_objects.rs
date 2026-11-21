@@ -415,6 +415,9 @@ impl ObjectService {
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
         let mut changed = Vec::new();
+        // The plugin's reports (ADR 0037 §5) follow its objects.
+        tx.set_plugin_reports_suspended(plugin_id, suspended)
+            .await?;
         for existing in tx.objects_owned_by(plugin_id).await? {
             if existing.suspended == suspended {
                 continue;

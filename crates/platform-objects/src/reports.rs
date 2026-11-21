@@ -103,6 +103,15 @@ pub struct Report {
     pub created_by: Option<Uuid>,
     pub updated_at: DateTime<Utc>,
     pub updated_by: Option<Uuid>,
+    /// The plugin that declared the report (ADR 0037 §5), if any.
+    pub owner_plugin: Option<String>,
+    /// The report's name in that plugin's manifest.
+    pub plugin_report: Option<String>,
+    /// The version the plugin last installed: while `version` still equals
+    /// it, nobody has changed the report and an upgrade may replace it.
+    pub plugin_version: Option<i64>,
+    /// Hidden while its plugin is not enabled.
+    pub suspended: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,9 +161,11 @@ impl ObjectService {
     }
 
     fn sees(&self, report: &Report) -> bool {
-        report.visibility == ReportVisibility::Workspace
-            || report.owner_id == self.caller().user_id()
-            || self.manages_reports()
+        // A disabled plugin's reports are hidden from everyone.
+        !report.suspended
+            && (report.visibility == ReportVisibility::Workspace
+                || report.owner_id == self.caller().user_id()
+                || self.manages_reports())
     }
 
     /// Whether the caller may change or delete a report they see: its
@@ -233,6 +244,10 @@ impl ObjectService {
             created_by: Some(self.caller().user_id()),
             updated_at: now,
             updated_by: Some(self.caller().user_id()),
+            owner_plugin: None,
+            plugin_report: None,
+            plugin_version: None,
+            suspended: false,
         };
         self.check_report(&mut report).await?;
         let mut tx = self.begin().await?;
@@ -316,6 +331,10 @@ impl ObjectService {
         if !tx.delete_report(id, expected_version).await? {
             return Err(ObjectError::VersionConflict);
         }
+        // A plugin's report stays deleted: its plugin never adds it again.
+        if let (Some(plugin), Some(name)) = (&report.owner_plugin, &report.plugin_report) {
+            tx.remove_plugin_report(plugin, name, Utc::now()).await?;
+        }
         self.record_change(tx.as_mut(), context, Change::ReportDeleted(&report))
             .await?;
         tx.commit().await?;
@@ -325,38 +344,10 @@ impl ObjectService {
     /// Checks a report's settings, and that its query runs for the caller
     /// and has the columns its chart plots. Text is trimmed in place.
     async fn check_report(&self, report: &mut Report) -> Result<(), ObjectError> {
-        let mut issues = Vec::new();
-        report.name = report.name.trim().to_owned();
-        if report.name.is_empty() || report.name.chars().count() > NAME_MAX {
-            issues.push(ValidationIssue::new(
-                "name",
-                "reports.name_invalid",
-                "name the report in 1 to 80 characters",
-            ));
-        }
-        report.description = report
-            .description
-            .take()
-            .map(|text| text.trim().to_owned())
-            .filter(|text| !text.is_empty());
-        if report
-            .description
-            .as_ref()
-            .is_some_and(|text| text.chars().count() > DESCRIPTION_MAX)
-        {
-            issues.push(ValidationIssue::new(
-                "description",
-                "reports.description_invalid",
-                "describe the report in at most 1,000 characters",
-            ));
-        }
-        report.query = report.query.trim().to_owned();
-        if !issues.is_empty() {
-            return Err(ObjectError::Validation(issues));
-        }
+        tidy_report(report)?;
         // The query must run for whoever saves it; its errors are the
         // query language's own, addressed to the query.
-        let columns = match self
+        let columns = self
             .query(QueryRequest {
                 q: report.query.clone(),
                 cursor: None,
@@ -365,53 +356,101 @@ impl ObjectService {
                 include_archived: false,
             })
             .await
-        {
-            Ok(result) => result.columns,
-            Err(ObjectError::Validation(found)) => {
-                return Err(ObjectError::Validation(
-                    found
-                        .into_iter()
-                        .map(|issue| ValidationIssue {
-                            field: "query".into(),
-                            ..issue
-                        })
-                        .collect(),
-                ))
-            }
-            Err(other) => return Err(other),
-        };
-        let column = |key: &Option<String>| {
-            key.as_ref()
-                .and_then(|key| columns.iter().find(|column| &column.key == key))
-        };
-        if report.chart == ReportChart::Table {
-            report.label_column = None;
-            report.value_column = None;
-            return Ok(());
+            .map(|result| result.columns)
+            .map_err(query_issues)?;
+        check_columns(report, &columns)
+    }
+}
+
+/// Trims a report's text and checks its name and description.
+pub(crate) fn tidy_report(report: &mut Report) -> Result<(), ObjectError> {
+    let mut issues = Vec::new();
+    report.name = report.name.trim().to_owned();
+    if report.name.is_empty() || report.name.chars().count() > NAME_MAX {
+        issues.push(ValidationIssue::new(
+            "name",
+            "reports.name_invalid",
+            "name the report in 1 to 80 characters",
+        ));
+    }
+    report.description = report
+        .description
+        .take()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    if report
+        .description
+        .as_ref()
+        .is_some_and(|text| text.chars().count() > DESCRIPTION_MAX)
+    {
+        issues.push(ValidationIssue::new(
+            "description",
+            "reports.description_invalid",
+            "describe the report in at most 1,000 characters",
+        ));
+    }
+    report.query = report.query.trim().to_owned();
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ObjectError::Validation(issues))
+    }
+}
+
+/// A query's own validation errors, addressed to the report's query.
+pub(crate) fn query_issues(error: ObjectError) -> ObjectError {
+    match error {
+        ObjectError::Validation(found) => ObjectError::Validation(
+            found
+                .into_iter()
+                .map(|issue| ValidationIssue {
+                    field: "query".into(),
+                    ..issue
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Checks that the query has the columns the report's chart plots; a table
+/// keeps none.
+pub(crate) fn check_columns(
+    report: &mut Report,
+    columns: &[crate::QueryColumn],
+) -> Result<(), ObjectError> {
+    let mut issues = Vec::new();
+    let column = |key: &Option<String>| {
+        key.as_ref()
+            .and_then(|key| columns.iter().find(|column| &column.key == key))
+    };
+    if report.chart == ReportChart::Table {
+        report.label_column = None;
+        report.value_column = None;
+        return Ok(());
+    }
+    match column(&report.value_column) {
+        Some(found) if NUMERIC_COLUMNS.contains(&found.column_type) => {}
+        _ => issues.push(ValidationIssue::new(
+            "value_column",
+            "reports.value_column_invalid",
+            "choose a number column of the query to plot",
+        )),
+    }
+    if report.chart.needs_label() {
+        if column(&report.label_column).is_none() {
+            issues.push(ValidationIssue::new(
+                "label_column",
+                "reports.label_column_invalid",
+                "choose a column of the query to label the values with",
+            ));
         }
-        match column(&report.value_column) {
-            Some(found) if NUMERIC_COLUMNS.contains(&found.column_type) => {}
-            _ => issues.push(ValidationIssue::new(
-                "value_column",
-                "reports.value_column_invalid",
-                "choose a number column of the query to plot",
-            )),
-        }
-        if report.chart.needs_label() {
-            if column(&report.label_column).is_none() {
-                issues.push(ValidationIssue::new(
-                    "label_column",
-                    "reports.label_column_invalid",
-                    "choose a column of the query to label the values with",
-                ));
-            }
-        } else {
-            report.label_column = None;
-        }
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ObjectError::Validation(issues))
-        }
+    } else {
+        report.label_column = None;
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ObjectError::Validation(issues))
     }
 }

@@ -664,6 +664,9 @@ describe('saved reports (ADR 0027)', () => {
     const next = await createObjectsApiClient(workspace, page).runReport('r1', {cursor: 'c2'});
     expect(String(vi.mocked(page).mock.calls[0]?.[0])).toContain('/reports/r1?cursor=c2');
     expect(next.report.canEdit).toBe(true);
+    expect(report.ownerPlugin).toBeNull();
+    const provided = respond(200, {...api, owner_plugin: 'platform.sales', result: {object: 'custom:project', columns: [], data: [], next_cursor: null}});
+    expect((await createObjectsApiClient(workspace, provided).runReport('r1')).report.ownerPlugin).toBe('platform.sales');
     const update = respond(200, api);
     await createObjectsApiClient(workspace, update).updateReport('r1', 2, {name: 'Statuses'});
     expect(JSON.parse(String(vi.mocked(update).mock.calls[0]?.[1]?.body))).toEqual({expected_version: 2, name: 'Statuses'});

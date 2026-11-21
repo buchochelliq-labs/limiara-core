@@ -493,6 +493,26 @@ pub trait ObjectTx: Send {
     /// Removes a report if it is still at `expected_version`.
     async fn delete_report(&mut self, id: Uuid, expected_version: i64)
         -> Result<bool, ObjectError>;
+    /// Suspends or resumes every report a plugin declared (ADR 0037 §5).
+    async fn set_plugin_reports_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError>;
+    /// Whether the workspace deleted a plugin's report, so the plugin never
+    /// adds it again.
+    async fn plugin_report_removed(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+    ) -> Result<bool, ObjectError>;
+    /// Remembers that the workspace deleted a plugin's report.
+    async fn remove_plugin_report(
+        &mut self,
+        plugin_id: &str,
+        report: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ObjectError>;
     /// Whether the object has any record, the recycle bin included.
     async fn has_records(&mut self, object_id: Uuid) -> Result<bool, ObjectError>;
     /// `(detail object, master object)` for every active master-detail

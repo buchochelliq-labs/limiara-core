@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 pub mod objects;
+pub mod reports;
 pub mod ui;
+
+pub use reports::{ReportChartDecl, ReportDecl};
 
 pub use objects::{
     ObjectDecl, ObjectDeleteBehaviour, ObjectFieldDecl, ObjectFieldOption, ObjectFieldType,
@@ -313,6 +316,10 @@ pub struct Manifest {
     /// §2), created or migrated in a workspace when it enables the plugin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDecl>,
+    /// Saved reports the plugin declares (ADR 0037 §5), added to a
+    /// workspace when it enables the plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reports: Vec<ReportDecl>,
     #[serde(default)]
     pub storage: StorageDecl,
     #[serde(default)]
@@ -360,6 +367,11 @@ pub enum ManifestError {
     #[error("invalid object {object}: {reason}")]
     InvalidObject {
         object: String,
+        reason: &'static str,
+    },
+    #[error("invalid report {report}: {reason}")]
+    InvalidReport {
+        report: String,
         reason: &'static str,
     },
     #[error("invalid object field {object}/{field}: {reason}")]
@@ -411,6 +423,10 @@ impl Manifest {
         self.validate_worker_contributions()?;
         self.validate_extension_fields()?;
         self.validate_objects()?;
+        reports::validate_reports(&self.reports).map_err(|issue| ManifestError::InvalidReport {
+            report: issue.report,
+            reason: issue.reason,
+        })?;
         self.validate_field_zones()?;
         let mut backends = self.storage.backends.clone();
         backends.sort();
@@ -1545,6 +1561,20 @@ delete_behaviour = "restrict""#,
             .expect("close date");
         assert!(close_date.required);
         assert_eq!(close_date.field_type, ObjectFieldType::Date);
+        // Its reports (ADR 0037 §5).
+        assert_eq!(
+            manifest
+                .reports
+                .iter()
+                .map(|report| report.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "open_pipeline_by_stage",
+                "open_pipeline_by_forecast_category",
+                "won_this_year",
+                "leads_by_source"
+            ]
+        );
         // Probability follows the stage through a starting automation.
         assert!(lead.automations.is_empty());
         let [probability] = opportunity.automations.as_slice() else {
@@ -1566,6 +1596,50 @@ delete_behaviour = "restrict""#,
             serde_json::from_value(serde_json::to_value(&manifest).expect("json"))
                 .expect("stored manifests read back");
         assert_eq!(round_trip.objects, manifest.objects);
+    }
+
+    #[test]
+    fn reports_are_validated_when_the_manifest_is_read() {
+        let manifest = |report: &str| {
+            objects_manifest("example.work", &format!("{TASK}\n[[reports]]\n{report}\n"))
+        };
+        let valid = r#"name = "tasks_by_owner"
+label = "Tasks by owner"
+query = "SELECT owner, COUNT() tasks FROM example.work:task GROUP BY owner"
+chart = "bar"
+label_column = "owner"
+value_column = "tasks""#;
+        let parsed = manifest(valid).expect("a valid report");
+        assert_eq!(parsed.reports[0].chart, crate::ReportChartDecl::Bar);
+        let refused = |change: &str| match manifest(change) {
+            Err(ManifestError::InvalidReport { reason, .. }) => reason,
+            other => panic!("expected a report error, got {other:?}"),
+        };
+        assert!(refused(&valid.replace("\"tasks_by_owner\"", "\"Tasks\"")).contains("name"));
+        assert!(
+            refused(&valid.replace("label = \"Tasks by owner\"", "label = \" \""))
+                .contains("label")
+        );
+        assert!(refused(&valid.replace(
+            "query = \"SELECT owner, COUNT() tasks FROM example.work:task GROUP BY owner\"",
+            "query = \"\""
+        ))
+        .contains("query"));
+        assert!(refused(&valid.replace("label_column = \"owner\"\n", "")).contains("label_column"));
+        assert!(
+            refused(&valid.replace("chart = \"bar\"", "chart = \"metric\"")).contains("metric")
+        );
+        assert!(refused(&valid.replace("chart = \"bar\"", "chart = \"table\"")).contains("table"));
+        assert!(manifest(&valid.replace("chart = \"bar\"", "chart = \"radar\"")).is_err());
+        assert!(manifest(&format!("{valid}\nfoo = 1")).is_err());
+        let twice = objects_manifest(
+            "example.work",
+            &format!("{TASK}\n[[reports]]\n{valid}\n\n[[reports]]\n{valid}\n"),
+        );
+        assert!(matches!(
+            twice,
+            Err(ManifestError::InvalidReport { reason, .. }) if reason.contains("duplicate")
+        ));
     }
 
     #[test]

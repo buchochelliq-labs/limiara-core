@@ -386,6 +386,8 @@ export type Report = {
   updatedAt: string;
   /** Whether the member may change or delete it: its owner, or a manager. */
   canEdit: boolean;
+  /** The plugin that provides it (ADR 0037 §5), if any. */
+  ownerPlugin: string | null;
 };
 export type ReportInput = {name: string; description?: string | null; query: string; chart: ReportChart; label_column?: string | null; value_column?: string | null; visibility: 'private' | 'workspace'};
 
@@ -506,7 +508,7 @@ export function objectFromApi(object: ApiObject): ObjectDescription {
   return {apiName: object.api_name, label: object.label, pluralLabel: object.plural_label, description: object.description ?? null, origin: object.origin, keyPrefix: object.key_prefix, nameLabel: object.name_label, inNavigation: object.in_navigation, sharingModel: object.sharing_model ?? 'read_write', grantHierarchy: object.grant_hierarchy !== false, trackHistory: object.track_history === true, pathField: typeof object.path_field === 'string' ? object.path_field : null, version: object.version, access: object.access ?? noAccess, fields: (object.fields ?? []).map(fieldFromApi)};
 }
 
-type ApiReport = {id: string; name: string; description: string | null; query: string; chart: ReportChart; label_column: string | null; value_column: string | null; visibility: 'private' | 'workspace'; owner?: UserReference; version: number; updated_at: string; can_edit?: boolean};
+type ApiReport = {id: string; name: string; description: string | null; query: string; chart: ReportChart; label_column: string | null; value_column: string | null; visibility: 'private' | 'workspace'; owner?: UserReference; version: number; updated_at: string; can_edit?: boolean; owner_plugin?: string | null};
 
 type ApiRelated = {object: string; object_label: string; object_plural_label: string; field: string; field_label: string; master_detail: boolean; data: unknown[]; next_cursor: string | null};
 
@@ -541,7 +543,7 @@ export function timelineFromApi(body: {sources?: unknown; open?: unknown; open_m
 }
 
 function reportFromApi(report: ApiReport): Report {
-  return {id: report.id, name: report.name, description: report.description ?? null, query: report.query, chart: report.chart, labelColumn: report.label_column ?? null, valueColumn: report.value_column ?? null, visibility: report.visibility, owner: report.owner ?? null, version: report.version, updatedAt: report.updated_at, canEdit: report.can_edit === true};
+  return {id: report.id, name: report.name, description: report.description ?? null, query: report.query, chart: report.chart, labelColumn: report.label_column ?? null, valueColumn: report.value_column ?? null, visibility: report.visibility, owner: report.owner ?? null, version: report.version, updatedAt: report.updated_at, canEdit: report.can_edit === true, ownerPlugin: typeof report.owner_plugin === 'string' ? report.owner_plugin : null};
 }
 
 function lookupRestoreFromApi(value: unknown): LookupRestore | null {
@@ -1200,7 +1202,7 @@ export function createFixtureObjectsClient(options: {timelines?: Record<string, 
       return {report: structuredClone(report), result: {object: 'custom:project', columns: [], rows: [], nextCursor: null}};
     },
     async createReport(input) {
-      const created: Report = {id: `report-${reports.length + 1}`, name: input.name.trim(), description: input.description?.trim() || null, query: input.query.trim(), chart: input.chart, labelColumn: input.label_column ?? null, valueColumn: input.value_column ?? null, visibility: input.visibility, owner: fixtureUser, version: 1, updatedAt: new Date().toISOString(), canEdit: true};
+      const created: Report = {id: `report-${reports.length + 1}`, name: input.name.trim(), description: input.description?.trim() || null, query: input.query.trim(), chart: input.chart, labelColumn: input.label_column ?? null, valueColumn: input.value_column ?? null, visibility: input.visibility, owner: fixtureUser, version: 1, updatedAt: new Date().toISOString(), canEdit: true, ownerPlugin: null};
       reports.push(created);
       return structuredClone(created);
     },

@@ -168,6 +168,8 @@ name = "amount"
 label = "Amount"
 field_type = "currency"
 scale = 2
+# Indexed so reports can sum it.
+indexed = true
 track_history = true
 
 [[objects.fields]]
@@ -243,3 +245,42 @@ description = "Sets the probability to the stage's weight when the stage changes
 trigger = "create_or_update"
 condition = "IF(ISNEW(), ISBLANK(platform.sales:probability), ISCHANGED(platform.sales:stage) && !ISCHANGED(platform.sales:probability))"
 set = [{ field = "probability", formula = "PICKLISTWEIGHT(platform.sales:stage)" }]
+
+# --- Reports (ADR 0037 §5) -------------------------------------------------
+# Added to a workspace when it enables Sales, as reports every member sees.
+# Each runs as whoever opens it, so it shows only the records they may see.
+
+[[reports]]
+name = "open_pipeline_by_stage"
+label = "Open pipeline by stage"
+description = "The amount and number of open opportunities in each stage"
+query = "SELECT platform.sales:stage, SUM(platform.sales:amount) amount, COUNT() opportunities FROM platform.sales:opportunity WHERE platform.sales:stage NOT IN ('closed_won', 'closed_lost') GROUP BY platform.sales:stage"
+chart = "bar"
+label_column = "platform.sales:stage"
+value_column = "amount"
+
+[[reports]]
+name = "open_pipeline_by_forecast_category"
+label = "Open pipeline by forecast category"
+description = "The amount of open opportunities in each forecast category"
+query = "SELECT platform.sales:forecast_category, SUM(platform.sales:amount) amount FROM platform.sales:opportunity WHERE platform.sales:stage NOT IN ('closed_won', 'closed_lost') GROUP BY platform.sales:forecast_category"
+chart = "bar"
+label_column = "platform.sales:forecast_category"
+value_column = "amount"
+
+[[reports]]
+name = "won_this_year"
+label = "Won this year"
+description = "The amount of opportunities closed won with a close date this year"
+query = "SELECT SUM(platform.sales:amount) amount FROM platform.sales:opportunity WHERE platform.sales:stage = 'closed_won' AND platform.sales:close_date = THIS_YEAR"
+chart = "metric"
+value_column = "amount"
+
+[[reports]]
+name = "leads_by_source"
+label = "Leads by source"
+description = "How many leads came from each source"
+query = "SELECT platform.sales:source, COUNT() leads FROM platform.sales:lead GROUP BY platform.sales:source"
+chart = "pie"
+label_column = "platform.sales:source"
+value_column = "leads"

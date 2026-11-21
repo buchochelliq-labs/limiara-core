@@ -1125,6 +1125,11 @@ expect 200 "$(call "$member_cookie" PATCH "$opportunity_api/records/$deal" "{\"e
 [[ "$(field '."platform.sales:stage"')" == closed_won && "$(field '."platform.sales:probability" == 100')" == true ]] || fail "a won deal, at 100: $(cat "$body")"
 expect 200 "$(call "$member_cookie" GET "$opportunity_api/automations")" "the opportunity's automations"
 [[ "$(field '[.data[].name] | join(",")')" == probability_from_stage ]] || fail "the starting automation is a workspace automation: $(cat "$body")"
+expect 200 "$(call "$member_cookie" GET "$workspace/reports")" "reports after enabling Sales"
+[[ "$(field '[.data[] | select(.owner_plugin == "platform.sales") | .name] | sort | join(",")')" == "Leads by source,Open pipeline by forecast category,Open pipeline by stage,Won this year" ]] || fail "Sales adds its reports: $(cat "$body")"
+won_report=$(field '.data[] | select(.name == "Won this year") | .id')
+expect 200 "$(call "$member_cookie" GET "$workspace/reports/$won_report")" "run a Sales report"
+[[ "$(field '.chart')" == metric && "$(field '.result.data | length')" == 1 ]] || fail "won this year: $(cat "$body")"
 
 log "assistant policy (ADR 0034 §4 and §6): off until turned on, and pushed assistant writes re-checked"
 policy="$workspace/objects/assistant-policy"
