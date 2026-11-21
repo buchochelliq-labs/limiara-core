@@ -64,7 +64,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `sharing_model` | `private`, `read` or `read_write` (the default). Only the starting value: the workspace owns it afterwards. |
 | `searchable`, `in_navigation` | Default `true`. |
 | `track_history` | Default `false`. |
-| `name_from` | Optional. `{ fields = ["first_name", "last_name"], separator = " " }`: two or three distinct short names of the object's own `text` fields, and a separator of at most five printable characters (a space by default). The engine then composes every record's name from them and refuses writes to the name (ADR 0035 G17). An upgrade that changes it renames the object's records. |
+| `name_from` | Optional. `{ fields = ["first_name", "last_name"], separator = " " }`: two or three distinct short names of the object's own `text` fields without a `read_permission`, and a separator of at most five printable characters (a space by default). The engine then composes every record's name from them and refuses writes to the name (ADR 0035 G17). An upgrade that changes it renames the object's records. |
 | `dormant` | Optional, default `false`. A dormant object is installed out of service and stays out of service when the plugin is enabled, until the plugin wakes it (see below; ADR 0035 G11). |
 | `path_field` | Optional. The short name of one of the object's single-value picklists: the record page shows it as a path and the board groups by it (ADR 0037 §2). Upgrades keep it in line with the manifest. |
 

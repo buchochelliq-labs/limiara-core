@@ -127,6 +127,13 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
             .await
             .expect("field");
     }
+    // A field some members cannot read (ADR 0035 G5).
+    let mut nickname = field("nickname", FieldType::Text);
+    nickname.read_permission = Some("people.private.read".into());
+    admin
+        .create_field(PERSON, nickname, context())
+        .await
+        .expect("a protected field");
     // Before a declaration, members name records themselves.
     let ada = admin
         .create_record(
@@ -152,6 +159,8 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
         json!({"fields": ["custom:first", "custom:nothing"]}),
         json!({"fields": ["custom:first", "custom:first"]}),
         json!({"fields": ["custom:first", "custom:last"], "separator": "------"}),
+        // The name is read with the record: no protected field may make it.
+        json!({"fields": ["custom:first", "custom:nickname"]}),
     ] {
         let error = admin
             .update_object(
@@ -183,6 +192,29 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) {
             .map(|name_from| name_from.fields.len()),
         Some(2)
     );
+    // Nor may a field that makes the name gain a read permission later.
+    let last_version = admin
+        .describe(PERSON)
+        .await
+        .expect("describe")
+        .0
+        .field("custom:last")
+        .expect("last")
+        .version;
+    let protect = admin
+        .update_field(
+            PERSON,
+            "custom:last",
+            serde_json::from_value(json!({
+                "expected_version": last_version,
+                "read_permission": "people.private.read",
+            }))
+            .expect("change"),
+            context(),
+        )
+        .await
+        .expect_err("a name field stays readable by every reader");
+    assert_eq!(codes(&protect), ["objects.name_from_invalid"]);
     let renamed = admin
         .get_record(PERSON, &ada.public_id, false)
         .await

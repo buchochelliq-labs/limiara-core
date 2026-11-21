@@ -680,6 +680,14 @@ pub fn validate_objects_with<'a>(
                 if !text {
                     return Err(issue("name_from names the object's own text fields"));
                 }
+                // The name is shown wherever the record is.
+                if object
+                    .fields
+                    .iter()
+                    .any(|field| field.name == *name && field.read_permission.is_some())
+                {
+                    return Err(issue("name_from names fields without a read permission"));
+                }
                 if !seen.insert(name.as_str()) {
                     return Err(issue("name_from names each field once"));
                 }

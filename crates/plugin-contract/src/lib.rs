@@ -1699,6 +1699,14 @@ delete_behaviour = "restrict""#,
                 .contains("separator")
         );
         assert!(manifest("{ fields = [\"first\", \"last\"], other = 1 }").is_err());
+        // A protected field cannot make the name every reader sees.
+        let protected = objects_manifest(
+            "example.work",
+            &format!(
+                "{TASK}name_from = {{ fields = [\"first\", \"last\"] }}\n\n[[objects.fields]]\nname = \"first\"\nlabel = \"First\"\nfield_type = \"text\"\n\n[[objects.fields]]\nname = \"last\"\nlabel = \"Last\"\nfield_type = \"text\"\nread_permission = \"example.work.private.read\"\n\n[[permissions]]\nid = \"example.work.private.read\"\ndescription = \"Read private names\"\n"
+            ),
+        );
+        assert!(object_reason(protected).contains("read permission"));
     }
 
     #[test]

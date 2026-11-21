@@ -203,6 +203,10 @@ record's name from two or three of the object's own active text fields:
   history entry, change-log entry and `record-updated` event. A record
   whose fields are all empty keeps its name. Clearing it keeps every name
   as it is and lets members write names again.
+- Every member who reads a record reads its name, in lists, search and
+  lookups, so the fields may not have a `read_permission` (field
+  permissions): naming one, or giving one a read permission while it
+  makes the name, answers `400 objects.name_from_invalid`.
 - A field is not deleted while it makes the name
   (`409 objects.field_in_use`). Describing an object returns `name_from`,
   and device replicas compose names offline the same way.

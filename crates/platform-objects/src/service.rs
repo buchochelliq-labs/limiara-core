@@ -1131,6 +1131,19 @@ impl ObjectService {
                 Ok(permission) => field.read_permission = permission,
                 Err(issue) => issues.push(issue),
             }
+            // A field that makes the record's name is read with the name.
+            let names = object
+                .name_from
+                .as_ref()
+                .is_some_and(|name_from| name_from.fields.contains(&field.api_name));
+            if field.read_permission.is_some() && names {
+                issues.push(ValidationIssue::new(
+                    "read_permission",
+                    "objects.name_from_invalid",
+                    "this field makes the record's name, which every reader of the record sees"
+                        .to_owned(),
+                ));
+            }
         }
         if let Some(permission) = input.write_permission {
             match crate::field_security::permission_id("write_permission", permission.as_deref()) {

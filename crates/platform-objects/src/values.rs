@@ -761,6 +761,14 @@ pub fn check_name_from(
         if !text {
             return Err(invalid("name text fields of this object"));
         }
+        // The name is shown and searched wherever the record is, so it may
+        // not carry a field some members cannot read (ADR 0035 G5).
+        if object
+            .field(api_name)
+            .is_some_and(|field| field.read_permission.is_some())
+        {
+            return Err(invalid("name fields every reader of the record may read"));
+        }
         if !seen.insert(api_name.as_str()) {
             return Err(invalid("name each field once"));
         }
