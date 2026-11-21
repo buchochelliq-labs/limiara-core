@@ -17,6 +17,7 @@ const MEMBER_ACCESS: AccessFlags = AccessFlags {
     delete: true,
     view_all: false,
     modify_all: false,
+    customise: false,
 };
 
 /// Every object with its quick actions and assistant policy, and the

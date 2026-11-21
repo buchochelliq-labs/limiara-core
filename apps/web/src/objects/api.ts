@@ -161,7 +161,7 @@ export type Timeline = {sources: number; open: TimelineItem[]; openMore: boolean
 /** How a fixture object appears on timelines, as a plugin declares it in `[objects.timeline]`. */
 export type FixtureTimelineSource = {through: string[]; date: string; open?: {field: string; equals: string} | 'upcoming'};
 
-export type ObjectAccess = {read: boolean; create: boolean; edit: boolean; delete: boolean; view_all: boolean; modify_all: boolean};
+export type ObjectAccess = {read: boolean; create: boolean; edit: boolean; delete: boolean; view_all: boolean; modify_all: boolean; /** Customising the object's fields, rules, quick actions and automations (ADR 0035 G10). */ customise?: boolean};
 
 export const noAccess: ObjectAccess = {read: false, create: false, edit: false, delete: false, view_all: false, modify_all: false};
 

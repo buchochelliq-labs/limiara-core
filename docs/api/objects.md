@@ -31,7 +31,8 @@ the plugin lookup `example.tracker:milestone`.
 
 | Operations | Required access |
 | --- | --- |
-| Create, change and delete objects and fields; read and set object permissions; change the record draft expiry | `objects.manage` |
+| Create, change and delete objects; read and set object permissions; set field permissions; change a plugin field's allowlist; change the record draft expiry | `objects.manage` |
+| Add, change and retire an object's workspace fields, validation rules, quick actions and automations | object `customise`, or `objects.manage` |
 | Read the record draft settings | any member |
 | See an object and read its records | object `read` |
 | Create records | object `create` |
@@ -41,7 +42,16 @@ the plugin lookup `example.tracker:milestone`.
 
 Object permissions are granted per role. A stronger grant implies the weaker
 ones: `modify_all` implies `view_all` and `delete`, `delete` implies `edit`,
-and every grant implies `read`. An object the caller cannot read is reported as `404`, exactly
+and every grant implies `read`. `customise` (ADR 0035 G10) stands apart:
+it grants nothing on records, no record grant implies it, and
+`objects.manage` implies it on every object. It covers the object's
+workspace fields (not field permissions, which decide who reads what, and
+not a plugin field's allowlist), its validation rules, quick actions and
+automations, and nothing on any other object. Because automations write
+fields as the system, a role that customises an object can set every field
+of its records through one: grant it as the administrative right it is. A
+member who customises no object is refused with `403` before any object is
+looked up. An object the caller cannot read is reported as `404`, exactly
 like a missing one; an operation the caller may not perform on an object they
 can read returns `403 auth.permission_denied`.
 
@@ -58,7 +68,7 @@ can read returns `403 auth.permission_denied`.
 | `PATCH /objects/{api_name}/fields/{field}` | Change a field; send `expected_version` |
 | `DELETE /objects/{api_name}/fields/{field}?expected_version=` | Retire a field; its values disappear from records |
 | `GET /objects/{api_name}/permissions` | Every workspace role with its access to the object |
-| `PUT /objects/{api_name}/permissions/{role_id}` | Set a role's access: `read`, `create`, `edit`, `delete`, `view_all`, `modify_all` |
+| `PUT /objects/{api_name}/permissions/{role_id}` | Set a role's access: `read`, `create`, `edit`, `delete`, `view_all`, `modify_all`, `customise` |
 | `GET /field-permissions` | The permissions a field may name, with their descriptions, for the Object Manager's pickers; needs `objects.manage` |
 
 Field types are `text`, `long_text`, `email`, `phone`, `url`, `number`,

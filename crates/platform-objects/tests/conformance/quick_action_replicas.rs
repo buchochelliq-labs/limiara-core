@@ -22,6 +22,7 @@ const MEMBER_ACCESS: AccessFlags = AccessFlags {
     delete: true,
     view_all: false,
     modify_all: false,
+    customise: false,
 };
 
 fn action(value: Value) -> CreateQuickAction {

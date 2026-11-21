@@ -263,6 +263,7 @@ mod tests {
         delete: true,
         view_all: false,
         modify_all: false,
+        customise: false,
     };
 
     #[test]
