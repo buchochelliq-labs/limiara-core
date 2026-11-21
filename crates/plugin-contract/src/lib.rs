@@ -1233,7 +1233,19 @@ key_prefix = "tsk"
 
     #[test]
     fn declared_objects_are_validated_when_the_manifest_is_read() {
-        objects_manifest("example.work", TASK).expect("a minimal object");
+        let minimal = objects_manifest("example.work", TASK).expect("a minimal object");
+        assert!(
+            !minimal.objects[0].dormant,
+            "objects are not dormant by default"
+        );
+        let dormant = objects_manifest("example.work", &format!("{TASK}dormant = true\n"))
+            .expect("a dormant object (ADR 0035 G11)");
+        assert!(dormant.objects[0].dormant);
+        let stored = serde_json::to_value(&minimal).expect("json");
+        assert!(
+            stored["objects"][0].get("dormant").is_none(),
+            "left out when false"
+        );
         assert!(object_reason(objects_manifest("example.my-work", TASK)).contains("namespace"));
         assert!(object_reason(objects_manifest(
             "example.work",

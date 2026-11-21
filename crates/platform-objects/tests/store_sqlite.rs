@@ -445,12 +445,22 @@ async fn sqlite_store_passes_the_plugin_object_conformance_suite() {
     .expect("audit");
     assert_eq!(by_plugin, 2);
     let suspensions: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_log WHERE action = 'objects.object.suspended'",
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.object.suspended' \
+         AND json_extract(metadata, '$.plugin') = 'example.tracker'",
     )
     .fetch_one(&pool)
     .await
     .expect("suspensions");
     assert_eq!(suspensions, 4, "two objects, suspended twice");
+    // Waking a dormant object (ADR 0035 G11) is audited once, naming its plugin.
+    let woken: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'objects.object.woken' \
+         AND json_extract(metadata, '$.plugin') = 'example.vault'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("woken");
+    assert_eq!(woken, 1, "one dormant object, woken once");
     for id in report.record_ids {
         let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM records WHERE id = ?1")
             .bind(id.to_string())

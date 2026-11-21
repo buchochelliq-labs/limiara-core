@@ -532,6 +532,7 @@ async fn put_object(
                 path_field: remote.path_field.clone(),
                 status: DefinitionStatus::Active,
                 suspended: false,
+                dormant: false,
                 version: remote.version.max(1),
                 created_at: now,
                 created_by: Some(actor),
