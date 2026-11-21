@@ -1062,11 +1062,12 @@ impl ObjectService {
             let limit = match field.field_type {
                 FieldType::Text => values::TEXT_LIMIT,
                 FieldType::LongText => values::LONG_TEXT_LIMIT,
+                FieldType::Email => values::EMAIL_LIMIT,
                 _ => {
                     issues.push(ValidationIssue::new(
                         "max_length",
                         "objects.max_length_not_allowed",
-                        "only text fields have a maximum length",
+                        "only text and email fields have a maximum length",
                     ));
                     0
                 }

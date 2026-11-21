@@ -347,6 +347,21 @@ async fn postgres_store_installs_the_sales_plugin() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_passes_the_field_type_conformance_suite() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Field type conformance')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::field_types::run(store, tenant).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_passes_the_search_conformance_suite() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;

@@ -1367,6 +1367,28 @@ delete_behaviour = "restrict""#,
             )
         ))
         .contains("max_length"));
+        // Email fields may allow up to 320 characters (ADR 0035 G8).
+        objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"email\"\nlabel = \"Email\"\nfield_type = \"email\"\nmax_length = 320",
+            ),
+        )
+        .expect("an email field of up to 320 characters");
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"email\"\nlabel = \"Email\"\nfield_type = \"email\"\nmax_length = 321"
+            )
+        ))
+        .contains("320"));
+        assert!(object_reason(objects_manifest(
+            "example.work",
+            &with_field(
+                "name = \"phone\"\nlabel = \"Phone\"\nfield_type = \"phone\"\nmax_length = 40"
+            )
+        ))
+        .contains("max_length"));
         assert!(object_reason(objects_manifest(
             "example.work",
             &format!(

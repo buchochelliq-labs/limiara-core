@@ -19,8 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3 and G5 are delivered too (below); every other gap
-and slice is still to do.
+`sync.server_only`. G2, G3, G5 and G8 are delivered too (below); every other
+gap and slice is still to do.
 
 Decided in review (2026-11-10):
 
@@ -74,6 +74,11 @@ Delivered:
   rules or automations, and counts restored and skipped links on the
   undelete response. The clear itself is unchanged (the accepted change).
   See [Recycle bin](../api/objects.md#recycle-bin).
+- G8, long email addresses (2026-11-21). Email fields take a `max_length`
+  from 1 to 320, declared on workspace fields, in manifests and when the
+  field is changed; without one they allow 255, as before. An address's
+  local part has at most 64 characters and its domain at most 255 (RFC
+  5321), replacing the engine's former 254-byte limit on the whole address.
 
 ## Context
 
