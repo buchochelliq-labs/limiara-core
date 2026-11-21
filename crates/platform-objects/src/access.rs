@@ -246,6 +246,11 @@ impl ObjectAccess {
         }
     }
 
+    /// Whether a role grants the caller customising any object (G10).
+    pub fn customises_any(&self) -> bool {
+        self.by_object.values().any(|flags| flags.customise)
+    }
+
     pub fn require(
         &self,
         object_id: Uuid,

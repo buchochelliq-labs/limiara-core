@@ -258,12 +258,11 @@ impl ObjectService {
         input: CreateQuickAction,
         context: MutationContext,
     ) -> Result<QuickAction, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         // Serialised with field and object deletion, which update or delete
         // the actions that use what they delete.
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let existing = tx.quick_actions(object.id).await?;
         if existing.len() >= QUICK_ACTIONS_PER_OBJECT_MAX {
             return Err(ObjectError::invalid(
@@ -367,10 +366,9 @@ impl ObjectService {
         input: UpdateQuickAction,
         context: MutationContext,
     ) -> Result<QuickAction, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let mut action = tx
             .quick_actions(object.id)
             .await?
@@ -437,10 +435,9 @@ impl ObjectService {
         expected_version: i64,
         context: MutationContext,
     ) -> Result<QuickAction, ObjectError> {
-        self.caller().require_manage()?;
         let mut tx = self.begin().await?;
         tx.lock_metadata().await?;
-        let object = self.active_object(tx.as_mut(), api_name).await?;
+        let object = self.customisable_object(tx.as_mut(), api_name).await?;
         let action = tx
             .quick_actions(object.id)
             .await?

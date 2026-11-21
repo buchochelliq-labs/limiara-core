@@ -11,6 +11,7 @@ pub mod bulk;
 pub mod client_ids;
 pub mod composite;
 pub mod conflicts;
+pub mod customise;
 pub mod definitions;
 pub mod draft_settings;
 pub mod field_permissions;

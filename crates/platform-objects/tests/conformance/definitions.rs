@@ -18,6 +18,7 @@ const MEMBER_ACCESS: AccessFlags = AccessFlags {
     delete: true,
     view_all: false,
     modify_all: false,
+    customise: false,
 };
 
 /// Everything the server describes to the member, as its API renders it.
