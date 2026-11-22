@@ -62,6 +62,9 @@ pub const PLUGIN_KEY_PREFIX_TAKEN: &str = "plugin.objects_key_prefix_taken";
 /// A declared object's key prefix differs from the one it was installed
 /// with; public ids carry it, so it never changes.
 pub const PLUGIN_KEY_PREFIX_CHANGED: &str = "plugin.objects_key_prefix_changed";
+/// An upgrade moves an object to another resource (ADR 0035 G6), which
+/// would strand the fields other plugins added to it.
+pub const PLUGIN_RESOURCE_CHANGED: &str = "plugin.objects_resource_changed";
 /// A declared API name belongs to a definition the plugin does not own, or
 /// to one that was deleted.
 pub const PLUGIN_NAME_TAKEN: &str = "plugin.objects_name_taken";
@@ -140,7 +143,22 @@ impl ObjectService {
             )
         })?;
         let mut installed = PluginObjectsInstalled::default();
-        if manifest.objects.is_empty() {
+        if manifest.objects.is_empty() && manifest.extensions.fields.is_empty() {
+            // A plugin that once extended others keeps its fields recorded.
+            let mut tx = self.begin().await?;
+            let known = tx
+                .plugin_extensions()
+                .await?
+                .iter()
+                .any(|(plugin, _, _)| plugin == plugin_id);
+            if !known {
+                tx.commit().await?;
+                return Ok(installed);
+            }
+            tx.lock_metadata().await?;
+            tx.put_plugin_extensions(plugin_id, &serde_json::json!([]))
+                .await?;
+            tx.commit().await?;
             return Ok(installed);
         }
         let mut tx = self.begin().await?;
@@ -249,8 +267,103 @@ impl ObjectService {
         }
         // Waiting entries whose objects are already in service join now.
         self.offer_waiting_allowlists(tx.as_mut(), context).await?;
+        // The plugin's fields on other plugins' objects (ADR 0035 G6), and
+        // other plugins' fields on the objects it serves.
+        if !manifest.extensions.fields.is_empty() {
+            let declarations = serde_json::to_value(&manifest.extensions.fields)
+                .map_err(|_| ObjectError::Invariant)?;
+            tx.put_plugin_extensions(plugin_id, &declarations).await?;
+        }
+        self.apply_extensions(tx.as_mut(), &mut installed, context)
+            .await?;
         tx.commit().await?;
         Ok(installed)
+    }
+
+    /// Brings every plugin's recorded extension declarations (ADR 0035 G6)
+    /// onto the objects serving their target resources in this workspace,
+    /// as fields in the extending plugin's namespace that it owns. A target
+    /// no object serves yet waits; it is applied when its object is
+    /// installed. Fields of a plugin that is not in service are added out
+    /// of service, and changed without coming back into service.
+    pub(crate) async fn apply_extensions(
+        &self,
+        tx: &mut dyn ObjectTx,
+        installed: &mut PluginObjectsInstalled,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        for (plugin_id, declarations, suspended) in tx.plugin_extensions().await? {
+            let declarations: Vec<plugin_contract::ExtensionFieldDecl> =
+                serde_json::from_value(declarations).map_err(|_| ObjectError::Invariant)?;
+            let mut added = false;
+            for declared in &declarations {
+                let Some(object) = tx.object_by_resource(&declared.target).await? else {
+                    continue;
+                };
+                // Only the host may serve its resources.
+                if object.owner_plugin.as_deref() != Some(declared.host.as_str())
+                    || object.owner_plugin.as_deref() == Some(plugin_id.as_str())
+                {
+                    continue;
+                }
+                let field = extension_field(declared);
+                let api_name = format!("{plugin_id}:{}", field.name);
+                match tx.suspended_field(object.id, &api_name).await? {
+                    Some(existing) => {
+                        let input = create_input(&field)?;
+                        if existing.field_type != input.field_type {
+                            return Err(ObjectError::Conflict(PLUGIN_FIELD_TYPE_CHANGED));
+                        }
+                        if let Some(update) = field_update(&existing, &input)? {
+                            Box::pin(self.change_field_in(tx, &object, existing, update, context))
+                                .await?;
+                            installed
+                                .updated_fields
+                                .push(format!("{}/{api_name}", object.api_name));
+                        }
+                    }
+                    None => {
+                        let new = object.field(&api_name).is_none();
+                        self.put_plugin_field(tx, &plugin_id, &object, &field, installed, context)
+                            .await?;
+                        added |= new;
+                    }
+                }
+            }
+            if suspended && added {
+                self.suspend_extension_fields(tx, &plugin_id, true, context)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes a plugin's fields on other plugins' objects (ADR 0035 G6) out
+    /// of service or back into it, recording a change for each object.
+    pub(crate) async fn suspend_extension_fields(
+        &self,
+        tx: &mut dyn ObjectTx,
+        plugin_id: &str,
+        suspended: bool,
+        context: MutationContext,
+    ) -> Result<(), ObjectError> {
+        tx.set_plugin_extensions_suspended(plugin_id, suspended)
+            .await?;
+        for object_id in tx
+            .set_extension_fields_suspended(plugin_id, suspended)
+            .await?
+        {
+            if let Some(object) = tx.object_by_id(object_id).await? {
+                // Edits made while the fields were out of service rebuilt
+                // their records' index without them: rebuild it with them.
+                if !suspended {
+                    crate::service::reindex(tx, &object).await?;
+                }
+                self.record_change(tx, context, Change::ObjectUpdated(&object))
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Adds each waiting allowlist entry (ADR 0035 G18) whose object is now
@@ -402,6 +515,8 @@ impl ObjectService {
                     // Out of service until the plugin is enabled.
                     suspended: true,
                     dormant: declared.dormant,
+                    resource: declared.resource.clone(),
+                    suspended_fields: Default::default(),
                     version: 1,
                     created_at: now,
                     created_by: Some(self.caller().user_id()),
@@ -425,6 +540,11 @@ impl ObjectService {
                 if existing.key_prefix != declared.key_prefix {
                     return Err(ObjectError::Conflict(PLUGIN_KEY_PREFIX_CHANGED));
                 }
+                // Other plugins' fields follow the resource an object
+                // serves (ADR 0035 G6), so it may be declared, not moved.
+                if existing.resource.is_some() && existing.resource != declared.resource {
+                    return Err(ObjectError::Conflict(PLUGIN_RESOURCE_CHANGED));
+                }
                 let mut object = existing.clone();
                 object.label = label;
                 object.plural_label = plural_label;
@@ -434,6 +554,7 @@ impl ObjectService {
                 object.searchable = searchable;
                 object.in_navigation = in_navigation;
                 object.path_field = path_field;
+                object.resource = declared.resource.clone();
                 if object.name_from != name_from {
                     object.name_from = name_from;
                     renamed.push(api_name.clone());
@@ -615,6 +736,9 @@ impl ObjectService {
         // The plugin's reports (ADR 0037 §5) follow its objects.
         tx.set_plugin_reports_suspended(plugin_id, suspended)
             .await?;
+        // So do the fields it added to other plugins' objects (ADR 0035 G6).
+        self.suspend_extension_fields(tx, plugin_id, suspended, context)
+            .await?;
         for existing in tx.objects_owned_by(plugin_id).await? {
             // A dormant object stays out of service until its plugin wakes
             // it (ADR 0035 G11).
@@ -686,6 +810,62 @@ fn split_optional(manifest: &Manifest, field: &ObjectFieldDecl) -> (Vec<String>,
         });
     field.reference_objects = now;
     (waiting, field)
+}
+
+/// The engine field an ADR 0012 extension declaration stands for (ADR 0035
+/// G6): text up to 255 characters stays text and longer becomes long text,
+/// numbers, booleans and dates keep their type, and a choice is a picklist.
+/// The read and write permissions are the extending plugin's.
+fn extension_field(declared: &plugin_contract::ExtensionFieldDecl) -> ObjectFieldDecl {
+    use plugin_contract::ExtensionFieldType as Kind;
+    use plugin_contract::ObjectFieldType as Type;
+    let length = i32::from(
+        declared
+            .max_length
+            .unwrap_or(plugin_contract::DEFAULT_EXTENSION_TEXT_LENGTH),
+    );
+    let field_type = match declared.field_type {
+        Kind::Text if length <= values::TEXT_LIMIT => Type::Text,
+        Kind::Text => Type::LongText,
+        Kind::Number => Type::Number,
+        Kind::Boolean => Type::Boolean,
+        Kind::Date => Type::Date,
+        Kind::Choice => Type::Picklist,
+    };
+    ObjectFieldDecl {
+        name: declared.key.clone(),
+        label: declared.label.clone(),
+        field_type,
+        description: declared.description.clone(),
+        required: false,
+        unique: false,
+        indexed: false,
+        searchable: false,
+        track_history: false,
+        max_length: matches!(field_type, Type::Text | Type::LongText).then_some(length),
+        // ADR 0012 numbers take fractions: the engine's widest scale.
+        scale: (field_type == Type::Number).then_some(values::SCALE_LIMIT),
+        options: declared
+            .options
+            .iter()
+            .map(|option| plugin_contract::objects::ObjectFieldOption {
+                value: option.value.clone(),
+                label: option.label.clone(),
+                default: false,
+                outcome: ObjectOptionOutcome::Open,
+                weight: None,
+            })
+            .collect(),
+        reference_object: None,
+        reference_objects: Vec::new(),
+        delete_behaviour: None,
+        read_permission: Some(declared.read_permission.clone()),
+        write_permission: Some(declared.write_permission.clone()),
+        data_classification: None,
+        purpose: None,
+        retention_days: None,
+        encrypted: false,
+    }
 }
 
 /// The engine input a declared field stands for.

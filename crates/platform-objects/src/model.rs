@@ -481,6 +481,16 @@ pub struct ObjectDefinition {
     /// 0035 G11): it stays suspended when the plugin is enabled.
     #[serde(skip)]
     pub dormant: bool,
+    /// The record resource a plugin object serves (ADR 0035 G6), such as
+    /// `platform.contacts.person`: other plugins' extension fields for it
+    /// become fields of this object.
+    #[serde(skip)]
+    pub resource: Option<String>,
+    /// API names of fields out of service with the plugin that added them
+    /// (ADR 0035 G6). They are not among `fields`, like deleted ones, but
+    /// records keep their values until the plugin comes back.
+    #[serde(skip)]
+    pub suspended_fields: std::collections::BTreeSet<String>,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub created_by: Option<Uuid>,

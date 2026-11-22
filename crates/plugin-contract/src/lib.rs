@@ -1639,6 +1639,45 @@ delete_behaviour = "restrict""#,
     }
 
     #[test]
+    fn objects_declare_the_resource_they_serve() {
+        let manifest = |resource: &str| {
+            objects_manifest(
+                "example.work",
+                &format!("{TASK}resource = \"{resource}\"\n"),
+            )
+        };
+        let parsed = manifest("example.work.task").expect("a resource (ADR 0035 G6)");
+        assert_eq!(
+            parsed.objects[0].resource.as_deref(),
+            Some("example.work.task")
+        );
+        for refused in [
+            "example.other.task",
+            "example.work",
+            "example.work.",
+            "example.work.Task",
+        ] {
+            assert!(
+                object_reason(manifest(refused)).contains("resource"),
+                "{refused}"
+            );
+        }
+        let two = objects_manifest(
+            "example.work",
+            &format!(
+                "{TASK}resource = \"example.work.task\"\n\n[[objects]]\nname = \"chore\"\nlabel = \"Chore\"\nplural_label = \"Chores\"\nkey_prefix = \"chr\"\nresource = \"example.work.task\"\n"
+            ),
+        );
+        assert!(object_reason(two).contains("same resource"));
+        let stored = serde_json::to_value(objects_manifest("example.work", TASK).expect("plain"))
+            .expect("json");
+        assert!(
+            stored["objects"][0].get("resource").is_none(),
+            "left out when unset"
+        );
+    }
+
+    #[test]
     fn text_list_fields_may_be_declared() {
         let parsed = objects_manifest(
             "example.work",

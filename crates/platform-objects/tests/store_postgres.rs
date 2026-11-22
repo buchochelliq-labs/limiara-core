@@ -347,6 +347,23 @@ async fn postgres_store_installs_the_sales_plugin() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_adds_extension_fields_to_host_objects() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenants = [Uuid::now_v7(), Uuid::now_v7()];
+    for tenant in tenants {
+        sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Extension fields')")
+            .bind(tenant)
+            .execute(&migrator)
+            .await
+            .expect("tenant");
+    }
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    conformance::extension_fields::run(store, tenants[0], tenants[1]).await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_keeps_text_lists() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
@@ -522,6 +539,7 @@ async fn object_engine_suite() {
         "assistant_object_policies",
         "field_reference_objects",
         "field_allowlist_offers",
+        "plugin_extensions",
         "related_actions",
         "timeline_sources",
         "automations",
