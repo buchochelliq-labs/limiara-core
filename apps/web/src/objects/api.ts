@@ -6,7 +6,7 @@
 export type FieldType =
   | 'text' | 'long_text' | 'email' | 'phone' | 'url' | 'number' | 'currency' | 'percent'
   | 'boolean' | 'date' | 'date_time' | 'picklist' | 'multi_picklist' | 'lookup' | 'formula'
-  | 'master_detail' | 'rollup' | 'related_to';
+  | 'master_detail' | 'rollup' | 'related_to' | 'text_list';
 
 export const fieldTypes: readonly {value: FieldType; label: string}[] = [
   {value: 'text', label: 'Text'},
@@ -22,6 +22,7 @@ export const fieldTypes: readonly {value: FieldType; label: string}[] = [
   {value: 'date_time', label: 'Date and time'},
   {value: 'picklist', label: 'Picklist'},
   {value: 'multi_picklist', label: 'Multi-select picklist'},
+  {value: 'text_list', label: 'Text list (tags)'},
   {value: 'lookup', label: 'Lookup'},
   {value: 'master_detail', label: 'Master-detail'},
   {value: 'related_to', label: 'Related to'},
@@ -1256,6 +1257,7 @@ export function formatValue(field: ObjectField, value: unknown, related: Record<
   if (field.type === 'boolean') return value === true ? 'Yes' : 'No';
   if (field.type === 'picklist') return field.options.find(option => option.value === value)?.label ?? String(value);
   if (field.type === 'multi_picklist' && Array.isArray(value)) return value.map(item => field.options.find(option => option.value === item)?.label ?? String(item)).join(', ');
+  if (field.type === 'text_list' && Array.isArray(value)) return value.map(String).join(', ');
   if (field.type === 'currency' && typeof value === 'number') return value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
   if (field.type === 'percent' && typeof value === 'number') return `${value}%`;
   if (field.type === 'date' && typeof value === 'string') {

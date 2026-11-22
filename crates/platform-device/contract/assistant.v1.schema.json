@@ -287,7 +287,7 @@
       "enum": [
         "text", "long_text", "email", "phone", "url", "number", "currency",
         "percent", "boolean", "date", "date_time", "picklist", "multi_picklist",
-        "lookup", "formula", "master_detail", "rollup", "related_to"
+        "lookup", "formula", "master_detail", "rollup", "related_to", "text_list"
       ]
     },
     "QuickActionKind": { "enum": ["update", "create"] },

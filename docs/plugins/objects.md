@@ -71,7 +71,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | Field setting | Rule |
 | --- | --- |
 | `name`, `label`, `description` | As for objects; names unique per object. |
-| `field_type` | `text`, `long_text`, `email`, `phone`, `url`, `number`, `currency`, `percent`, `boolean`, `date`, `date_time`, `picklist`, `multi_picklist`, `lookup` or `related_to`. Formula, master-detail and roll-up summary fields cannot be declared yet. |
+| `field_type` | `text`, `long_text`, `email`, `phone`, `url`, `number`, `currency`, `percent`, `boolean`, `date`, `date_time`, `picklist`, `multi_picklist`, `lookup`, `related_to` or `text_list` (free-form tags, ADR 0035 G7). Formula, master-detail and roll-up summary fields cannot be declared yet. |
 | `required`, `indexed`, `track_history` | As for workspace fields. |
 | `unique` | Text, email, phone, URL and number fields only. |
 | `searchable` | Text-like fields only. |

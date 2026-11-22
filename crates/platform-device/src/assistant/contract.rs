@@ -407,3 +407,30 @@ pub struct OnScreen {
     pub object: Option<String>,
     pub record: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The published contract names every engine field type the bridge
+    /// may describe, so a new type cannot break native clients that
+    /// validate against it.
+    #[test]
+    fn the_schema_names_every_field_type() {
+        let schema: Value = serde_json::from_str(SCHEMA).expect("the schema is JSON");
+        let named: Vec<&str> = schema["$defs"]["FieldType"]["enum"]
+            .as_array()
+            .expect("an enum of field types")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for kind in FieldType::ALL {
+            assert!(
+                named.contains(&kind.as_str()),
+                "assistant.v1.schema.json is missing {}",
+                kind.as_str()
+            );
+        }
+        assert_eq!(named.len(), FieldType::ALL.len(), "and names no other");
+    }
+}

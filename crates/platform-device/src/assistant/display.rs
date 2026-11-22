@@ -98,6 +98,14 @@ pub(crate) fn display(
             .as_str()
             .map(|chosen| option_label(field, chosen))
             .unwrap_or_else(|| text_of(value)),
+        FieldType::TextList => match value.as_array() {
+            Some(values) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+            None => text_of(value),
+        },
         FieldType::MultiPicklist => match value.as_array() {
             Some(values) => values
                 .iter()

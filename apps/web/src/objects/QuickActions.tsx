@@ -232,6 +232,7 @@ function PresetInput({label, field, value, error, onChange}: {label: string; fie
       {error && <span className="ui-field__error">{error}</span>}
     </fieldset>;
   }
+  if (field?.type === 'text_list') return <TextField label={label} description="Separate values with commas." value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
   const targets = field && holdsReference(field.type) ? referenceTargets(field) : [];
   return <TextField label={label} type={field ? inputTypes[field.type] ?? 'text' : 'text'} step={field?.type === 'currency' ? '0.01' : field && ['number', 'percent'].includes(field.type) ? 'any' : undefined} description={field && holdsReference(field.type) ? `The ID of a ${targets.join(' or ') || 'related'} record.` : undefined} value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
 }

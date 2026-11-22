@@ -908,6 +908,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
         <textarea id={`field-${field.apiName}`} className="ui-field__control object-textarea" required={field.required} value={String(value ?? '')} aria-invalid={fieldError ? true : undefined} onChange={event => set(field.apiName, event.target.value)} />
         {fieldError && <span className="ui-field__error">{fieldError}</span>}
       </div>;
+      if (field.type === 'text_list') return <TextField key={field.apiName} label={field.label} required={field.required} value={String(value ?? '')} error={fieldError} description="Separate values with commas. Up to 50, of up to 80 characters each." onChange={event => set(field.apiName, event.target.value)} />;
       return <TextField key={field.apiName} label={field.label} type={inputTypes[field.type] ?? 'text'} step={field.type === 'currency' ? '0.01' : field.type === 'number' || field.type === 'percent' ? 'any' : undefined} required={field.required} value={String(value ?? '')} error={fieldError} description={field.unique ? 'Must be unique' : undefined} onChange={event => set(field.apiName, event.target.value)} />;
     })}
     {cancelling

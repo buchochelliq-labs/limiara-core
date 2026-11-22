@@ -41,6 +41,7 @@ pub mod sales;
 pub mod search;
 pub mod sources;
 pub mod sync;
+pub mod text_lists;
 pub mod timeline;
 
 use platform_objects::service::ListRecords;

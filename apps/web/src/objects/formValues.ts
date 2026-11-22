@@ -16,6 +16,8 @@ export function editableFields(object: ObjectDescription) {
 export function toDraftValue(field: ObjectField, value: unknown): DraftValue {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) ? value.map(String) : [];
+  // A text list is typed as one line, its values separated by commas (ADR 0035 G7).
+  if (field.type === 'text_list') return Array.isArray(value) ? value.map(String).join(', ') : '';
   if (field.type === 'date_time' && typeof value === 'string') return toLocalInput(value);
   return value === undefined || value === null ? '' : String(value);
 }
@@ -32,6 +34,10 @@ function toLocalInput(value: string): string {
 export function toApiValue(field: ObjectField, value: DraftValue): unknown {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) && value.length ? value : null;
+  if (field.type === 'text_list') {
+    const values = typeof value === 'string' ? value.split(',').map(item => item.trim()).filter(item => item !== '') : [];
+    return values.length ? values : null;
+  }
   if (typeof value !== 'string' || value.trim() === '') return null;
   if (field.type === 'number' || field.type === 'currency' || field.type === 'percent') {
     const number = Number(value);

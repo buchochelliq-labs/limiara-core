@@ -1639,6 +1639,18 @@ delete_behaviour = "restrict""#,
     }
 
     #[test]
+    fn text_list_fields_may_be_declared() {
+        let parsed = objects_manifest(
+            "example.work",
+            &format!("{TASK}\n[[objects.fields]]\nname = \"labels\"\nlabel = \"Labels\"\nfield_type = \"text_list\"\n"),
+        )
+        .expect("a text list (ADR 0035 G7)");
+        let labels = &parsed.objects[0].fields[0];
+        assert_eq!(labels.field_type, ObjectFieldType::TextList);
+        assert_eq!(labels.field_type.as_str(), "text_list");
+    }
+
+    #[test]
     fn field_governance_is_validated_when_the_manifest_is_read() {
         let manifest = |declared: &str| {
             objects_manifest(
