@@ -1109,6 +1109,24 @@ impl ObjectTx for PostgresObjectTx {
         u64::try_from(sequence).map_err(|_| ObjectError::Invariant)
     }
 
+    async fn raise_record_sequence(
+        &mut self,
+        object_id: Uuid,
+        at_least: u64,
+    ) -> Result<(), ObjectError> {
+        let at_least = i64::try_from(at_least).map_err(|_| ObjectError::Invariant)?;
+        sqlx::query(
+            "UPDATE object_definitions SET record_sequence = GREATEST(record_sequence, $3) \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(self.tenant_id)
+        .bind(object_id)
+        .bind(at_least)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     async fn insert_record(&mut self, record: &Record) -> Result<(), ObjectError> {
         sqlx::query(
             "INSERT INTO records (tenant_id, id, object_id, public_id, name, name_key, owner_id, \

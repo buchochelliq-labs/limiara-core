@@ -19,6 +19,7 @@ pub mod field_permissions;
 pub mod field_types;
 pub mod formulas;
 pub mod governance;
+pub mod import;
 pub mod jobs;
 pub mod lease;
 pub mod names;

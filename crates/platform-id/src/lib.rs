@@ -69,6 +69,19 @@ impl PublicId {
         &self.0[..PREFIX_LEN]
     }
 
+    /// The tenant-local sequence a server-assigned id carries, or `None`
+    /// for an id a device assigned.
+    pub fn sequence(&self) -> Option<u64> {
+        if self.is_client_assigned() {
+            return None;
+        }
+        self.0.as_bytes()[PREFIX_LEN..PREFIX_LEN + PAYLOAD_LEN]
+            .iter()
+            .try_fold(0u64, |value, byte| {
+                alphabet_value(*byte).map(|digit| (value << 5) | u64::from(digit))
+            })
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -134,6 +147,16 @@ mod tests {
             PublicId::parse("éééééééééééééééééé"),
             Err(PublicIdError::InvalidFormat)
         );
+    }
+
+    #[test]
+    fn a_server_id_gives_back_its_sequence() {
+        for sequence in [0, 1, 31, 32, 1_000_000, (1 << 59) - 1] {
+            let id = PublicId::new("per", sequence).expect("id");
+            assert_eq!(id.sequence(), Some(sequence));
+        }
+        let client = PublicId::new_client("per", 7).expect("client id");
+        assert_eq!(client.sequence(), None);
     }
 
     #[test]
