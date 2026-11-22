@@ -135,7 +135,7 @@ const OBJECT_COLUMNS: &str =
     "id, api_name, label, plural_label, description, origin, owner_plugin, \
      key_prefix, name_label, sharing_model, searchable, in_navigation, status, version, \
      created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended, \
-     path_field, dormant, name_from";
+     path_field, dormant, name_from, resource";
 const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.description, f.field_type, \
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
@@ -180,6 +180,8 @@ fn object_from_row(row: &PgRow) -> Result<ObjectDefinition, ObjectError> {
         path_field: row.try_get("path_field")?,
         name_from: name_from(row.try_get("name_from")?)?,
         dormant: row.try_get("dormant")?,
+        resource: row.try_get("resource")?,
+        suspended_fields: Default::default(),
         status: parse(DefinitionStatus::parse(row.try_get("status")?))?,
         suspended: row.try_get("suspended")?,
         version: row.try_get("version")?,
@@ -578,7 +580,7 @@ impl PostgresObjectTx {
     async fn fields_of(&mut self, object_id: Uuid) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = $1 AND f.object_id = $2 AND f.status = 'active' \
+             WHERE f.tenant_id = $1 AND f.object_id = $2 AND f.status = 'active' AND NOT f.suspended \
              ORDER BY f.position, f.created_at, f.id"
         ))
         .bind(self.tenant_id)
@@ -605,6 +607,16 @@ impl PostgresObjectTx {
         };
         let mut object = object_from_row(&row)?;
         object.fields = self.fields_of(object.id).await?;
+        object.suspended_fields = sqlx::query_scalar::<_, String>(
+            "SELECT api_name FROM field_definitions \
+             WHERE tenant_id = $1 AND object_id = $2 AND status = 'active' AND suspended",
+        )
+        .bind(self.tenant_id)
+        .bind(object.id)
+        .fetch_all(&mut *self.tx)
+        .await?
+        .into_iter()
+        .collect();
         Ok(Some(object))
     }
 
@@ -756,7 +768,7 @@ impl ObjectTx for PostgresObjectTx {
     ) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = $1 AND f.status = 'active' AND (f.reference_object_id = $2 \
+             WHERE f.tenant_id = $1 AND f.status = 'active' AND NOT f.suspended AND (f.reference_object_id = $2 \
                OR EXISTS (SELECT 1 FROM field_reference_objects fo WHERE fo.tenant_id = f.tenant_id \
                  AND fo.field_id = f.id AND fo.object_id = $2))"
         ))
@@ -773,7 +785,7 @@ impl ObjectTx for PostgresObjectTx {
     ) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = $1 AND f.status = 'active' AND f.field_type = 'related_to' \
+             WHERE f.tenant_id = $1 AND f.status = 'active' AND NOT f.suspended AND f.field_type = 'related_to' \
                AND EXISTS (SELECT 1 FROM record_references rr JOIN records t \
                  ON t.tenant_id = rr.tenant_id AND t.id = rr.target_id \
                  WHERE rr.tenant_id = f.tenant_id AND rr.field_id = f.id AND t.object_id = $2)"
@@ -790,8 +802,8 @@ impl ObjectTx for PostgresObjectTx {
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
                origin, owner_plugin, key_prefix, name_label, sharing_model, searchable, in_navigation, \
                status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, \
-               suspended, path_field, dormant, name_from) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)",
+               suspended, path_field, dormant, name_from, resource) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)",
         )
         .bind(self.tenant_id)
         .bind(object.id)
@@ -818,6 +830,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(&object.path_field)
         .bind(object.dormant)
         .bind(name_from_json(object))
+        .bind(&object.resource)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -833,7 +846,7 @@ impl ObjectTx for PostgresObjectTx {
             "UPDATE object_definitions SET label = $4, plural_label = $5, description = $6, \
                name_label = $7, sharing_model = $8, searchable = $9, in_navigation = $10, \
                status = $11, version = $12, updated_at = $13, updated_by = $14, \
-               grant_hierarchy = $15, track_history = $16, suspended = $17, path_field = $18, dormant = $19, name_from = $20, \
+               grant_hierarchy = $15, track_history = $16, suspended = $17, path_field = $18, dormant = $19, name_from = $20, resource = $21, \
                deleted_at = CASE WHEN $11 = 'deleted' THEN coalesce(deleted_at, $13) END \
              WHERE tenant_id = $1 AND id = $2 AND version = $3",
         )
@@ -857,6 +870,7 @@ impl ObjectTx for PostgresObjectTx {
         .bind(&object.path_field)
         .bind(object.dormant)
         .bind(name_from_json(object))
+        .bind(&object.resource)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -2979,6 +2993,102 @@ impl ObjectTx for PostgresObjectTx {
             .await?;
         }
         Ok(())
+    }
+
+    async fn object_by_resource(
+        &mut self,
+        resource: &str,
+    ) -> Result<Option<ObjectDefinition>, ObjectError> {
+        self.object_where("resource = $2 AND status = 'active'", resource.to_owned())
+            .await
+    }
+
+    async fn suspended_field(
+        &mut self,
+        object_id: Uuid,
+        api_name: &str,
+    ) -> Result<Option<FieldDefinition>, ObjectError> {
+        let row = sqlx::query(&format!(
+            "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
+             WHERE f.tenant_id = $1 AND f.object_id = $2 AND f.api_name = $3 \
+               AND f.status = 'active' AND f.suspended"
+        ))
+        .bind(self.tenant_id)
+        .bind(object_id)
+        .bind(api_name)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.as_ref().map(field_from_row).transpose()
+    }
+
+    async fn set_extension_fields_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<Vec<Uuid>, ObjectError> {
+        let changed: Vec<Uuid> = sqlx::query_scalar(
+            "UPDATE field_definitions f SET suspended = $3, version = f.version + 1, updated_at = now() \
+             FROM object_definitions o \
+             WHERE f.tenant_id = $1 AND o.tenant_id = f.tenant_id AND o.id = f.object_id \
+               AND f.status = 'active' AND f.suspended <> $3 AND f.origin = 'plugin' \
+               AND starts_with(f.api_name, $2 || ':') \
+               AND o.owner_plugin IS DISTINCT FROM $2 \
+             RETURNING f.object_id",
+        )
+        .bind(self.tenant_id)
+        .bind(plugin_id)
+        .bind(suspended)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        let mut objects = changed;
+        objects.sort_unstable();
+        objects.dedup();
+        Ok(objects)
+    }
+
+    async fn put_plugin_extensions(
+        &mut self,
+        plugin_id: &str,
+        declarations: &Value,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO plugin_extensions (tenant_id, plugin_id, declarations) VALUES ($1, $2, $3) \
+             ON CONFLICT (tenant_id, plugin_id) DO UPDATE SET \
+               declarations = EXCLUDED.declarations, updated_at = now()",
+        )
+        .bind(self.tenant_id)
+        .bind(plugin_id)
+        .bind(declarations)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_plugin_extensions_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "UPDATE plugin_extensions SET suspended = $3, updated_at = now() \
+             WHERE tenant_id = $1 AND plugin_id = $2",
+        )
+        .bind(self.tenant_id)
+        .bind(plugin_id)
+        .bind(suspended)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn plugin_extensions(&mut self) -> Result<Vec<(String, Value, bool)>, ObjectError> {
+        Ok(sqlx::query_as(
+            "SELECT plugin_id, declarations, suspended FROM plugin_extensions \
+             WHERE tenant_id = $1 ORDER BY plugin_id",
+        )
+        .bind(self.tenant_id)
+        .fetch_all(&mut *self.tx)
+        .await?)
     }
 
     async fn pending_allowlist_offers(&mut self) -> Result<Vec<(Uuid, Uuid, String)>, ObjectError> {

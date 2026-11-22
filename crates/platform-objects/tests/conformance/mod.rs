@@ -14,6 +14,7 @@ pub mod conflicts;
 pub mod customise;
 pub mod definitions;
 pub mod draft_settings;
+pub mod extension_fields;
 pub mod field_permissions;
 pub mod field_types;
 pub mod formulas;

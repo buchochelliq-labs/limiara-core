@@ -66,6 +66,7 @@ with a letter (`example.tracker`, not `example.my-tracker`).
 | `track_history` | Default `false`. |
 | `name_from` | Optional. `{ fields = ["first_name", "last_name"], separator = " " }`: two or three distinct short names of the object's own `text` fields without a `read_permission`, and a separator of at most five printable characters (a space by default). The engine then composes every record's name from them and refuses writes to the name (ADR 0035 G17). An upgrade that changes it renames the object's records. |
 | `dormant` | Optional, default `false`. A dormant object is installed out of service and stays out of service when the plugin is enabled, until the plugin wakes it (see below; ADR 0035 G11). |
+| `resource` | Optional. The record resource the object serves, in the plugin's own namespace, such as `example.crm.person`: other plugins' `[[extensions.fields]]` for that resource become fields of this object (see [Fields other plugins add](#fields-other-plugins-add)). At most one object per resource. Once set, an upgrade cannot change it (`409 plugin.objects_resource_changed`). |
 | `path_field` | Optional. The short name of one of the object's single-value picklists: the record page shows it as a path and the board groups by it (ADR 0037 §2). Upgrades keep it in line with the manifest. |
 
 | Field setting | Rule |
@@ -138,6 +139,40 @@ object, and device replicas keep the field with nothing allowed. Changing
 the allowlist runs the usual cascades: values pointing at an object taken
 out are kept, and create quick actions that fill the field from that object
 are deleted (ADR 0032 §4).
+
+## Fields other plugins add
+
+A plugin adds simple fields to another plugin's records with ADR 0012
+`[[extensions.fields]]`, naming the host plugin, the host's resource and a
+key. When the host serves that resource with an engine object (its
+`resource`), each declaration becomes a field of that object (ADR 0035 G6):
+
+- **Name and owner.** The field is `<extending plugin>:<key>`, such as
+  `example.loyalty:tier`, with origin `plugin`. It belongs to the
+  extending plugin: its upgrades change it, and neither the host's
+  installation nor workspace administrators may (`409 objects.plugin_owned`).
+- **Types.** `text` stays text up to 255 characters and becomes long text
+  above that, keeping its `max_length`; `number`, `boolean` and `date`
+  keep their type; `choice` becomes a picklist with the same options.
+- **Permissions.** The declaration's `read_permission` and
+  `write_permission`, which the extending plugin declares, become the
+  field's [field permissions](../api/objects.md#field-permissions).
+- **Lifecycle.** The fields follow the extending plugin, not the host. They
+  are installed out of service and come into service when it is enabled.
+  While it is disabled or removed they are out of service: left out of
+  definitions, records, queries, search and replicas, refusing values. Records
+  keep their values, unseen, even when edited meanwhile, and show them again
+  when the plugin is enabled. An upgrade changes them without bringing them
+  back into service.
+- **Order.** Each workspace keeps the extending plugin's declarations, so
+  a host object installed later, or given a `resource` by an upgrade, gets
+  the fields then.
+
+The `classification` of a declaration is not carried over yet: an
+engine field that is not public needs a purpose (G9), which ADR 0012
+declarations do not have. Retiring the fields of a removed plugin after the
+ADR 0012 retention window is a follow-up; until then they stay out of
+service with their values.
 
 ## Related actions
 

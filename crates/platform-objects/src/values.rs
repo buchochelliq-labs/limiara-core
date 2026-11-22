@@ -849,9 +849,11 @@ pub fn apply_values(
     creating: bool,
 ) -> Result<ValueChange, Vec<ValidationIssue>> {
     let mut issues = Vec::new();
+    // Values of fields out of service with their plugin (ADR 0035 G6) are
+    // kept, unseen, for when it comes back; deleted fields' are dropped.
     let mut values: BTreeMap<String, Value> = existing
         .iter()
-        .filter(|(key, _)| object.field(key).is_some())
+        .filter(|(key, _)| object.field(key).is_some() || object.suspended_fields.contains(*key))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     let mut changed = Vec::new();
@@ -1242,6 +1244,8 @@ mod tests {
             status: DefinitionStatus::Active,
             suspended: false,
             dormant: false,
+            resource: None,
+            suspended_fields: Default::default(),
             version: 1,
             created_at: Utc::now(),
             created_by: None,

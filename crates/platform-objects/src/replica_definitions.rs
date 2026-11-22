@@ -538,6 +538,8 @@ async fn put_object(
                 status: DefinitionStatus::Active,
                 suspended: false,
                 dormant: false,
+                resource: None,
+                suspended_fields: Default::default(),
                 version: remote.version.max(1),
                 created_at: now,
                 created_by: Some(actor),

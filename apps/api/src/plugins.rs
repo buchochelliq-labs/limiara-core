@@ -595,9 +595,9 @@ async fn install_plugin_objects(
             return Err(unavailable());
         }
     };
-    if manifest.objects.is_empty() {
-        return Ok(Some((version, manifest)));
-    }
+    // Every plugin goes through the engine's installer: it installs the
+    // plugin's objects and its fields on other plugins' objects (ADR 0035
+    // G6), and does nothing for a plugin that has neither.
     let engine = plugin_installer(pool, workspace_id, actor_id, plugin_id);
     match engine
         .install_plugin_objects(&manifest, system_context(correlation_id))

@@ -520,6 +520,8 @@ impl ObjectService {
             status: DefinitionStatus::Active,
             suspended: false,
             dormant: false,
+            resource: None,
+            suspended_fields: Default::default(),
             version: 1,
             created_at: now,
             created_by: Some(self.caller.user_id()),

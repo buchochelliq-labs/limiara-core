@@ -513,6 +513,43 @@ pub trait ObjectTx: Send {
         report: &str,
         at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), ObjectError>;
+    /// The object serving a record resource (ADR 0035 G6), if any.
+    async fn object_by_resource(
+        &mut self,
+        resource: &str,
+    ) -> Result<Option<ObjectDefinition>, ObjectError>;
+    /// A field out of service with its plugin (ADR 0035 G6), by API name.
+    async fn suspended_field(
+        &mut self,
+        object_id: Uuid,
+        api_name: &str,
+    ) -> Result<Option<FieldDefinition>, ObjectError>;
+    /// Takes every field `plugin_id` added to another plugin's objects out
+    /// of service or back into it (ADR 0035 G6), and returns the objects
+    /// whose fields changed.
+    async fn set_extension_fields_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<Vec<Uuid>, ObjectError>;
+    /// Replaces a plugin's extension declarations (ADR 0035 G6), keeping
+    /// whether it is in service.
+    async fn put_plugin_extensions(
+        &mut self,
+        plugin_id: &str,
+        declarations: &serde_json::Value,
+    ) -> Result<(), ObjectError>;
+    /// Records whether a plugin with extension declarations is in service.
+    async fn set_plugin_extensions_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError>;
+    /// Every plugin's extension declarations in the workspace, with whether
+    /// the plugin is suspended.
+    async fn plugin_extensions(
+        &mut self,
+    ) -> Result<Vec<(String, serde_json::Value, bool)>, ObjectError>;
     /// Brings a field's waiting allowlist entries (ADR 0035 G18) in line
     /// with `names`: adds the missing ones and drops waiting ones no longer
     /// named. Entries already offered stay, so they are never offered again.

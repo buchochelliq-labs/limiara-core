@@ -121,6 +121,13 @@ pub struct ObjectDecl {
     /// good; a later manifest cannot make an awake object dormant again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dormant: bool,
+    /// The record resource this object serves (ADR 0035 G6), such as
+    /// `platform.contacts.person`: other plugins' ADR 0012
+    /// `[[extensions.fields]]` for that resource become fields of this
+    /// object. Always in the plugin's own namespace, and at most one object
+    /// per resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
     /// Automations the engine adds when it creates the object.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automations: Vec<ObjectAutomationDecl>,
@@ -530,6 +537,25 @@ pub fn validate_objects<'a>(
 /// G18): a related-to field's starting allowlist may also name their
 /// objects, which the engine adds once they are in service. Lookups still
 /// need a plugin the manifest depends on.
+/// Whether `resource` is a record resource id `plugin_id` owns: the plugin
+/// id, a dot, then dot-separated tokens of lowercase letters, digits and
+/// hyphens, as ADR 0012 extension targets are.
+pub fn valid_resource_of(plugin_id: &str, resource: &str) -> bool {
+    resource
+        .strip_prefix(plugin_id)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.len() <= 64
+                && suffix.split('.').all(|token| {
+                    !token.is_empty()
+                        && token.bytes().all(|byte| {
+                            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                        })
+                })
+        })
+}
+
 pub fn validate_objects_with<'a>(
     plugin_id: &str,
     objects: &[ObjectDecl],
@@ -562,7 +588,19 @@ pub fn validate_objects_with<'a>(
     }
     let mut names = std::collections::BTreeSet::new();
     let mut prefixes = std::collections::BTreeSet::new();
+    let mut resources = std::collections::BTreeSet::new();
     for object in objects {
+        if let Some(resource) = &object.resource {
+            if !valid_resource_of(plugin_id, resource) {
+                return Err(object_issue(
+                    object,
+                    "resource must be a resource id in the plugin's own namespace, such as <plugin id>.person",
+                ));
+            }
+            if !resources.insert(resource.as_str()) {
+                return Err(object_issue(object, "two objects serve the same resource"));
+            }
+        }
         if !valid_object_name(&object.name) {
             return Err(object_issue(
                 object,

@@ -19,7 +19,7 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G7, G8, G9, G10, G11, G17 and G18 are delivered too (below);
+`sync.server_only`. G2, G3, G5, G6, G7, G8, G9, G10, G11, G17 and G18 are delivered too (below);
 every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
@@ -98,6 +98,20 @@ Delivered:
   after which it follows its plugin like any other object. Both stores keep
   the flag (`object_definitions.dormant`). No kernel route wakes objects
   yet: the Contacts cutover (slice 5) will.
+- G6, fields one plugin adds to another plugin's object (2026-11-22). A
+  plugin object may declare the `resource` it serves; the engine installer
+  turns other plugins' ADR 0012 `[[extensions.fields]]` for that resource
+  into fields of the object in the extending plugin's namespace
+  (`example.loyalty:tier`, origin `plugin`), with its read and write
+  permissions. Text becomes text or long text by length, a choice a
+  picklist. The fields follow the extending plugin: a `suspended` flag on
+  the field leaves them out of every read, as deletion does, while records
+  keep their values. Each workspace keeps the declarations
+  (`plugin_extensions`, forced RLS), so a host object installed later gets
+  the fields then. Follow-ups: retiring a removed plugin's fields after the
+  ADR 0012 retention window (they stay out of service until then), and
+  carrying the declaration's classification once ADR 0012 declares a
+  purpose. Contacts' resource mapping itself is slice 2.
 - G7, text lists (2026-11-21). A `text_list` field type holds up to 50
   distinct values of up to 80 characters as a JSON array: values are
   trimmed, and those that differ only in case keep the first spelling. It

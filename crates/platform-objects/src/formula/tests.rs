@@ -66,6 +66,8 @@ fn object(api: &str) -> ObjectDefinition {
         status: DefinitionStatus::Active,
         suspended: false,
         dormant: false,
+        resource: None,
+        suspended_fields: Default::default(),
         version: 1,
         created_at: Utc::now(),
         created_by: None,

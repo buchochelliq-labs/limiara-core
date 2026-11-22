@@ -992,6 +992,25 @@ ALTER TABLE field_definitions ADD COLUMN governance TEXT
 ALTER TABLE object_permissions ADD COLUMN customise INTEGER NOT NULL DEFAULT 0;
 "#,
     },
+    // Fields one plugin adds to another plugin's object (ADR 0035 G6).
+    TenantMigration {
+        owner: ENGINE_CONTEXT,
+        id: "0044_extension_fields",
+        sql: r#"
+ALTER TABLE object_definitions ADD COLUMN resource TEXT;
+CREATE UNIQUE INDEX object_definitions_resource_idx
+  ON object_definitions (tenant_id, resource) WHERE resource IS NOT NULL;
+ALTER TABLE field_definitions ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE plugin_extensions (
+  tenant_id TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,
+  declarations TEXT NOT NULL CHECK (json_type(declarations) = 'array'),
+  suspended INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, plugin_id)
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -1099,7 +1118,7 @@ const OBJECT_COLUMNS: &str =
     "id, api_name, label, plural_label, description, origin, owner_plugin, \
      key_prefix, name_label, sharing_model, searchable, in_navigation, status, version, \
      created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, suspended, \
-     path_field, dormant, name_from";
+     path_field, dormant, name_from, resource";
 const FIELD_COLUMNS: &str = "f.id, f.object_id, f.api_name, f.label, f.description, f.field_type, \
      f.origin, f.required, f.unique_value, f.indexed, f.searchable, f.max_length, f.scale, \
      f.options, f.default_value, f.reference_object_id, r.api_name AS reference_api, \
@@ -1187,6 +1206,8 @@ fn object_from_row(row: &SqliteRow) -> Result<ObjectDefinition, ObjectError> {
         path_field: row.try_get("path_field")?,
         name_from: name_from(row.try_get("name_from")?)?,
         dormant: flag(row, "dormant")?,
+        resource: row.try_get("resource")?,
+        suspended_fields: Default::default(),
         status: parse(DefinitionStatus::parse(
             &row.try_get::<String, _>("status")?,
         ))?,
@@ -1602,7 +1623,7 @@ impl SqliteObjectTx {
     async fn fields_of(&mut self, object_id: Uuid) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = ?1 AND f.object_id = ?2 AND f.status = 'active' \
+             WHERE f.tenant_id = ?1 AND f.object_id = ?2 AND f.status = 'active' AND f.suspended = 0 \
              ORDER BY f.position, f.created_at, f.id"
         ))
         .bind(&self.tenant)
@@ -1629,6 +1650,16 @@ impl SqliteObjectTx {
         };
         let mut object = object_from_row(&row)?;
         object.fields = self.fields_of(object.id).await?;
+        object.suspended_fields = sqlx::query_scalar::<_, String>(
+            "SELECT api_name FROM field_definitions \
+             WHERE tenant_id = ?1 AND object_id = ?2 AND status = 'active' AND suspended = 1",
+        )
+        .bind(&self.tenant)
+        .bind(object.id.to_string())
+        .fetch_all(&mut *self.tx)
+        .await?
+        .into_iter()
+        .collect();
         Ok(Some(object))
     }
 
@@ -1774,7 +1805,7 @@ impl ObjectTx for SqliteObjectTx {
     ) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = ?1 AND f.status = 'active' AND (f.reference_object_id = ?2 \
+             WHERE f.tenant_id = ?1 AND f.status = 'active' AND f.suspended = 0 AND (f.reference_object_id = ?2 \
                OR EXISTS (SELECT 1 FROM field_reference_objects fo WHERE fo.tenant_id = f.tenant_id \
                  AND fo.field_id = f.id AND fo.object_id = ?2))"
         ))
@@ -1791,7 +1822,7 @@ impl ObjectTx for SqliteObjectTx {
     ) -> Result<Vec<FieldDefinition>, ObjectError> {
         let rows = sqlx::query(&format!(
             "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
-             WHERE f.tenant_id = ?1 AND f.status = 'active' AND f.field_type = 'related_to' \
+             WHERE f.tenant_id = ?1 AND f.status = 'active' AND f.suspended = 0 AND f.field_type = 'related_to' \
                AND EXISTS (SELECT 1 FROM record_references rr JOIN records t \
                  ON t.tenant_id = rr.tenant_id AND t.id = rr.target_id \
                  WHERE rr.tenant_id = f.tenant_id AND rr.field_id = f.id AND t.object_id = ?2)"
@@ -1808,8 +1839,8 @@ impl ObjectTx for SqliteObjectTx {
             "INSERT INTO object_definitions (tenant_id, id, api_name, label, plural_label, description, \
                origin, owner_plugin, key_prefix, name_label, sharing_model, searchable, in_navigation, \
                status, version, created_at, created_by, updated_at, updated_by, grant_hierarchy, track_history, \
-               suspended, path_field, dormant, name_from) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+               suspended, path_field, dormant, name_from, resource) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         )
         .bind(&self.tenant)
         .bind(object.id.to_string())
@@ -1836,6 +1867,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(&object.path_field)
         .bind(object.dormant)
         .bind(name_from_json(object))
+        .bind(&object.resource)
         .execute(&mut *self.tx)
         .await
         .map_err(|error| conflict_on_unique(error, "objects.duplicate_api_name"))?;
@@ -1851,7 +1883,7 @@ impl ObjectTx for SqliteObjectTx {
             "UPDATE object_definitions SET label = ?4, plural_label = ?5, description = ?6, \
                name_label = ?7, sharing_model = ?8, searchable = ?9, in_navigation = ?10, \
                status = ?11, version = ?12, updated_at = ?13, updated_by = ?14, \
-               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, path_field = ?18, dormant = ?19, name_from = ?20, \
+               grant_hierarchy = ?15, track_history = ?16, suspended = ?17, path_field = ?18, dormant = ?19, name_from = ?20, resource = ?21, \
                deleted_at = CASE WHEN ?11 = 'deleted' THEN coalesce(deleted_at, ?13) END \
              WHERE tenant_id = ?1 AND id = ?2 AND version = ?3",
         )
@@ -1875,6 +1907,7 @@ impl ObjectTx for SqliteObjectTx {
         .bind(&object.path_field)
         .bind(object.dormant)
         .bind(name_from_json(object))
+        .bind(&object.resource)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -4055,6 +4088,127 @@ impl ObjectTx for SqliteObjectTx {
             .await?;
         }
         Ok(())
+    }
+
+    async fn object_by_resource(
+        &mut self,
+        resource: &str,
+    ) -> Result<Option<ObjectDefinition>, ObjectError> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM object_definitions \
+             WHERE tenant_id = ?1 AND resource = ?2 AND status = 'active'",
+        )
+        .bind(&self.tenant)
+        .bind(resource)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        match id {
+            Some(id) => self.object_where("id", id).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn suspended_field(
+        &mut self,
+        object_id: Uuid,
+        api_name: &str,
+    ) -> Result<Option<FieldDefinition>, ObjectError> {
+        let row = sqlx::query(&format!(
+            "SELECT {FIELD_COLUMNS} {FIELD_FROM} \
+             WHERE f.tenant_id = ?1 AND f.object_id = ?2 AND f.api_name = ?3 \
+               AND f.status = 'active' AND f.suspended = 1"
+        ))
+        .bind(&self.tenant)
+        .bind(object_id.to_string())
+        .bind(api_name)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.as_ref().map(field_from_row).transpose()
+    }
+
+    async fn set_extension_fields_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<Vec<Uuid>, ObjectError> {
+        let prefix = format!("{plugin_id}:");
+        let rows: Vec<String> = sqlx::query_scalar(
+            "UPDATE field_definitions SET suspended = ?3, version = version + 1, updated_at = ?5 \
+             WHERE tenant_id = ?1 AND status = 'active' AND suspended <> ?3 AND origin = 'plugin' \
+               AND substr(api_name, 1, length(?4)) = ?4 \
+               AND object_id IN (SELECT id FROM object_definitions WHERE tenant_id = ?1 \
+                                 AND (owner_plugin IS NULL OR owner_plugin <> ?2)) \
+             RETURNING object_id",
+        )
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .bind(suspended)
+        .bind(&prefix)
+        .bind(timestamp(Utc::now()))
+        .fetch_all(&mut *self.tx)
+        .await?;
+        let mut objects = rows
+            .iter()
+            .map(|id| Uuid::parse_str(id).map_err(|_| ObjectError::Invariant))
+            .collect::<Result<Vec<_>, _>>()?;
+        objects.sort_unstable();
+        objects.dedup();
+        Ok(objects)
+    }
+
+    async fn put_plugin_extensions(
+        &mut self,
+        plugin_id: &str,
+        declarations: &Value,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "INSERT INTO plugin_extensions (tenant_id, plugin_id, declarations, updated_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (tenant_id, plugin_id) DO UPDATE SET \
+               declarations = excluded.declarations, updated_at = excluded.updated_at",
+        )
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .bind(encode(declarations)?)
+        .bind(timestamp(Utc::now()))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_plugin_extensions_suspended(
+        &mut self,
+        plugin_id: &str,
+        suspended: bool,
+    ) -> Result<(), ObjectError> {
+        sqlx::query(
+            "UPDATE plugin_extensions SET suspended = ?3, updated_at = ?4 \
+             WHERE tenant_id = ?1 AND plugin_id = ?2",
+        )
+        .bind(&self.tenant)
+        .bind(plugin_id)
+        .bind(suspended)
+        .bind(timestamp(Utc::now()))
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn plugin_extensions(&mut self) -> Result<Vec<(String, Value, bool)>, ObjectError> {
+        let rows: Vec<(String, String, bool)> = sqlx::query_as(
+            "SELECT plugin_id, declarations, suspended FROM plugin_extensions \
+             WHERE tenant_id = ?1 ORDER BY plugin_id",
+        )
+        .bind(&self.tenant)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        rows.into_iter()
+            .map(|(plugin, declarations, suspended)| {
+                serde_json::from_str(&declarations)
+                    .map(|declarations| (plugin, declarations, suspended))
+                    .map_err(|_| ObjectError::Invariant)
+            })
+            .collect()
     }
 
     async fn pending_allowlist_offers(&mut self) -> Result<Vec<(Uuid, Uuid, String)>, ObjectError> {
