@@ -120,7 +120,11 @@ async fn sqlite_store_imports_records_with_their_identity() {
     .fetch_all(&pool)
     .await
     .expect("audit");
-    assert_eq!(batches.len(), 3, "organisations, people and the ticket");
+    assert_eq!(
+        batches.len(),
+        4,
+        "organisations, two of people and the ticket"
+    );
     let named: Vec<String> = batches
         .iter()
         .flat_map(|metadata| {

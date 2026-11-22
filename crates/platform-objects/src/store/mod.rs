@@ -135,12 +135,12 @@ pub trait ObjectTx: Send {
     async fn next_record_sequence(&mut self, object_id: Uuid) -> Result<u64, ObjectError>;
     /// Raises the object's record sequence to at least `at_least`, so the
     /// next server-assigned public id follows every imported one (ADR 0035
-    /// G4). It never lowers it.
+    /// G4). It never lowers it, and returns the sequence it ends at.
     async fn raise_record_sequence(
         &mut self,
         object_id: Uuid,
         at_least: u64,
-    ) -> Result<(), ObjectError>;
+    ) -> Result<u64, ObjectError>;
     async fn insert_record(&mut self, record: &Record) -> Result<(), ObjectError>;
     /// Writes a record if it is still at `expected_version`.
     async fn update_record(

@@ -149,6 +149,8 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .get_record(ORG, &acme.public_id, false)
         .await
         .expect("acme");
+    // The stamps are the source's, the touch the import's (ADR 0024 §3).
+    assert!(read.touched_at > acme.updated_at, "touched when imported");
     assert_eq!(read.id, acme.id);
     assert_eq!(read.version, 7);
     assert_eq!(read.owner_id, Some(owner));
@@ -193,6 +195,13 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .collect();
     assert!(kinds.contains(&(acme.public_id.clone(), ChangeKind::Created)));
     assert!(kinds.contains(&(binned.public_id.clone(), ChangeKind::Deleted)));
+    assert!(
+        changes
+            .changes
+            .iter()
+            .all(|(_, change)| change.changed_at > earlier + Duration::days(300)),
+        "logged at the import, not at the source's old times"
+    );
     // The next record the engine numbers follows the imported ones.
     let next = admin
         .create_record(ORG, &body(json!({"name": "New"})), context())
@@ -223,6 +232,16 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         .await
         .expect("people, though the rule would refuse Ada");
     assert_eq!(report.record_sequence, 901, "past every imported id");
+    // A later batch of lower ids reports the counter as it stands.
+    let cy = record(&person.key_prefix, 50, json!({"name": "Cy"}), earlier);
+    let later = migrator
+        .import_records(PERSON, vec![cy.clone()], 0, context())
+        .await
+        .expect("a lower id");
+    assert_eq!(
+        later.record_sequence, 901,
+        "never lowered, and reported as stored"
+    );
     let read = admin
         .get_record(PERSON, &ada.public_id, false)
         .await
@@ -381,6 +400,7 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
             binned.public_id,
             ada.public_id,
             bea.public_id,
+            cy.public_id,
             ticket.public_id,
         ],
     }

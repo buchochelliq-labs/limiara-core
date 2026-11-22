@@ -127,7 +127,7 @@ impl ObjectService {
                 .await?;
             highest = highest.max(sequence);
         }
-        tx.raise_record_sequence(object.id, highest).await?;
+        let highest = tx.raise_record_sequence(object.id, highest).await?;
         let evidence = self.evidence(context);
         let mut audit = AuditEvent::with_context(
             Some(evidence.tenant_id),
@@ -164,6 +164,7 @@ impl ObjectService {
         ids: &mut Vec<String>,
     ) -> Result<u64, ObjectError> {
         let at = |field: &str| format!("records/{position}/{field}");
+        let imported_at = Utc::now();
         let invalid = |field: &str, code: &'static str, detail: &str| {
             ObjectError::invalid(at(field), code, detail.to_owned())
         };
@@ -234,7 +235,10 @@ impl ObjectService {
             created_by: imported.created_by,
             updated_at: imported.updated_at,
             updated_by: imported.updated_by,
-            touched_at: imported.updated_at,
+            // The stamps are the source's; the touch is the import's, so
+            // the change log and `touched_after` see the record as new
+            // (ADR 0024 §3), and it expires no earlier changes with it.
+            touched_at: imported_at,
             archived_at: imported.archived_at,
             deleted_at: imported.deleted_at,
         };

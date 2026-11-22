@@ -367,7 +367,7 @@ async fn postgres_store_imports_records_with_their_identity() {
     .fetch_one(&migrator)
     .await
     .expect("audit");
-    assert_eq!(batches, 3);
+    assert_eq!(batches, 4, "organisations, two of people and the ticket");
     let events: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM outbox WHERE tenant_id = $1 \
          AND envelope->'payload'->>'entity_id' = ANY($2)",
