@@ -26,6 +26,8 @@ pub struct ObjectCaller {
     installer: Option<String>,
     /// The platform itself, acting for no member (the recycle-bin purge).
     system: bool,
+    /// The kernel importing records with their identity (ADR 0035 G4).
+    migrator: bool,
 }
 
 impl ObjectCaller {
@@ -43,6 +45,7 @@ impl ObjectCaller {
             reports: Vec::new(),
             installer: None,
             system: false,
+            migrator: false,
         }
     }
 
@@ -61,6 +64,7 @@ impl ObjectCaller {
             reports: Vec::new(),
             installer: None,
             system: true,
+            migrator: false,
         }
     }
 
@@ -86,7 +90,34 @@ impl ObjectCaller {
             reports: Vec::new(),
             installer: Some(plugin_id.into()),
             system: false,
+            migrator: false,
         }
+    }
+
+    /// The kernel importing records into one workspace with the identity
+    /// they had elsewhere (ADR 0035 G4): ids, stamps, versions, owners and
+    /// states no member can set. It holds no member permissions or roles,
+    /// so every member path refuses it; only the engine's import entry point
+    /// accepts it. `actor_id` is the administrator who started the import,
+    /// so evidence names who asked. Built by kernel migration code after it
+    /// has authorised that administrator; never from request input, and
+    /// never handed to a plugin.
+    pub fn migrator(tenant_id: Uuid, actor_id: Uuid) -> Self {
+        Self {
+            tenant_id,
+            user_id: actor_id,
+            system_permissions: BTreeSet::new(),
+            role_ids: Vec::new(),
+            reports: Vec::new(),
+            installer: None,
+            system: false,
+            migrator: true,
+        }
+    }
+
+    /// Whether this caller is the kernel's record importer (ADR 0035 G4).
+    pub fn is_migrator(&self) -> bool {
+        self.migrator
     }
 
     /// The plugin this caller installs, if it is a plugin installer.

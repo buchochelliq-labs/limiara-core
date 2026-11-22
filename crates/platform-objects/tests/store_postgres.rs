@@ -347,6 +347,41 @@ async fn postgres_store_installs_the_sales_plugin() {
 
 #[tokio::test]
 #[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_imports_records_with_their_identity() {
+    let app = pool("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Import')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: Arc<dyn ObjectStore> = Arc::new(PostgresObjectStore::new(app));
+    let report = conformance::import::run(store, tenant).await;
+    // One audit entry per committed batch, and no event of its own for any
+    // imported record.
+    let batches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'objects.records.imported'",
+    )
+    .bind(tenant)
+    .fetch_one(&migrator)
+    .await
+    .expect("audit");
+    assert_eq!(batches, 4, "organisations, two of people and the ticket");
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM outbox WHERE tenant_id = $1 \
+         AND envelope->'payload'->>'entity_id' = ANY($2)",
+    )
+    .bind(tenant)
+    .bind(&report.imported)
+    .fetch_one(&migrator)
+    .await
+    .expect("events");
+    assert_eq!(events, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
 async fn postgres_store_adds_extension_fields_to_host_objects() {
     let app = pool("PLATFORM_TEST_DATABASE_URL").await;
     let migrator = pool("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;

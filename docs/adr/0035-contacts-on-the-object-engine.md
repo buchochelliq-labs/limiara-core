@@ -19,7 +19,7 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2, G3, G5, G6, G7, G8, G9, G10, G11, G17 and G18 are delivered too (below);
+`sync.server_only`. G2 to G11, G17 and G18 are delivered too (below), which completes slice 1's engine gaps;
 every other gap and slice is still to do.
 
 Decided in review (2026-11-10):
@@ -98,6 +98,26 @@ Delivered:
   after which it follows its plugin like any other object. Both stores keep
   the flag (`object_definitions.dormant`). No kernel route wakes objects
   yet: the Contacts cutover (slice 5) will.
+- G4, importing with preserved identity (2026-11-22). A kernel-only
+  caller, `ObjectCaller::migrator`, holds no member permissions or roles,
+  so every member path refuses it; only `ObjectService::import_records`
+  accepts it, and no request or plugin can build one. It writes up to 500
+  records a batch, all or none, each with its internal id, a server-range
+  public id of the object's key prefix (a device-range id is refused),
+  owner, version, created and updated stamps, and archive and recycle-bin
+  state. Values are checked as a write checks them; validation rules and
+  automations do not run. Lookups and related-to fields must point at an
+  existing record of an object the field allows, whatever its state, so
+  targets are imported first. Each record gets a change-log entry (deleted
+  ones as deleted) but no event of its own; the batch leaves one
+  `objects.records.imported` audit entry naming every record. Supplied
+  history entries are kept at their own times with a `system` source. The
+  object's record sequence is raised to at least the source's counter and
+  past every imported id. Suspended and dormant objects take imports.
+  Deferred to slice 3: replacing a record imported earlier (the catch-up
+  step), and objects with master-detail or roll-up summary fields, which
+  imports refuse (`records.import_unsupported`) because masters' roll-ups
+  would not be kept up to date.
 - G6, fields one plugin adds to another plugin's object (2026-11-22). A
   plugin object may declare the `resource` it serves; the engine installer
   turns other plugins' ADR 0012 `[[extensions.fields]]` for that resource

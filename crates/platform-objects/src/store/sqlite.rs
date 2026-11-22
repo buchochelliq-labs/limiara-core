@@ -2150,6 +2150,24 @@ impl ObjectTx for SqliteObjectTx {
         u64::try_from(sequence).map_err(|_| ObjectError::Invariant)
     }
 
+    async fn raise_record_sequence(
+        &mut self,
+        object_id: Uuid,
+        at_least: u64,
+    ) -> Result<u64, ObjectError> {
+        let at_least = i64::try_from(at_least).map_err(|_| ObjectError::Invariant)?;
+        let sequence: i64 = sqlx::query_scalar(
+            "UPDATE object_definitions SET record_sequence = max(record_sequence, ?3) \
+             WHERE tenant_id = ?1 AND id = ?2 RETURNING record_sequence",
+        )
+        .bind(&self.tenant)
+        .bind(object_id.to_string())
+        .bind(at_least)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        u64::try_from(sequence).map_err(|_| ObjectError::Invariant)
+    }
+
     async fn insert_record(&mut self, record: &Record) -> Result<(), ObjectError> {
         sqlx::query(
             "INSERT INTO records (tenant_id, id, object_id, public_id, name, name_key, owner_id, \

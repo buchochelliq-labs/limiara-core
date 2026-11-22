@@ -32,6 +32,7 @@ pub mod events;
 pub mod field_security;
 pub mod formula;
 pub mod formula_fields;
+pub mod import;
 pub mod model;
 pub mod naming;
 pub mod plugin_objects;

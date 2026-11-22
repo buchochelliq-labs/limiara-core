@@ -102,6 +102,56 @@ async fn sqlite_store_passes_the_name_conformance_suite() {
 }
 
 #[tokio::test]
+async fn sqlite_store_imports_records_with_their_identity() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ObjectStore> = Arc::new(SqliteObjectStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::import::run(store, tenant).await;
+
+    let pool = databases.pool(tenant).await.expect("pool");
+    // One audit entry per committed batch, naming every record.
+    let batches: Vec<String> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'objects.records.imported' ORDER BY occurred_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        batches.len(),
+        4,
+        "organisations, two of people and the ticket"
+    );
+    let named: Vec<String> = batches
+        .iter()
+        .flat_map(|metadata| {
+            let metadata: serde_json::Value = serde_json::from_str(metadata).expect("json");
+            metadata["records"]
+                .as_array()
+                .expect("records")
+                .iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(named, report.imported);
+    // No event of its own for any imported record.
+    for record in &report.imported {
+        let events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM outbox WHERE json_extract(envelope, '$.payload.entity_id') = ?1",
+        )
+        .bind(record)
+        .fetch_one(&pool)
+        .await
+        .expect("events");
+        assert_eq!(events, 0, "{record}");
+    }
+}
+
+#[tokio::test]
 async fn sqlite_store_adds_extension_fields_to_host_objects() {
     let directory = tempfile::tempdir().expect("temp dir");
     let databases = Arc::new(SqliteTenantDatabases::new(
