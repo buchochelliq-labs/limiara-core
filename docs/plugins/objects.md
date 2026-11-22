@@ -152,7 +152,8 @@ key. When the host serves that resource with an engine object (its
   extending plugin: its upgrades change it, and neither the host's
   installation nor workspace administrators may (`409 objects.plugin_owned`).
 - **Types.** `text` stays text up to 255 characters and becomes long text
-  above that, keeping its `max_length`; `number`, `boolean` and `date`
+  above that, keeping its `max_length`; `number` becomes a number with
+  up to 8 decimal places, the engine's widest scale; `boolean` and `date`
   keep their type; `choice` becomes a picklist with the same options.
 - **Permissions.** The declaration's `read_permission` and
   `write_permission`, which the extending plugin declares, become the

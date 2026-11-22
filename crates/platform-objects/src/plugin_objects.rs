@@ -354,6 +354,11 @@ impl ObjectService {
             .await?
         {
             if let Some(object) = tx.object_by_id(object_id).await? {
+                // Edits made while the fields were out of service rebuilt
+                // their records' index without them: rebuild it with them.
+                if !suspended {
+                    crate::service::reindex(tx, &object).await?;
+                }
                 self.record_change(tx, context, Change::ObjectUpdated(&object))
                     .await?;
             }
@@ -838,7 +843,8 @@ fn extension_field(declared: &plugin_contract::ExtensionFieldDecl) -> ObjectFiel
         searchable: false,
         track_history: false,
         max_length: matches!(field_type, Type::Text | Type::LongText).then_some(length),
-        scale: None,
+        // ADR 0012 numbers take fractions: the engine's widest scale.
+        scale: (field_type == Type::Number).then_some(values::SCALE_LIMIT),
         options: declared
             .options
             .iter()

@@ -19,6 +19,7 @@ const EXTENDER: &str = "example.loyalty";
 const TICKET: &str = "example.tracker:ticket";
 const TIER: &str = "example.loyalty:tier";
 const NOTES: &str = "example.loyalty:notes";
+const POINTS: &str = "example.loyalty:points";
 const SUMMARY: &str = "example.tracker:summary";
 const READ: &str = "loyalty.tier.read";
 const WRITE: &str = "loyalty.tier.write";
@@ -71,6 +72,15 @@ write_permission = "loyalty.tier.write"
 [[extensions.fields]]
 host = "example.tracker"
 target = "example.tracker.ticket"
+key = "points"
+label = "Points"
+field_type = "number"
+read_permission = "loyalty.tier.read"
+write_permission = "loyalty.tier.write"
+
+[[extensions.fields]]
+host = "example.tracker"
+target = "example.tracker.ticket"
 key = "notes"
 label = "Loyalty notes"
 field_type = "text"
@@ -114,6 +124,23 @@ async fn set_enabled(
             .await
             .expect("suspend");
     }
+}
+
+async fn names(admin: &ObjectService, q: &str) -> Vec<String> {
+    admin
+        .query(QueryRequest {
+            q: q.to_owned(),
+            cursor: None,
+            page_size: None,
+            include_deleted: false,
+            include_archived: false,
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{q}: {error:?}"))
+        .rows
+        .iter()
+        .map(|row| row["name"].as_str().unwrap_or_default().to_owned())
+        .collect()
 }
 
 async fn field(admin: &ObjectService, api_name: &str) -> Option<FieldDefinition> {
@@ -162,12 +189,16 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) {
     let ticket = admin
         .create_record(
             TICKET,
-            &body(json!({"name": "Printer jam", SUMMARY: "Tray 2", TIER: "gold"})),
+            &body(json!({"name": "Printer jam", SUMMARY: "Tray 2", TIER: "gold", POINTS: 2.5})),
             context(),
         )
         .await
         .expect("a ticket with a tier");
     assert_eq!(ticket.values[TIER], json!("gold"));
+    // ADR 0012 numbers take fractions.
+    assert_eq!(ticket.values[POINTS], json!(2.5));
+    let gold = "SELECT name FROM example.tracker:ticket WHERE example.loyalty:tier = 'gold'";
+    assert_eq!(names(&admin, gold).await, ["Printer jam"]);
     // Without the extending plugin's permission the field is hidden.
     let plain = service(&store, caller(tenant_a, member, &ADMIN_PERMISSIONS, &[]));
     let seen = plain
@@ -234,6 +265,11 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant_a: Uuid, tenant_b: Uuid) {
         back.values[TIER],
         json!("gold"),
         "the value survived the edit"
+    );
+    assert_eq!(
+        names(&admin, gold).await,
+        ["Printer jam"],
+        "and filters find it again"
     );
     assert_eq!(back.values[SUMMARY], json!("Tray 3"));
     assert_eq!(
