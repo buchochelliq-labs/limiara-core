@@ -1669,7 +1669,7 @@ delete_behaviour = "restrict""#,
             ),
         );
         assert!(object_reason(two).contains("same resource"));
-        let stored = serde_json::to_value(&objects_manifest("example.work", TASK).expect("plain"))
+        let stored = serde_json::to_value(objects_manifest("example.work", TASK).expect("plain"))
             .expect("json");
         assert!(
             stored["objects"][0].get("resource").is_none(),
