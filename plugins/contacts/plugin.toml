@@ -273,3 +273,117 @@ label = "People list columns"
 kind = "list"
 page = "platform.contacts.people-directory"
 node = "people-collection"
+
+# --- Engine objects (ADR 0035 slice 2) ----------------------------------------
+#
+# People and organisations as engine objects. They are installed dormant:
+# out of service and empty in every workspace, while the Contacts store above
+# keeps serving them. A workspace's cutover (ADR 0035 slice 5) wakes them
+# after the migration has copied its records. Their prefixes are the ones
+# Contacts' public ids already carry, so every id stays valid.
+#
+# `resource` maps the ADR 0012 resources onto them, so fields other plugins
+# add to people and organisations become fields of these objects too, out
+# of service with them until the cutover.
+#
+# Navigation stays with the Contacts pages until the UI slice (6).
+
+[[objects]]
+name = "person"
+label = "Person"
+plural_label = "People"
+description = "A person the workspace keeps in touch with"
+name_label = "Name"
+key_prefix = "per"
+sharing_model = "read_write"
+searchable = true
+track_history = true
+in_navigation = false
+dormant = true
+resource = "platform.contacts.person"
+# The name is composed: the first name, a space and the last name, or the
+# last name alone (ADR 0035 G17). Members edit the two parts.
+name_from = { fields = ["first_name", "last_name"] }
+
+[[objects.fields]]
+name = "first_name"
+label = "First name"
+field_type = "text"
+max_length = 120
+track_history = true
+data_classification = "personal"
+purpose = "Identify the person"
+
+[[objects.fields]]
+name = "last_name"
+label = "Last name"
+field_type = "text"
+required = true
+max_length = 120
+track_history = true
+data_classification = "personal"
+purpose = "Identify the person"
+
+[[objects.fields]]
+name = "email"
+label = "Email"
+field_type = "email"
+max_length = 320
+indexed = true
+searchable = true
+data_classification = "personal"
+purpose = "Contact the person"
+
+[[objects.fields]]
+name = "telephone"
+label = "Telephone"
+field_type = "phone"
+searchable = true
+data_classification = "personal"
+purpose = "Contact the person"
+
+[[objects.fields]]
+name = "organisation"
+label = "Organisation"
+field_type = "lookup"
+reference_object = "platform.contacts:organisation"
+delete_behaviour = "clear"
+track_history = true
+
+[[objects.fields]]
+name = "tags"
+label = "Tags"
+field_type = "text_list"
+indexed = true
+
+[[objects]]
+name = "organisation"
+label = "Organisation"
+plural_label = "Organisations"
+description = "A company or other organisation the workspace works with"
+name_label = "Name"
+key_prefix = "org"
+sharing_model = "read_write"
+searchable = true
+track_history = true
+in_navigation = false
+dormant = true
+resource = "platform.contacts.organisation"
+
+[[objects.fields]]
+name = "email"
+label = "Email"
+field_type = "email"
+max_length = 320
+indexed = true
+searchable = true
+data_classification = "internal"
+purpose = "Contact the organisation"
+
+[[objects.fields]]
+name = "telephone"
+label = "Telephone"
+field_type = "phone"
+searchable = true
+data_classification = "internal"
+purpose = "Contact the organisation"
