@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useRef, useState, type RefObject} from 'react';
-import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TextField} from '../components/ui';
+import {Alert, Badge, Button, EmptyState, Modal, Select, Skeleton, TagInput, TextField} from '../components/ui';
 import {formatRecordTimestamp} from '../plugin-ui/standard-fields/model';
 import {formatValue, holdsReference, isReference, ObjectsApiError, type ObjectDescription, type ObjectField, type ObjectRecord, type ObjectsClient, optionOutcome, type PicklistOption, type QuickAction, type RecordLink, type RecordListStatus, type RecordPage, type RelatedList, type ValidationIssue, type LookupRestore, RECYCLE_BIN_RETENTION_DAYS, canCompleteAction, canEditField, canReadField, canSetField, readableFields} from './api';
 import {SharingPanel} from './SharingPanel';
@@ -13,7 +13,7 @@ import {createDraftsFor, editDraftFor, useDraftList} from '../drafts/lists';
 import {useDrafts} from '../drafts/runtime';
 import {useFormDraft, type Restored} from '../drafts/useFormDraft';
 import type {DraftDocument, DraftKey, DraftParent, StoredDraft} from '../drafts/types';
-import {editableFields, toApiValue, toDraftValue, type DraftValue} from './formValues';
+import {editableFields, TEXT_LIST_MAX_CHARS, TEXT_LIST_MAX_VALUES, textListValues, toApiValue, toDraftValue, type DraftValue} from './formValues';
 import './objects.css';
 
 export {editableFields, toApiValue, toDraftValue, type DraftValue} from './formValues';
@@ -908,7 +908,7 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
         <textarea id={`field-${field.apiName}`} className="ui-field__control object-textarea" required={field.required} value={String(value ?? '')} aria-invalid={fieldError ? true : undefined} onChange={event => set(field.apiName, event.target.value)} />
         {fieldError && <span className="ui-field__error">{fieldError}</span>}
       </div>;
-      if (field.type === 'text_list') return <TextField key={field.apiName} label={field.label} required={field.required} value={String(value ?? '')} error={fieldError} description="Separate values with commas. Up to 50, of up to 80 characters each." onChange={event => set(field.apiName, event.target.value)} />;
+      if (field.type === 'text_list') return <TagInput key={field.apiName} label={field.label} required={field.required} values={textListValues(value ?? [])} error={fieldError} max={TEXT_LIST_MAX_VALUES} maxLength={TEXT_LIST_MAX_CHARS} description={`Press Enter after each value. Up to ${TEXT_LIST_MAX_VALUES}, of up to ${TEXT_LIST_MAX_CHARS} characters each.`} onChange={next => set(field.apiName, next)} />;
       return <TextField key={field.apiName} label={field.label} type={inputTypes[field.type] ?? 'text'} step={field.type === 'currency' ? '0.01' : field.type === 'number' || field.type === 'percent' ? 'any' : undefined} required={field.required} value={String(value ?? '')} error={fieldError} description={field.unique ? 'Must be unique' : undefined} onChange={event => set(field.apiName, event.target.value)} />;
     })}
     {cancelling

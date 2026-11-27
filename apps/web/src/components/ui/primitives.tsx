@@ -1,4 +1,4 @@
-import React, {useEffect, useId, useRef} from 'react';
+import React, {useEffect, useId, useRef, useState} from 'react';
 import {
   CheckCircle,
   Info,
@@ -68,6 +68,100 @@ export function Select({label, description, error, hideLabel = false, id: provid
     <label className={cx('ui-field__label', hideLabel && 'sr-only')} htmlFor={id}>{label}</label>
     {description && <span className="ui-field__description" id={descriptionId}>{description}</span>}
     <select className={cx('ui-field__control', 'ui-field__select', error && 'ui-field__control--error', className)} id={id} aria-invalid={error ? true : undefined} aria-describedby={cx(descriptionId, errorId) || undefined} {...props}>{children}</select>
+    {error && <span className="ui-field__error" id={errorId}><WarningCircle aria-hidden="true" weight="fill" />{error}</span>}
+  </div>;
+}
+
+export type TagInputProps = FieldShared & {
+  id?: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  /** The most values the field takes; the input closes once it is full. */
+  max?: number;
+  /** The longest single value, in characters. */
+  maxLength?: number;
+  required?: boolean;
+  disabled?: boolean;
+};
+
+/** The comparison a text list uses for duplicates: trimmed, ignoring case. */
+const tagKey = (value: string) => value.trim().toLocaleLowerCase();
+
+/**
+ * A list of short values, each shown as a removable chip (ADR 0035 G7).
+ * Enter adds what was typed, and so does leaving the field, so typed text
+ * is never lost on save. A value may hold commas. Backspace in an empty
+ * input removes the last chip. A duplicate, ignoring case, is not added
+ * twice. Each chip's remove button names its value for screen readers,
+ * and every change is announced.
+ */
+export function TagInput({label, description, error, hideLabel = false, id: providedId, values, onChange, max, maxLength, required = false, disabled = false}: TagInputProps) {
+  const generatedId = useId();
+  const id = providedId ?? generatedId;
+  const [text, setText] = useState('');
+  const [announcement, setAnnouncement] = useState('');
+  const input = useRef<HTMLInputElement>(null);
+  const descriptionId = description ? `${id}-description` : undefined;
+  const errorId = error ? `${id}-error` : undefined;
+  const listId = `${id}-values`;
+  const full = max !== undefined && values.length >= max;
+
+  const add = () => {
+    const value = text.trim();
+    if (!value) return;
+    if (values.some(item => tagKey(item) === tagKey(value))) {
+      setAnnouncement(`${value} is already added.`);
+      setText('');
+      return;
+    }
+    if (full) return;
+    onChange([...values, value]);
+    setAnnouncement(`${value} added.`);
+    setText('');
+  };
+  const remove = (index: number) => {
+    const value = values[index];
+    onChange(values.filter((_, position) => position !== index));
+    setAnnouncement(`${value} removed.`);
+    input.current?.focus();
+  };
+
+  return <div className="ui-field">
+    <label className={cx('ui-field__label', hideLabel && 'sr-only')} htmlFor={id}>{label}</label>
+    {description && <span className="ui-field__description" id={descriptionId}>{description}</span>}
+    <div className={cx('ui-field__control', 'ui-tags', error && 'ui-field__control--error', disabled && 'ui-tags--disabled')} onClick={event => { if (event.target === event.currentTarget) input.current?.focus(); }}>
+      {values.length > 0 && <ul className="ui-tags__list" id={listId} aria-label={`${label} values`}>
+        {values.map((value, index) => <li key={`${tagKey(value)}-${index}`} className="ui-tags__chip">
+          <span className="ui-tags__text">{value}</span>
+          {!disabled && <button type="button" className="ui-tags__remove" aria-label={`Remove ${value}`} title={`Remove ${value}`} onClick={() => remove(index)}><X aria-hidden="true" /></button>}
+        </li>)}
+      </ul>}
+      <input
+        ref={input}
+        className="ui-tags__input"
+        id={id}
+        value={text}
+        disabled={disabled || full}
+        maxLength={maxLength}
+        required={required && values.length === 0}
+        placeholder={full ? `Up to ${max} values` : values.length ? 'Add another' : 'Type and press Enter'}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={cx(descriptionId, values.length > 0 && listId, errorId) || undefined}
+        onChange={event => setText(event.target.value)}
+        onBlur={add}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            // Enter adds a value; it never submits the form.
+            event.preventDefault();
+            add();
+          } else if (event.key === 'Backspace' && text === '' && values.length > 0) {
+            event.preventDefault();
+            remove(values.length - 1);
+          }
+        }}
+      />
+    </div>
+    <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
     {error && <span className="ui-field__error" id={errorId}><WarningCircle aria-hidden="true" weight="fill" />{error}</span>}
   </div>;
 }

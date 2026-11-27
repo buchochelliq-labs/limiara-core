@@ -47,6 +47,20 @@
 .ui-field__error { display: flex; gap: var(--space-1); align-items: center; color: var(--text-danger); font-size: var(--text-xs); font-weight: 650; }
 .ui-field__error svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
 
+.ui-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; height: auto; padding: var(--space-1) var(--space-2); cursor: text; }
+/* The field shows the focus ring for its input, as one control. */
+.ui-tags:focus-within { border-color: var(--border-selected); box-shadow: var(--focus-shadow); }
+.ui-tags__input:focus-visible { box-shadow: none; }
+.ui-tags--disabled { color: var(--text-disabled); background: var(--surface-disabled); cursor: not-allowed; }
+.ui-tags__list { display: contents; margin: 0; padding: 0; list-style: none; }
+.ui-tags__chip { display: inline-flex; gap: var(--space-1); align-items: center; max-width: 100%; min-height: 1.75rem; padding: 0 var(--space-1) 0 var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-pill); color: var(--text-primary); background: var(--surface-subtle); font-size: var(--text-sm); }
+.ui-tags__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-tags__remove { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; padding: 0; border: 0; border-radius: var(--radius-pill); color: var(--text-secondary); background: transparent; cursor: pointer; }
+.ui-tags__remove:hover { color: var(--text-primary); background: var(--surface-raised); }
+.ui-tags__remove svg { width: 0.875rem; height: 0.875rem; }
+.ui-tags__input { flex: 1 1 8rem; min-width: 6rem; min-height: 1.75rem; padding: 0 var(--space-1); border: 0; color: inherit; background: transparent; font: inherit; outline: none; }
+.ui-tags__input:disabled { cursor: not-allowed; }
+
 .ui-badge { display: inline-flex; align-items: center; min-height: 1.5rem; padding: 0 var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--surface-subtle); font-size: var(--text-xs); font-weight: 700; line-height: 1; }
 .ui-badge--selected { color: var(--color-forest-900); border-color: var(--border-selected); background: var(--surface-selected); }
 .ui-badge--success { color: var(--color-forest-900); border-color: #8bad94; background: var(--surface-success); }
@@ -107,5 +121,5 @@
 }
 
 @media (forced-colors: active) {
-  .ui-button, .ui-icon-button, .ui-field__control, .ui-alert, .ui-badge { forced-color-adjust: auto; }
+  .ui-button, .ui-icon-button, .ui-field__control, .ui-alert, .ui-badge, .ui-tags__chip, .ui-tags__remove { forced-color-adjust: auto; }
 }
