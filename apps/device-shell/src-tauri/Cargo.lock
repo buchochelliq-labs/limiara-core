@@ -864,6 +864,7 @@ name = "device-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "device-browser",
  "device-keystore",
  "device-push",
@@ -873,6 +874,8 @@ dependencies = [
  "open",
  "platform-device",
  "platform-objects",
+ "plugin-contract",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",

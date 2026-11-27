@@ -31,7 +31,18 @@ sign-out. Sign-out deletes the device's copy and its key.
 The session and the database keys live in the platform keychain
 (`src-tauri/src/keychain.rs`): the Keychain on macOS, the Credential Manager
 on Windows, and the kernel keyring on Linux, which forgets them at logout.
-The sign-in screen also opens a demonstration workspace with no server.
+The sign-in screen also opens a demonstration workspace with no server
+(`src-tauri/src/fixture.rs`). It installs the Sales and Activities plugins
+from their manifests and adds two workspace objects, Accounts and Contacts.
+Its records cover:
+
+- leads and opportunities on their paths and boards, with probability
+  following the stage;
+- tasks and events on the Activity timeline, with Log a call;
+- many field types, tags, formulas and tracked history;
+- related lists, quick actions and a validation rule.
+
+Its dates are set from today, and it starts afresh at each launch.
 
 `bash scripts/test-device-app-sign-in.sh` runs the same sign-in controller
 headless against the API and the Keycloak fixture.
