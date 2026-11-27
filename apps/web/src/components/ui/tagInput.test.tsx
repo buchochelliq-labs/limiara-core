@@ -25,6 +25,12 @@ function Harness({initial = [], max, onSubmit}: {initial?: string[]; max?: numbe
   </form>;
 }
 
+/** A form that holds the typed text itself, as record forms do for drafts. */
+function HeldText({onDraft}: {onDraft: (values: string[], text: string) => void}) {
+  const [draft, setDraft] = useState<{values: string[]; text: string}>({values: ['VIP'], text: ''});
+  return <TagInput id="tags" label="Tags" values={draft.values} text={draft.text} onChange={(values, text) => { setDraft({values, text}); onDraft(values, text); }} />;
+}
+
 const input = () => container.querySelector<HTMLInputElement>('#tags')!;
 const chips = () => [...container.querySelectorAll('.ui-tags__text')].map(item => item.textContent);
 const status = () => container.querySelector('[role="status"]')?.textContent;
@@ -33,7 +39,7 @@ const type = (text: string) => act(() => {
   setter.call(input(), text);
   input().dispatchEvent(new Event('input', {bubbles: true}));
 });
-const key = (name: string) => act(() => { input().dispatchEvent(new KeyboardEvent('keydown', {key: name, bubbles: true, cancelable: true})); });
+const key = (name: string, init: KeyboardEventInit = {}) => act(() => { input().dispatchEvent(new KeyboardEvent('keydown', {key: name, bubbles: true, cancelable: true, ...init})); });
 
 describe('the chip input for text lists (ADR 0035 G7)', () => {
   it('adds what was typed on Enter, without submitting the form', () => {
@@ -92,5 +98,33 @@ describe('the chip input for text lists (ADR 0035 G7)', () => {
     expect(chips()).toEqual(['a', 'b']);
     expect(input().disabled).toBe(true);
     expect(input().placeholder).toBe('Up to 2 values');
+  });
+
+  it('leaves Enter to an input method confirming its candidate', () => {
+    act(() => root.render(<Harness />));
+    type('とうきょう');
+    key('Enter', {isComposing: true});
+    expect(chips()).toEqual([]);
+    expect(input().value).toBe('とうきょう');
+    key('Enter', {keyCode: 229} as KeyboardEventInit);
+    expect(chips()).toEqual([]);
+    type('東京');
+    key('Enter');
+    expect(chips()).toEqual(['東京']);
+  });
+
+  it('reports typed text to a form that holds it, with the values in one update', () => {
+    const onDraft = vi.fn();
+    act(() => root.render(<HeldText onDraft={onDraft} />));
+    type('Part');
+    expect(onDraft).toHaveBeenLastCalledWith(['VIP'], 'Part');
+    expect(input().value).toBe('Part');
+    key('Enter');
+    expect(onDraft).toHaveBeenLastCalledWith(['VIP', 'Part'], '');
+    expect(chips()).toEqual(['VIP', 'Part']);
+    type('Spe');
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Remove VIP"]')!.click());
+    expect(onDraft).toHaveBeenLastCalledWith(['Part'], 'Spe');
+    expect(input().value).toBe('Spe');
   });
 });

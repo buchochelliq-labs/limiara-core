@@ -2,7 +2,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
 import {createFixtureObjectsClient, fieldTypes, formatValue, type ObjectDescription, type ObjectField} from './api';
 import {RecordForm, valuesToSend} from './ObjectPages';
-import {textListValues, toApiValue, toDraftValue} from './formValues';
+import {splitTextListDraft, textListDraft, textListValues, toApiValue, toDraftValue} from './formValues';
 
 const tags: ObjectField = {apiName: 'custom:tags', label: 'Tags', description: null, type: 'text_list', origin: 'workspace', required: false, unique: false, indexed: true, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1};
 
@@ -12,16 +12,23 @@ describe('text list fields (ADR 0035 G7)', () => {
   });
 
   it('is edited as one chip per value', () => {
-    expect(toDraftValue(tags, ['VIP', 'Speaker, keynote'])).toEqual(['VIP', 'Speaker, keynote']);
-    expect(toDraftValue(tags, null)).toEqual([]);
+    // The form holds the chips, then the text typed but not yet added.
+    expect(toDraftValue(tags, ['VIP', 'Speaker, keynote'])).toEqual(['VIP', 'Speaker, keynote', '']);
+    expect(toDraftValue(tags, null)).toEqual(['']);
+    expect(splitTextListDraft(['VIP', 'Spea'])).toEqual({values: ['VIP'], text: 'Spea'});
+    expect(splitTextListDraft(textListDraft(['VIP'], 'Spea'))).toEqual({values: ['VIP'], text: 'Spea'});
+    expect(splitTextListDraft([])).toEqual({values: [], text: ''});
     // A chip may hold a comma; it stays one value.
     expect(toApiValue(tags, ['VIP', ' Speaker, keynote '])).toEqual(['VIP', 'Speaker, keynote']);
     expect(toApiValue(tags, [])).toBeNull();
     expect(toApiValue(tags, ['  '])).toBeNull();
+    // Typed text not yet added is saved too, as leaving the field would add it.
+    expect(toApiValue(tags, ['VIP', 'Partner'])).toEqual(['VIP', 'Partner']);
   });
 
   it('still reads a draft saved as one comma-separated line', () => {
     expect(textListValues(' VIP , Speaker,, ')).toEqual(['VIP', 'Speaker']);
+    expect(splitTextListDraft(' VIP , Speaker')).toEqual({values: ['VIP', 'Speaker'], text: ''});
     expect(toApiValue(tags, ' VIP , Speaker,, ')).toEqual(['VIP', 'Speaker']);
     expect(toApiValue(tags, ' , ')).toBeNull();
     expect(toApiValue(tags, '')).toBeNull();
@@ -39,7 +46,7 @@ describe('text list fields (ADR 0035 G7)', () => {
     expect(markup).toContain('aria-label="Remove VIP"');
     expect(markup).toContain('aria-label="Remove Speaker, keynote"');
     expect(markup).not.toContain('value="VIP, Speaker, keynote"');
-    const initial = {name: 'Ada', 'custom:tags': ['VIP', 'Speaker, keynote']};
+    const initial = {name: 'Ada', 'custom:tags': ['VIP', 'Speaker, keynote', '']};
     const draft = {...initial, 'custom:tags': ['VIP', 'Speaker, keynote', 'Partner']};
     expect(valuesToSend({record: true, draft, initial, shown: [tags], showsName: true})).toEqual({'custom:tags': ['VIP', 'Speaker, keynote', 'Partner']});
   });

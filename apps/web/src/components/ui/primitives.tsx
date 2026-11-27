@@ -75,7 +75,16 @@ export function Select({label, description, error, hideLabel = false, id: provid
 export type TagInputProps = FieldShared & {
   id?: string;
   values: string[];
-  onChange: (values: string[]) => void;
+  /**
+   * Every change, with the values and the text typed but not yet added,
+   * reported together so one update carries both.
+   */
+  onChange: (values: string[], text: string) => void;
+  /**
+   * The text typed but not yet added, when the form holds it (so a draft
+   * keeps it); otherwise the input keeps its own.
+   */
+  text?: string;
   /** The most values the field takes; the input closes once it is full. */
   max?: number;
   /** The longest single value, in characters. */
@@ -90,15 +99,21 @@ const tagKey = (value: string) => value.trim().toLocaleLowerCase();
 /**
  * A list of short values, each shown as a removable chip (ADR 0035 G7).
  * Enter adds what was typed, and so does leaving the field, so typed text
- * is never lost on save. A value may hold commas. Backspace in an empty
+ * is never lost on save; an Enter that confirms an input method's
+ * candidate is left to it. A value may hold commas. Backspace in an empty
  * input removes the last chip. A duplicate, ignoring case, is not added
  * twice. Each chip's remove button names its value for screen readers,
  * and every change is announced.
  */
-export function TagInput({label, description, error, hideLabel = false, id: providedId, values, onChange, max, maxLength, required = false, disabled = false}: TagInputProps) {
+export function TagInput({label, description, error, hideLabel = false, id: providedId, values, onChange, text: givenText, max, maxLength, required = false, disabled = false}: TagInputProps) {
   const generatedId = useId();
   const id = providedId ?? generatedId;
-  const [text, setText] = useState('');
+  const [ownText, setOwnText] = useState('');
+  const text = givenText ?? ownText;
+  const update = (nextValues: string[], nextText: string) => {
+    if (givenText === undefined) setOwnText(nextText);
+    onChange(nextValues, nextText);
+  };
   const [announcement, setAnnouncement] = useState('');
   const input = useRef<HTMLInputElement>(null);
   const descriptionId = description ? `${id}-description` : undefined;
@@ -111,17 +126,16 @@ export function TagInput({label, description, error, hideLabel = false, id: prov
     if (!value) return;
     if (values.some(item => tagKey(item) === tagKey(value))) {
       setAnnouncement(`${value} is already added.`);
-      setText('');
+      update(values, '');
       return;
     }
     if (full) return;
-    onChange([...values, value]);
+    update([...values, value], '');
     setAnnouncement(`${value} added.`);
-    setText('');
   };
   const remove = (index: number) => {
     const value = values[index];
-    onChange(values.filter((_, position) => position !== index));
+    update(values.filter((_, position) => position !== index), text);
     setAnnouncement(`${value} removed.`);
     input.current?.focus();
   };
@@ -147,9 +161,11 @@ export function TagInput({label, description, error, hideLabel = false, id: prov
         placeholder={full ? `Up to ${max} values` : values.length ? 'Add another' : 'Type and press Enter'}
         aria-invalid={error ? true : undefined}
         aria-describedby={cx(descriptionId, values.length > 0 && listId, errorId) || undefined}
-        onChange={event => setText(event.target.value)}
+        onChange={event => update(values, event.target.value)}
         onBlur={add}
         onKeyDown={event => {
+          // Enter confirming an input method's candidate (IME) belongs to it.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === 'Enter') {
             // Enter adds a value; it never submits the form.
             event.preventDefault();

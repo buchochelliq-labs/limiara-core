@@ -21,7 +21,7 @@ export function toDraftValue(field: ObjectField, value: unknown): DraftValue {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) ? value.map(String) : [];
   // A text list is edited as chips, one per value (ADR 0035 G7).
-  if (field.type === 'text_list') return Array.isArray(value) ? value.map(String) : [];
+  if (field.type === 'text_list') return textListDraft(Array.isArray(value) ? value.map(String) : [], '');
   if (field.type === 'date_time' && typeof value === 'string') return toLocalInput(value);
   return value === undefined || value === null ? '' : String(value);
 }
@@ -56,10 +56,23 @@ export function toApiValue(field: ObjectField, value: DraftValue): unknown {
 
 
 /**
- * A text list's chips from what a form input holds. A draft saved before
- * the chip input held one comma-separated line, which still reads as its
- * values.
+ * What a form holds for a text list: its chips, then the text typed but
+ * not yet added, so autosaved drafts keep that text too and a save sends
+ * it as a value.
  */
+export function textListDraft(values: readonly string[], text: string): string[] {
+  return [...values, text];
+}
+
+/** A text list draft's chips and typed text; the reverse of `textListDraft`. */
+export function splitTextListDraft(value: DraftValue): {values: string[]; text: string} {
+  // A draft saved before the chip input held one comma-separated line.
+  if (typeof value === 'string') return {values: textListValues(value), text: ''};
+  if (!Array.isArray(value) || value.length === 0) return {values: [], text: ''};
+  return {values: value.slice(0, -1), text: value[value.length - 1] ?? ''};
+}
+
+/** The values a text list draft saves: its chips and any typed text, trimmed, blanks left out. */
 export function textListValues(value: DraftValue): string[] {
   const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
   return items.map(item => item.trim()).filter(item => item !== '');

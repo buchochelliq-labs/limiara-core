@@ -13,7 +13,7 @@ import {createDraftsFor, editDraftFor, useDraftList} from '../drafts/lists';
 import {useDrafts} from '../drafts/runtime';
 import {useFormDraft, type Restored} from '../drafts/useFormDraft';
 import type {DraftDocument, DraftKey, DraftParent, StoredDraft} from '../drafts/types';
-import {editableFields, TEXT_LIST_MAX_CHARS, TEXT_LIST_MAX_VALUES, textListValues, toApiValue, toDraftValue, type DraftValue} from './formValues';
+import {editableFields, splitTextListDraft, TEXT_LIST_MAX_CHARS, TEXT_LIST_MAX_VALUES, textListDraft, toApiValue, toDraftValue, type DraftValue} from './formValues';
 import './objects.css';
 
 export {editableFields, toApiValue, toDraftValue, type DraftValue} from './formValues';
@@ -908,7 +908,10 @@ export function RecordForm({client, object, record, presets = {}, only, always, 
         <textarea id={`field-${field.apiName}`} className="ui-field__control object-textarea" required={field.required} value={String(value ?? '')} aria-invalid={fieldError ? true : undefined} onChange={event => set(field.apiName, event.target.value)} />
         {fieldError && <span className="ui-field__error">{fieldError}</span>}
       </div>;
-      if (field.type === 'text_list') return <TagInput key={field.apiName} label={field.label} required={field.required} values={textListValues(value ?? [])} error={fieldError} max={TEXT_LIST_MAX_VALUES} maxLength={TEXT_LIST_MAX_CHARS} description={`Press Enter after each value. Up to ${TEXT_LIST_MAX_VALUES}, of up to ${TEXT_LIST_MAX_CHARS} characters each.`} onChange={next => set(field.apiName, next)} />;
+      if (field.type === 'text_list') {
+        const tags = splitTextListDraft(value ?? []);
+        return <TagInput key={field.apiName} label={field.label} required={field.required} values={tags.values} text={tags.text} error={fieldError} max={TEXT_LIST_MAX_VALUES} maxLength={TEXT_LIST_MAX_CHARS} description={`Press Enter after each value. Up to ${TEXT_LIST_MAX_VALUES}, of up to ${TEXT_LIST_MAX_CHARS} characters each.`} onChange={(next, text) => set(field.apiName, textListDraft(next, text))} />;
+      }
       return <TextField key={field.apiName} label={field.label} type={inputTypes[field.type] ?? 'text'} step={field.type === 'currency' ? '0.01' : field.type === 'number' || field.type === 'percent' ? 'any' : undefined} required={field.required} value={String(value ?? '')} error={fieldError} description={field.unique ? 'Must be unique' : undefined} onChange={event => set(field.apiName, event.target.value)} />;
     })}
     {cancelling
