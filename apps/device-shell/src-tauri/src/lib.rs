@@ -138,7 +138,9 @@ impl Shell {
     }
 
     /// The file for a path; a path without a file extension is one of the
-    /// shell's own routes, answered by `index.html`.
+    /// shell's own routes, answered by `index.html`. Plugin object names
+    /// hold a dot (`/o/platform.sales:lead`), so a dot alone does not make
+    /// an extension: only letters and digits after the last one do.
     fn asset(&self, path: &str) -> Option<Asset> {
         if path.split('/').any(|segment| segment == "..") {
             return None;
@@ -148,8 +150,10 @@ impl Shell {
             return Some(asset);
         }
         let last = path.rsplit('/').next().unwrap_or_default();
-        if last.contains('.') {
-            return None;
+        if let Some((_, extension)) = last.rsplit_once('.') {
+            if !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
         }
         self.assets.get("/index.html")
     }
