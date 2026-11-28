@@ -763,5 +763,15 @@ pub trait ObjectTx: Send {
     /// Forgets the marks of changes at or before `through`, once pushed.
     async fn prune_assistant_marks(&mut self, through: i64) -> Result<(), ObjectError>;
 
+    /// Marks a point the transaction can return to (`SAVEPOINT`), so one
+    /// failed step can be undone without losing the rest: an import check
+    /// undoes a refused record's partial writes (ADR 0035 §2). Not nested.
+    async fn savepoint(&mut self) -> Result<(), ObjectError>;
+    /// Undoes everything since [`ObjectTx::savepoint`] and keeps the
+    /// transaction usable, after a store error too.
+    async fn rollback_to_savepoint(&mut self) -> Result<(), ObjectError>;
+    /// Keeps everything since [`ObjectTx::savepoint`] and forgets the mark.
+    async fn release_savepoint(&mut self) -> Result<(), ObjectError>;
+
     async fn commit(self: Box<Self>) -> Result<(), ObjectError>;
 }

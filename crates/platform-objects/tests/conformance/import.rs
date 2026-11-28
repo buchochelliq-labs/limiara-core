@@ -76,7 +76,11 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
     employer.reference_object = Some(ORG.into());
     let mut email = field("email", FieldType::Email);
     email.unique = true;
-    for definition in [employer, email] {
+    // A second unique field, after email: a record can take an email and
+    // then collide on its badge.
+    let mut badge = field("badge", FieldType::Text);
+    badge.unique = true;
+    for definition in [employer, email, badge] {
         admin
             .create_field(PERSON, definition, context())
             .await
@@ -437,6 +441,26 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         ..again
     };
     let fine = record(&person.key_prefix, 703, json!({"name": "Fine"}), earlier);
+    let holder = record(
+        &person.key_prefix,
+        704,
+        json!({"name": "Holder", "custom:email": "holder@example.com", "custom:badge": "B-1"}),
+        earlier,
+    );
+    // Takes a fresh email, then collides on the badge.
+    let clash = record(
+        &person.key_prefix,
+        705,
+        json!({"name": "Clash", "custom:email": "shared@example.com", "custom:badge": "B-1"}),
+        earlier,
+    );
+    // The email the refused record no longer holds.
+    let later = record(
+        &person.key_prefix,
+        706,
+        json!({"name": "Later", "custom:email": "shared@example.com"}),
+        earlier,
+    );
     {
         let mut check = migrator.check_import().await.expect("check");
         assert!(check
@@ -447,7 +471,15 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
         let refused = check
             .check(
                 PERSON,
-                vec![dee.clone(), wrong.clone(), again.clone(), fine.clone()],
+                vec![
+                    dee.clone(),
+                    wrong.clone(),
+                    again.clone(),
+                    fine.clone(),
+                    holder.clone(),
+                    clash.clone(),
+                    later.clone(),
+                ],
             )
             .await
             .expect("people");
@@ -469,8 +501,10 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
             vec![
                 (wrong.public_id.clone(), vec!["records.email_invalid"]),
                 (again.public_id.clone(), vec![IMPORT_EXISTS]),
+                (clash.public_id.clone(), vec!["records.duplicate_value"]),
             ],
-            "the others pass, and the check goes on after a refusal"
+            "the others pass, the check goes on after a refusal, and a refused \
+             record's partial writes are undone"
         );
     }
     for (object, public_id) in [(ORG, &globex.public_id), (PERSON, &fine.public_id)] {

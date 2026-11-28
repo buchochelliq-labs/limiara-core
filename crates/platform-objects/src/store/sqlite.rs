@@ -4947,6 +4947,27 @@ impl ObjectTx for SqliteObjectTx {
         Ok(())
     }
 
+    async fn savepoint(&mut self) -> Result<(), ObjectError> {
+        sqlx::query("SAVEPOINT object_step")
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn rollback_to_savepoint(&mut self) -> Result<(), ObjectError> {
+        sqlx::query("ROLLBACK TO SAVEPOINT object_step")
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn release_savepoint(&mut self) -> Result<(), ObjectError> {
+        sqlx::query("RELEASE SAVEPOINT object_step")
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), ObjectError> {
         self.tx.commit().await?;
         Ok(())

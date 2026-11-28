@@ -210,12 +210,25 @@ pub async fn run(
     assert!(migration.dry_run().await.expect("again").can_start());
 
     // --- An interrupted copy resumes ---------------------------------------
-    // As if a run wrote Acme's batch and stopped before its checkpoint.
+    // As if a run finished the organisations, wrote Ada's batch and stopped
+    // before its checkpoint.
     let engine = ObjectService::new(objects.clone(), ObjectCaller::migrator(tenant, member));
     engine
         .import_records(
             ORGANISATION,
-            vec![organisation_record(&acme, &[], &members)],
+            vec![
+                organisation_record(&acme, &[], &members),
+                organisation_record(&globex, &[], &members),
+            ],
+            0,
+            MutationContext::new(Uuid::now_v7()),
+        )
+        .await
+        .expect("the organisations' pass");
+    engine
+        .import_records(
+            PERSON,
+            vec![person_record(&ada, &[], &members)],
             0,
             MutationContext::new(Uuid::now_v7()),
         )
@@ -227,7 +240,10 @@ pub async fn run(
             tenant,
             &EngineMigration {
                 phase: EngineMigrationPhase::Copying,
-                checkpoint: json!({}),
+                checkpoint: json!({
+                    "organisations_done": true,
+                    "organisations_after": acme.id.max(globex.id),
+                }),
                 checksums: json!({}),
                 cutover_at: None,
                 rollback_deadline: None,
@@ -240,14 +256,23 @@ pub async fn run(
         .expect("an interrupted state");
         tx.commit().await.expect("commit");
     }
+    // Contacts stays writable meanwhile: an organisation the pass did not
+    // see, and a person pointing at it.
+    let initech = service
+        .create_organisation(organisation("Initech"), context())
+        .await
+        .expect("initech");
+    let peter = service
+        .create_person(person("Peter Gibbons", Some(&initech.public_id)), context())
+        .await
+        .expect("peter");
     let copied = migration.copy().await.expect("copy");
     assert_eq!(
         (copied.organisations, copied.people, copied.already_there),
         (1, 4, 1),
-        "the earlier batch is not written twice"
+        "Initech comes with Peter; Ada's batch is not written twice"
     );
-    assert_eq!(copied.state.organisations.count, 2);
-    assert_eq!(copied.state.people.count, 4);
+    assert_eq!(copied.state.people.count, 5);
     let state = migration.state().await.expect("state").expect("written");
     assert_eq!(state.phase, EngineMigrationPhase::Copied);
     assert_eq!(
@@ -312,6 +337,18 @@ pub async fn run(
     assert_eq!(micros(read.created_at), micros(ada.created_at));
     assert_eq!(micros(read.updated_at), micros(ada.updated_at));
     let read = admin
+        .get_record(PERSON, &peter.public_id, true)
+        .await
+        .expect("peter");
+    assert_eq!(
+        read.values["platform.contacts:organisation"],
+        json!(initech.public_id)
+    );
+    admin
+        .get_record(ORGANISATION, &initech.public_id, true)
+        .await
+        .expect("initech");
+    let read = admin
         .get_record(PERSON, &plato.public_id, true)
         .await
         .expect("plato");
@@ -347,8 +384,24 @@ pub async fn run(
         platform_id::PublicId::parse(&next.public_id)
             .expect("id")
             .sequence(),
-        Some(5),
-        "four people were numbered in Contacts"
+        Some(6),
+        "five people were numbered in Contacts"
+    );
+
+    // --- An empty workspace without the engine objects is not ready ------
+    let empty = Migration::new(
+        store.clone(),
+        objects.clone(),
+        Uuid::now_v7(),
+        member,
+        members.clone(),
+    )
+    .dry_run()
+    .await
+    .expect("dry run");
+    assert_eq!(
+        empty.blockers.iter().map(|b| b.code).collect::<Vec<_>>(),
+        vec![BLOCKED_OBJECTS_MISSING]
     );
 
     // --- Custom fields wait for the next part ----------------------------

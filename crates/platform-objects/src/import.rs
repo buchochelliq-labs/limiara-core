@@ -364,8 +364,8 @@ impl ImportCheck<'_> {
     /// Imports `records` into the check's transaction as
     /// [`ObjectService::import_records`] would, and answers the records it
     /// would refuse. Unlike an import, a refused record does not stop the
-    /// batch: the others are still checked and kept for later batches.
-    /// A store failure ends the check.
+    /// batch: its writes are undone and the others are still checked and
+    /// kept for later batches. A store failure ends the check.
     pub async fn check(
         &mut self,
         api_name: &str,
@@ -377,6 +377,10 @@ impl ImportCheck<'_> {
         let context = MutationContext::new(Uuid::now_v7());
         for (position, imported) in records.into_iter().enumerate() {
             let public_id = imported.public_id.clone();
+            // A refused record may have written part of itself (a unique
+            // value reserved before a later field collided): the savepoint
+            // undoes it, so it neither blocks nor serves the records after.
+            self.tx.savepoint().await?;
             let outcome = self
                 .service
                 .import_one(
@@ -388,6 +392,11 @@ impl ImportCheck<'_> {
                     &mut ids,
                 )
                 .await;
+            if outcome.is_ok() {
+                self.tx.release_savepoint().await?;
+            } else {
+                self.tx.rollback_to_savepoint().await?;
+            }
             let issues = match outcome {
                 Ok(_) => continue,
                 Err(ObjectError::Validation(issues)) | Err(ObjectError::Refused(_, issues)) => {

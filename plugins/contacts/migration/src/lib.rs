@@ -326,6 +326,8 @@ struct Page {
     custom_values: bool,
     extension_values: bool,
     long_names: Vec<String>,
+    /// For people: the organisations they point at, internal and public id.
+    references: BTreeMap<Uuid, String>,
 }
 
 /// One workspace's migration.
@@ -369,6 +371,7 @@ impl Migration {
             custom_values: rows.iter().any(|row| !row.custom_fields.is_empty()),
             extension_values: rows.iter().any(|row| !row.extensions.is_empty()),
             long_names: Vec::new(),
+            references: BTreeMap::new(),
             records: rows
                 .iter()
                 .map(|row| {
@@ -395,6 +398,10 @@ impl Migration {
                 .filter(|row| row.full_name.split_whitespace().count() >= 3)
                 .map(|row| row.public_id.clone())
                 .collect(),
+            references: rows
+                .iter()
+                .filter_map(|row| row.organisation_id.zip(row.organisation_public_id.clone()))
+                .collect(),
             records: rows
                 .iter()
                 .map(|row| {
@@ -403,6 +410,31 @@ impl Migration {
                 })
                 .collect(),
         })
+    }
+
+    /// These organisations, in any state, as the engine imports them.
+    async fn organisations_by_id(
+        &self,
+        public_ids: &[&String],
+    ) -> Result<Vec<ImportedRecord>, MigrationError> {
+        let mut tx = self.contacts.begin(self.tenant, Actor::System).await?;
+        let mut rows = Vec::with_capacity(public_ids.len());
+        for public_id in public_ids {
+            rows.push(tx.get_organisation(self.tenant, public_id, true).await?);
+        }
+        let ids: Vec<String> = rows.iter().map(|row| row.public_id.clone()).collect();
+        let activity = tx
+            .export_activity(self.tenant, "organisation", &ids)
+            .await?;
+        tx.commit().await?;
+        let activity = by_record(&activity);
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let entries = activity.get(row.public_id.as_str());
+                organisation_record(row, entries.map_or(&[][..], Vec::as_slice), &self.members)
+            })
+            .collect())
     }
 
     async fn page(&self, object: &str, after: Option<Uuid>) -> Result<Page, MigrationError> {
@@ -447,8 +479,23 @@ impl Migration {
                 pages.push((object, page));
             }
         }
-        // Organisations go in first, so people's lookups find them.
+        // Organisations go in first, so people's lookups find them. Both
+        // objects must be installed, whether or not there is anything to
+        // move.
         let mut check = self.engine.check_import().await?;
+        for object in [ORGANISATION, PERSON] {
+            match check.check(object, Vec::new()).await {
+                Ok(_) => {}
+                Err(ObjectError::NotFound) => {
+                    report.blockers.push(Blocker {
+                        code: BLOCKED_OBJECTS_MISSING,
+                        detail: format!("the engine object {object} is not installed"),
+                    });
+                    return Ok(report);
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
         for (object, page) in pages {
             {
                 custom_values |= page.custom_values;
@@ -556,6 +603,29 @@ impl Migration {
                     .filter(|record| !there.contains(&record.id))
                     .collect();
                 checkpoint.already_there += there.len() as u64;
+                if object == PERSON {
+                    // Contacts stays writable during the copy: a person may
+                    // point at an organisation created after the
+                    // organisations' pass.
+                    let referenced: Vec<Uuid> = page.references.keys().copied().collect();
+                    let present = self.engine.imported_ids(&referenced).await?;
+                    let missing: Vec<&String> = page
+                        .references
+                        .iter()
+                        .filter(|(id, _)| !present.contains(id))
+                        .map(|(_, public_id)| public_id)
+                        .collect();
+                    if !missing.is_empty() {
+                        let records = self.organisations_by_id(&missing).await?;
+                        for record in &records {
+                            checkpoint.checksums.organisations.add(&checksum(record))?;
+                        }
+                        checkpoint.copied_organisations += records.len() as u64;
+                        self.engine
+                            .import_records(ORGANISATION, records, counters[0], correlation)
+                            .await?;
+                    }
+                }
                 let written = fresh.len() as u64;
                 if !fresh.is_empty() {
                     self.engine
