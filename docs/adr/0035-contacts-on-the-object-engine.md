@@ -20,7 +20,8 @@ and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
 `sync.server_only`. G2 to G11, G17 and G18 are delivered too (below), which completes slice 1's engine gaps,
-and so is slice 2 (below); slices 3 to 7 are still to do.
+and so is slice 2 (below). Slice 3 is in progress: its first part is
+delivered (below); slices 4 to 7 are still to do.
 
 Decided in review (2026-11-10):
 
@@ -122,6 +123,47 @@ Delivered:
   step), and objects with master-detail or roll-up summary fields, which
   imports refuse (`records.import_unsupported`) because masters' roll-ups
   would not be kept up to date.
+- Slice 3, first part: dry run and first copy (2026-11-28). The tool is
+  the crate `contacts-engine-migration` (`plugins/contacts/migration`)
+  rather than kernel code, because it knows Contacts' records; it reads
+  through the Contacts store port in the Contacts execution context and
+  writes as the G4 migrator, so neither side's tenancy, RLS or evidence
+  is bypassed. The Contacts store gains, on both backends, an export of
+  every record in any state in id order, every activity entry of a batch
+  oldest first, the last public-id sequence issued, and the state row
+  `p_contacts.engine_migration` (forced RLS and the Contacts context on
+  PostgreSQL), saved against the version read. The engine gains, for the
+  migrator only, an import check (batches imported in one transaction
+  that is always rolled back, reporting every record it would refuse)
+  and the ids of an import already written.
+  - The **dry run** reports records by state, those that would move
+    without an owner, names of three or more words, and every value the
+    engine refuses, found by the engine's own checks rather than a copy
+    of them (telephone numbers, which Contacts never checked, are the
+    usual case). It reads every page before the check starts, so no
+    Contacts transaction opens while the check holds the engine's, as
+    they could share one SQLite file.
+  - The **copy** starts only after a dry run with nothing blocking, then
+    copies organisations and then people in batches of 500 (the engine's
+    import limit, not the 1,000 first planned), saving a checkpoint after
+    each. A restart skips records an interrupted batch already wrote;
+    catch-up and verification (part three) compare them. Each object's
+    numbering is raised to Contacts' counter even when no record is left
+    to carry it. The phase ends `copied`, with a count and digest per
+    object.
+  - **History.** `created` and `archived` activity become lifecycle
+    entries (`archived` as the G1 entry rather than a change of
+    `archived_at`); `updated` becomes a change with no field values.
+  - **Checksums.** A record's checksum covers ids, values, owner,
+    version, stamps and states, with times to the microsecond, but not
+    history, which is compared by count. The per-object digest is a
+    wrapping sum of the checksums, so it does not depend on order and a
+    restarted copy carries it on.
+  - Still to come: custom field definitions and values, and other
+    plugins' values (part two); until then a workspace with any of them
+    is reported as not ready. Catch-up, verification, rollback, the
+    administrator route and the CLI, and a cutover step refused until
+    slice 5, are part three.
 - Slice 2, dual definitions (2026-11-27). Contacts' manifest declares
   `platform.contacts:person` and `platform.contacts:organisation` with the
   §1 fields, prefixes `per` and `org`, `read_write` sharing and tracked

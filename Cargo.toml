@@ -6,7 +6,7 @@ members = [
   "crates/platform-outbox", "crates/platform-inbox", "crates/platform-jobs", "crates/platform-notify", "crates/platform-entitlements", "crates/platform-extensions", "crates/platform-objects", "crates/platform-objects-http", "crates/platform-device", "crates/platform-storage", "crates/platform-sync", "crates/plugin-contract",
   "crates/plugin-registry", "crates/plugin-runtime-native", "crates/plugin-runtime-wasm",
   "crates/ui-metadata-spike", "crates/ui-metadata", "crates/ui-metadata-delivery", "crates/ui-metadata-validator",
-  "crates/service-plugin-protocol", "plugins/contacts/backend"
+  "crates/service-plugin-protocol", "plugins/contacts/backend", "plugins/contacts/migration"
 ]
 resolver = "2"
 # The desktop and mobile shell builds against the platform's GUI libraries,
@@ -82,6 +82,7 @@ ui-metadata = { path = "crates/ui-metadata" }
 ui-metadata-delivery = { path = "crates/ui-metadata-delivery" }
 ui-metadata-validator = { path = "crates/ui-metadata-validator" }
 contacts-plugin = { path = "plugins/contacts/backend" }
+contacts-engine-migration = { path = "plugins/contacts/migration" }
 openidconnect = { version = "4.0", features = ["reqwest"] }
 # Push providers: APNs needs HTTP/2 and ES256 provider tokens, FCM needs
 # RS256 service-account assertions (ADR 0030). RSA signing uses ring, which

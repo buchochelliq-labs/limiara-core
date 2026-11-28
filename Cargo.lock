@@ -479,6 +479,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "contacts-engine-migration"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "contacts-plugin",
+ "platform-id",
+ "platform-objects",
+ "platform-storage",
+ "plugin-contract",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "contacts-plugin"
 version = "0.1.0"
 dependencies = [

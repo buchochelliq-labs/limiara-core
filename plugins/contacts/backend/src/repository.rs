@@ -1255,41 +1255,6 @@ fn definition_from_row(row: DefinitionRow) -> Result<ContactCustomFieldDefinitio
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const MIGRATION: &str = include_str!("../../migrations/0002_contacts_persistence.sql");
-    const TENANT_SCOPED_CURSOR_MIGRATION: &str =
-        include_str!("../../migrations/0003_tenant_scoped_cursor_identity.sql");
-
-    #[test]
-    fn persistence_schema_forces_tenant_cursor_and_identifier_isolation() {
-        assert!(MIGRATION.contains("public_id_counters"));
-        assert!(MIGRATION.contains("list_cursors"));
-        assert!(MIGRATION.contains("FORCE ROW LEVEL SECURITY"));
-        assert!(MIGRATION.contains("current_setting('app.tenant_id'"));
-        assert!(MIGRATION.contains("version bigint NOT NULL DEFAULT 1"));
-        assert!(MIGRATION.contains("disabled_at timestamptz"));
-        assert!(MIGRATION.contains("archived_at timestamptz"));
-    }
-
-    #[test]
-    fn cursor_tokens_are_opaque_random_values() {
-        let mut bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut bytes);
-        let token = URL_SAFE_NO_PAD.encode(bytes);
-        assert_eq!(token.len(), 43);
-        assert!(!token.contains("person"));
-    }
-
-    #[test]
-    fn cursor_token_identity_is_unique_only_within_a_tenant() {
-        assert!(TENANT_SCOPED_CURSOR_MIGRATION.contains("DROP CONSTRAINT list_cursors_pkey"));
-        assert!(TENANT_SCOPED_CURSOR_MIGRATION.contains("ADD PRIMARY KEY (tenant_id, token_hash)"));
-    }
-}
-
 // --- Moving a workspace to the object engine (ADR 0035 §2) -----------------
 
 pub(crate) async fn export_people(
@@ -1345,13 +1310,15 @@ pub(crate) async fn export_organisations(
     rows.into_iter().map(organisation_from_row).collect()
 }
 
+type ExportedActivityRow = (String, Uuid, String, i64, Option<Uuid>, DateTime<Utc>);
+
 pub(crate) async fn export_activity(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: Uuid,
     entity_type: &str,
     public_ids: &[String],
 ) -> Result<Vec<ExportedActivity>, ContactsError> {
-    let rows: Vec<(String, Uuid, String, i64, Option<Uuid>, DateTime<Utc>)> = sqlx::query_as(
+    let rows: Vec<ExportedActivityRow> = sqlx::query_as(
         r#"
         SELECT entity_public_id, event_id, action, entity_version, actor_id, occurred_at
         FROM p_contacts.activity
@@ -1480,4 +1447,39 @@ pub(crate) async fn save_engine_migration(
     row.map(engine_migration_from_row)
         .transpose()?
         .ok_or(ContactsError::VersionConflict)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIGRATION: &str = include_str!("../../migrations/0002_contacts_persistence.sql");
+    const TENANT_SCOPED_CURSOR_MIGRATION: &str =
+        include_str!("../../migrations/0003_tenant_scoped_cursor_identity.sql");
+
+    #[test]
+    fn persistence_schema_forces_tenant_cursor_and_identifier_isolation() {
+        assert!(MIGRATION.contains("public_id_counters"));
+        assert!(MIGRATION.contains("list_cursors"));
+        assert!(MIGRATION.contains("FORCE ROW LEVEL SECURITY"));
+        assert!(MIGRATION.contains("current_setting('app.tenant_id'"));
+        assert!(MIGRATION.contains("version bigint NOT NULL DEFAULT 1"));
+        assert!(MIGRATION.contains("disabled_at timestamptz"));
+        assert!(MIGRATION.contains("archived_at timestamptz"));
+    }
+
+    #[test]
+    fn cursor_tokens_are_opaque_random_values() {
+        let mut bytes = [0_u8; 32];
+        rand::rng().fill_bytes(&mut bytes);
+        let token = URL_SAFE_NO_PAD.encode(bytes);
+        assert_eq!(token.len(), 43);
+        assert!(!token.contains("person"));
+    }
+
+    #[test]
+    fn cursor_token_identity_is_unique_only_within_a_tenant() {
+        assert!(TENANT_SCOPED_CURSOR_MIGRATION.contains("DROP CONSTRAINT list_cursors_pkey"));
+        assert!(TENANT_SCOPED_CURSOR_MIGRATION.contains("ADD PRIMARY KEY (tenant_id, token_hash)"));
+    }
 }
