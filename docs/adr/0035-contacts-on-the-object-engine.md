@@ -156,7 +156,9 @@ Delivered:
   is always indexed per value through the record index, without case, so
   `INCLUDES` and `EXCLUDES` filter it in queries and formulas; it takes no
   options and is never unique. Manifests may declare it, devices and the
-  assistant read it, and the web form types it as comma-separated values.
+  assistant read it, and the web form edits it as chips, one per value
+  (2026-11-27: Enter adds one, a value may hold a comma, and a draft saved
+  as comma-separated text still restores).
   Device builds from before this change cannot read an object that has a
   text list field, as with any new field type.
 - G9, field governance metadata (2026-11-21). Every engine field may

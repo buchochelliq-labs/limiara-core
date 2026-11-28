@@ -1,7 +1,8 @@
 import React, {useEffect, useState} from 'react';
-import {Alert, Badge, Button, Select, Skeleton, TextField} from '../components/ui';
+import {Alert, Badge, Button, Select, Skeleton, TagInput, TextField} from '../components/ui';
 import {formatValue, holdsReference, quickActionsMax, referenceTargets, type ObjectDescription, type ObjectField, type ObjectsClient, type QuickAction, type QuickActionKind, type ValidationIssue} from './api';
 import {editableFields, inputTypes, toApiValue, toDraftValue, type DraftValue} from './ObjectPages';
+import {splitTextListDraft, TEXT_LIST_MAX_CHARS, TEXT_LIST_MAX_VALUES, textListDraft} from './formValues';
 import {Issues, issuesText} from './issues';
 import {suggestName} from './names';
 
@@ -232,7 +233,10 @@ function PresetInput({label, field, value, error, onChange}: {label: string; fie
       {error && <span className="ui-field__error">{error}</span>}
     </fieldset>;
   }
-  if (field?.type === 'text_list') return <TextField label={label} description="Separate values with commas." value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
+  if (field?.type === 'text_list') {
+    const tags = splitTextListDraft(value);
+    return <TagInput label={label} description="Press Enter after each value." values={tags.values} text={tags.text} max={TEXT_LIST_MAX_VALUES} maxLength={TEXT_LIST_MAX_CHARS} error={error} onChange={(next, text) => onChange(textListDraft(next, text))} />;
+  }
   const targets = field && holdsReference(field.type) ? referenceTargets(field) : [];
   return <TextField label={label} type={field ? inputTypes[field.type] ?? 'text' : 'text'} step={field?.type === 'currency' ? '0.01' : field && ['number', 'percent'].includes(field.type) ? 'any' : undefined} description={field && holdsReference(field.type) ? `The ID of a ${targets.join(' or ') || 'related'} record.` : undefined} value={typeof value === 'string' ? value : ''} error={error} onChange={event => onChange(event.target.value)} />;
 }

@@ -1,5 +1,9 @@
 import {canReadField, type ObjectDescription, type ObjectField} from './api';
 
+/** The most values a text list holds, and the longest value (ADR 0035 G7; the engine's limits). */
+export const TEXT_LIST_MAX_VALUES = 50;
+export const TEXT_LIST_MAX_CHARS = 80;
+
 /** What a form input holds for one field: text, a checkbox, or the chosen values of a multi-select. */
 export type DraftValue = string | boolean | string[];
 
@@ -16,8 +20,8 @@ export function editableFields(object: ObjectDescription) {
 export function toDraftValue(field: ObjectField, value: unknown): DraftValue {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) ? value.map(String) : [];
-  // A text list is typed as one line, its values separated by commas (ADR 0035 G7).
-  if (field.type === 'text_list') return Array.isArray(value) ? value.map(String).join(', ') : '';
+  // A text list is edited as chips, one per value (ADR 0035 G7).
+  if (field.type === 'text_list') return textListDraft(Array.isArray(value) ? value.map(String) : [], '');
   if (field.type === 'date_time' && typeof value === 'string') return toLocalInput(value);
   return value === undefined || value === null ? '' : String(value);
 }
@@ -35,7 +39,7 @@ export function toApiValue(field: ObjectField, value: DraftValue): unknown {
   if (field.type === 'boolean') return value === true;
   if (field.type === 'multi_picklist') return Array.isArray(value) && value.length ? value : null;
   if (field.type === 'text_list') {
-    const values = typeof value === 'string' ? value.split(',').map(item => item.trim()).filter(item => item !== '') : [];
+    const values = textListValues(value);
     return values.length ? values : null;
   }
   if (typeof value !== 'string' || value.trim() === '') return null;
@@ -50,3 +54,26 @@ export function toApiValue(field: ObjectField, value: DraftValue): unknown {
   return value.trim();
 }
 
+
+/**
+ * What a form holds for a text list: its chips, then the text typed but
+ * not yet added, so autosaved drafts keep that text too and a save sends
+ * it as a value.
+ */
+export function textListDraft(values: readonly string[], text: string): string[] {
+  return [...values, text];
+}
+
+/** A text list draft's chips and typed text; the reverse of `textListDraft`. */
+export function splitTextListDraft(value: DraftValue): {values: string[]; text: string} {
+  // A draft saved before the chip input held one comma-separated line.
+  if (typeof value === 'string') return {values: textListValues(value), text: ''};
+  if (!Array.isArray(value) || value.length === 0) return {values: [], text: ''};
+  return {values: value.slice(0, -1), text: value[value.length - 1] ?? ''};
+}
+
+/** The values a text list draft saves: its chips and any typed text, trimmed, blanks left out. */
+export function textListValues(value: DraftValue): string[] {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  return items.map(item => item.trim()).filter(item => item !== '');
+}

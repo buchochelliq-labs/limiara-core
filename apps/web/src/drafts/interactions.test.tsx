@@ -294,3 +294,33 @@ describe('a value the form opens with already changed (ADR 0037 §2, review P2)'
   });
 });
 
+
+describe('text typed into a text list but not yet added (ADR 0035 G7, review P2)', () => {
+  it('is autosaved with the draft, and restores into the input', async () => {
+    const client = createFixtureObjectsClient();
+    const described = await client.describe('custom:project');
+    const tags = {apiName: 'custom:tags', label: 'Tags', description: null, type: 'text_list' as const, origin: 'workspace' as const, required: false, unique: false, indexed: true, options: [], referenceObject: null, deleteBehaviour: null, trackHistory: false, version: 1};
+    const object = {...described, fields: [...described.fields, tags]};
+    vi.spyOn(client, 'describe').mockResolvedValue(object);
+    const record = await client.getRecord('custom:project', apollo);
+    const runtime: DraftRuntime = {status: 'ready', store, contribution, member, workspace};
+    const render = async (key: string) => act(async () => {
+      root.render(<DraftsContext.Provider value={runtime}><RecordForm key={key} client={client} object={object} record={record} draft={{key: editKey}} onCancel={() => undefined} onSaved={() => undefined} /></DraftsContext.Provider>);
+    });
+    await render('first');
+    await until(() => !text().includes('Checking for a draft'), 'the draft check');
+    // The member types a value and leaves without pressing Enter.
+    await type(input('Tags'), 'Partner');
+    await until(() => /Draft saved at/.test(text()), 'the draft to be saved');
+    const saved = (await store.list()).find(draft => draft.meta.key.includes(apollo));
+    expect(saved?.document.fields['custom:tags']?.value).toEqual(['Partner']);
+
+    // Reopening the form offers the draft, and restoring puts the text back.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render('second');
+    await until(() => text().includes('You have an unsaved draft'), 'the restore prompt');
+    await click(button('Restore'));
+    await until(() => input('Tags').value === 'Partner', 'the restored text');
+  });
+});
