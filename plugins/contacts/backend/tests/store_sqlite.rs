@@ -83,3 +83,38 @@ async fn record_stamps_upgrade_existing_workspace_files() {
         "rows written before the stamps have no creator"
     );
 }
+
+#[tokio::test]
+async fn sqlite_store_exports_a_workspace_for_the_engine() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let databases = Arc::new(SqliteTenantDatabases::new(
+        directory.path(),
+        SQLITE_MIGRATIONS,
+    ));
+    let store: Arc<dyn ContactsStore> = Arc::new(SqliteContactsStore::new(databases.clone()));
+    let tenant = uuid::Uuid::now_v7();
+    let report = conformance::export(store.clone(), tenant).await;
+    let pool = databases.pool(tenant).await.expect("pool");
+    let mut rows = vec![("per000000000000zzz".to_owned(), "created", 9)];
+    for public_id in &report.people[..2] {
+        // The later entry is written first.
+        rows.push((public_id.clone(), "updated", 5));
+        rows.push((public_id.clone(), "created", 1));
+    }
+    for (public_id, action, minute) in rows {
+        sqlx::query(
+            "INSERT INTO p_contacts_activity (tenant_id, event_id, entity_type, entity_public_id, \
+               action, entity_version, actor_id, occurred_at) \
+             VALUES (?1, ?2, 'person', ?3, ?4, 1, NULL, ?5)",
+        )
+        .bind(tenant.to_string())
+        .bind(uuid::Uuid::now_v7().to_string())
+        .bind(public_id)
+        .bind(action)
+        .bind(format!("2026-01-01T00:{minute:02}:00.000000Z"))
+        .execute(&pool)
+        .await
+        .expect("activity");
+    }
+    conformance::export_activity(store, &report).await;
+}

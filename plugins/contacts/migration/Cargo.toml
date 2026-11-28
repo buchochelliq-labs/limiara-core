@@ -1,0 +1,28 @@
+[package]
+name = "contacts-engine-migration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Moves a workspace's people and organisations from the Contacts store to the object engine (ADR 0035 §2)"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+contacts-plugin.workspace = true
+platform-objects.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+platform-id.workspace = true
+plugin-contract.workspace = true
+platform-storage.workspace = true
+sqlx.workspace = true
+tempfile = "3"
+tokio.workspace = true

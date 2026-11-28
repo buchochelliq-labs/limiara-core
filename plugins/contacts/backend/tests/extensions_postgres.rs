@@ -358,3 +358,64 @@ async fn postgres_store_passes_the_contacts_conformance_suite() {
     assert_eq!(audit, report.mutations_in_a);
     assert_eq!(outbox, report.mutations_in_a);
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-plugin-runtime.sh PostgreSQL fixture"]
+async fn postgres_store_exports_a_workspace_for_the_engine() {
+    let connect = |name: &str| {
+        let url = std::env::var(name).expect(name);
+        async move {
+            PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect")
+        }
+    };
+    let pool = connect("PLATFORM_TEST_DATABASE_URL").await;
+    let migrator = connect("PLATFORM_TEST_MIGRATOR_DATABASE_URL").await;
+    let tenant = Uuid::now_v7();
+    sqlx::query("INSERT INTO tenants (id, display_name) VALUES ($1, 'Contacts export')")
+        .bind(tenant)
+        .execute(&migrator)
+        .await
+        .expect("tenant");
+    let store: std::sync::Arc<dyn ContactsStore> =
+        std::sync::Arc::new(PostgresContactsStore::new(pool.clone()));
+    let report = conformance::export(store.clone(), tenant).await;
+    // Activity rows go in as the worker's projection would: in the
+    // workspace and the Contacts execution context.
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query(
+        "SELECT set_config('app.tenant_id', $1, true), \
+                set_config('app.plugin_id', 'platform.contacts', true)",
+    )
+    .bind(tenant.to_string())
+    .execute(&mut *tx)
+    .await
+    .expect("context");
+    let mut rows = vec![("per000000000000zzz".to_owned(), "created", 9)];
+    for public_id in &report.people[..2] {
+        // The later entry is written first.
+        rows.push((public_id.clone(), "updated", 5));
+        rows.push((public_id.clone(), "created", 1));
+    }
+    for (public_id, action, minute) in rows {
+        sqlx::query(
+            "INSERT INTO p_contacts.activity (tenant_id, event_id, entity_type, entity_public_id, \
+               action, entity_version, actor_id, correlation_id, occurred_at) \
+             VALUES ($1, $2, 'person', $3, $4, 1, NULL, $2, \
+               '2026-01-01T00:00:00Z'::timestamptz + make_interval(mins => $5))",
+        )
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .bind(public_id)
+        .bind(action)
+        .bind(minute)
+        .execute(&mut *tx)
+        .await
+        .expect("activity");
+    }
+    tx.commit().await.expect("commit");
+    conformance::export_activity(store, &report).await;
+}

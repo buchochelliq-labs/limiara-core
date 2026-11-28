@@ -223,5 +223,52 @@ pub trait ContactsTx: Send {
         audit: &AuditEvent,
         event: &EventEnvelope,
     ) -> Result<(), ContactsError>;
+    // --- Moving a workspace to the object engine (ADR 0035 §2) ----------
+
+    /// Up to `limit` people in any state (archived and in the recycle bin
+    /// too), with an internal id after `after`, in id order.
+    async fn export_people(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Person>, ContactsError>;
+    /// Up to `limit` organisations in any state, after `after`, in id order.
+    async fn export_organisations(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Organisation>, ContactsError>;
+    /// Every activity entry of these records of `entity_type`, oldest first.
+    async fn export_activity(
+        &mut self,
+        tenant_id: Uuid,
+        entity_type: &str,
+        public_ids: &[String],
+    ) -> Result<Vec<ExportedActivity>, ContactsError>;
+    /// The last public-id sequence issued for `construct` (the counter
+    /// table's `next_value`, which holds the value last handed out); 0
+    /// when none was.
+    async fn public_id_counter(
+        &mut self,
+        tenant_id: Uuid,
+        construct: &str,
+    ) -> Result<i64, ContactsError>;
+    /// The workspace's migration state; `None` before it starts.
+    async fn engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+    ) -> Result<Option<EngineMigration>, ContactsError>;
+    /// Writes the migration state: creates it when `expected_version` is
+    /// `None`, otherwise replaces the version read, or answers
+    /// `VersionConflict`. Returns the state as stored.
+    async fn save_engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+        state: &EngineMigration,
+        expected_version: Option<i64>,
+    ) -> Result<EngineMigration, ContactsError>;
+
     async fn commit(self: Box<Self>) -> Result<(), ContactsError>;
 }

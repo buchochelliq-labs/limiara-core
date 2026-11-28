@@ -755,3 +755,203 @@ pub async fn recycle_bin(store: Arc<dyn ContactsStore>) {
         .expect("undelete organisation");
     assert_eq!(back.deleted_at, None);
 }
+
+/// What [`export`] wrote, so a backend can add activity rows for
+/// [`export_activity`].
+pub struct ExportReport {
+    pub tenant: Uuid,
+    /// The people's public ids, in internal-id order.
+    pub people: Vec<String>,
+}
+
+/// The reads that move a workspace to the object engine (ADR 0035 §2):
+/// every record in any state, in id order and in pages; the public-id
+/// counters; and the migration state row with its version check.
+pub async fn export(store: Arc<dyn ContactsStore>, tenant: Uuid) -> ExportReport {
+    use contacts_plugin::store::Actor;
+    use contacts_plugin::{EngineMigration, EngineMigrationPhase};
+
+    let a = service(&store, tenant);
+    let other = service(&store, Uuid::now_v7());
+    let organisation = |name: &str| CreateOrganisation {
+        name: name.into(),
+        email: None,
+        telephone: None,
+        custom_fields: BTreeMap::new(),
+    };
+    let acme = a
+        .create_organisation(organisation("Acme"), context())
+        .await
+        .expect("acme");
+    let globex = a
+        .create_organisation(organisation("Globex"), context())
+        .await
+        .expect("globex");
+    let mut ada = person("Ada Lovelace", Some("ada@example.org"));
+    ada.organisation_id = Some(acme.public_id.clone());
+    let ada = a.create_person(ada, context()).await.expect("ada");
+    let shelved = a
+        .create_person(person("Shelved Person", None), context())
+        .await
+        .expect("shelved");
+    let shelved = a
+        .archive_person(&shelved.public_id, shelved.version, context())
+        .await
+        .expect("archive");
+    let binned = a
+        .create_person(person("Binned Person", None), context())
+        .await
+        .expect("binned");
+    let binned = a
+        .delete_person(&binned.public_id, binned.version, context())
+        .await
+        .expect("delete");
+    other
+        .create_person(person("Elsewhere", None), context())
+        .await
+        .expect("another workspace");
+
+    let mut tx = store.begin(tenant, Actor::System).await.expect("begin");
+    // Every state, in internal-id order, in pages.
+    let first = tx
+        .export_organisations(tenant, None, 1)
+        .await
+        .expect("first page");
+    let rest = tx
+        .export_organisations(tenant, Some(first[0].id), 10)
+        .await
+        .expect("next page");
+    let mut expected = vec![acme.id, globex.id];
+    expected.sort();
+    assert_eq!(
+        first.iter().chain(&rest).map(|o| o.id).collect::<Vec<_>>(),
+        expected
+    );
+    let people = tx.export_people(tenant, None, 10).await.expect("people");
+    let mut expected = vec![ada.id, shelved.id, binned.id];
+    expected.sort();
+    assert_eq!(people.iter().map(|p| p.id).collect::<Vec<_>>(), expected);
+    let exported = |id: Uuid| people.iter().find(|p| p.id == id).expect("exported");
+    assert_eq!(
+        exported(ada.id).organisation_public_id.as_deref(),
+        Some(acme.public_id.as_str())
+    );
+    assert_eq!(exported(ada.id).tags, vec!["vip".to_owned()]);
+    assert!(exported(shelved.id).archived_at.is_some());
+    assert_eq!(exported(binned.id).deleted_at, binned.deleted_at);
+    assert_eq!(exported(binned.id).version, binned.version);
+    assert!(tx
+        .export_people(tenant, Some(expected[2]), 10)
+        .await
+        .expect("past the end")
+        .is_empty());
+
+    // The counters hold the last sequence issued.
+    assert_eq!(
+        tx.public_id_counter(tenant, "person")
+            .await
+            .expect("people"),
+        3
+    );
+    assert_eq!(
+        tx.public_id_counter(tenant, "organisation")
+            .await
+            .expect("organisations"),
+        2
+    );
+    assert_eq!(
+        tx.public_id_counter(Uuid::now_v7(), "person")
+            .await
+            .expect("none"),
+        0
+    );
+
+    // The state row: created once, then replaced by the version read.
+    assert_eq!(tx.engine_migration(tenant).await.expect("none yet"), None);
+    let state = EngineMigration {
+        phase: EngineMigrationPhase::Copying,
+        checkpoint: json!({"organisations_after": acme.id}),
+        checksums: json!({}),
+        cutover_at: None,
+        rollback_deadline: None,
+        version: 0,
+        updated_at: chrono::Utc::now(),
+    };
+    let created = tx
+        .save_engine_migration(tenant, &state, None)
+        .await
+        .expect("create");
+    assert_eq!(created.version, 1);
+    assert_eq!(created.checkpoint, state.checkpoint);
+    assert!(matches!(
+        tx.save_engine_migration(tenant, &state, None).await,
+        Err(ContactsError::VersionConflict)
+    ));
+    let copied = EngineMigration {
+        phase: EngineMigrationPhase::Copied,
+        ..created.clone()
+    };
+    let saved = tx
+        .save_engine_migration(tenant, &copied, Some(1))
+        .await
+        .expect("replace");
+    assert_eq!(
+        (saved.version, saved.phase),
+        (2, EngineMigrationPhase::Copied)
+    );
+    assert!(matches!(
+        tx.save_engine_migration(tenant, &copied, Some(1)).await,
+        Err(ContactsError::VersionConflict)
+    ));
+    assert_eq!(
+        tx.engine_migration(tenant).await.expect("read"),
+        Some(saved)
+    );
+    tx.commit().await.expect("commit");
+
+    ExportReport {
+        tenant,
+        people: expected
+            .iter()
+            .map(|id| exported(*id).public_id.clone())
+            .collect(),
+    }
+}
+
+/// After the backend added activity for the first two people of
+/// `report` (two entries each, the later one first) and one for another
+/// person: the export returns only the asked records', oldest first.
+pub async fn export_activity(store: Arc<dyn ContactsStore>, report: &ExportReport) {
+    use contacts_plugin::store::Actor;
+    let mut tx = store
+        .begin(report.tenant, Actor::System)
+        .await
+        .expect("begin");
+    let asked = report.people[..2].to_vec();
+    let rows = tx
+        .export_activity(report.tenant, "person", &asked)
+        .await
+        .expect("activity");
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    for public_id in &asked {
+        let mine: Vec<_> = rows
+            .iter()
+            .filter(|row| &row.entity_public_id == public_id)
+            .collect();
+        assert_eq!(mine.len(), 2);
+        assert!(
+            mine[0].entry.occurred_at < mine[1].entry.occurred_at,
+            "oldest first"
+        );
+        assert_eq!(
+            (mine[0].entry.action.as_str(), mine[1].entry.action.as_str()),
+            ("created", "updated")
+        );
+    }
+    assert!(tx
+        .export_activity(report.tenant, "person", &[])
+        .await
+        .expect("none asked")
+        .is_empty());
+    tx.commit().await.expect("commit");
+}

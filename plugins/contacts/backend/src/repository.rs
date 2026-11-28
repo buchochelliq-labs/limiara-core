@@ -1255,6 +1255,200 @@ fn definition_from_row(row: DefinitionRow) -> Result<ContactCustomFieldDefinitio
     })
 }
 
+// --- Moving a workspace to the object engine (ADR 0035 §2) -----------------
+
+pub(crate) async fn export_people(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    after: Option<Uuid>,
+    limit: u32,
+) -> Result<Vec<Person>, ContactsError> {
+    let rows = sqlx::query_as::<_, PersonRow>(
+        r#"
+        SELECT p.id, p.public_id, p.tenant_id, p.full_name, p.email, p.telephone,
+               p.organisation_id, o.public_id AS organisation_public_id, p.tags,
+               p.custom_fields, p.extensions, p.version, p.archived_at, p.created_at, p.updated_at,
+               p.created_by, p.updated_by, p.touched_at, p.deleted_at
+        FROM p_contacts.people p
+        LEFT JOIN p_contacts.organisations o
+          ON o.tenant_id = p.tenant_id AND o.id = p.organisation_id
+        WHERE p.tenant_id = $1 AND ($2::uuid IS NULL OR p.id > $2)
+        ORDER BY p.id
+        LIMIT $3
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(after)
+    .bind(i64::from(limit))
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.into_iter().map(person_from_row).collect()
+}
+
+pub(crate) async fn export_organisations(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    after: Option<Uuid>,
+    limit: u32,
+) -> Result<Vec<Organisation>, ContactsError> {
+    let rows = sqlx::query_as::<_, OrganisationRow>(
+        r#"
+        SELECT id, public_id, tenant_id, name, email, telephone, custom_fields,
+               extensions, version, archived_at, created_at, updated_at,
+               created_by, updated_by, touched_at, deleted_at
+        FROM p_contacts.organisations
+        WHERE tenant_id = $1 AND ($2::uuid IS NULL OR id > $2)
+        ORDER BY id
+        LIMIT $3
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(after)
+    .bind(i64::from(limit))
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.into_iter().map(organisation_from_row).collect()
+}
+
+type ExportedActivityRow = (String, Uuid, String, i64, Option<Uuid>, DateTime<Utc>);
+
+pub(crate) async fn export_activity(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    entity_type: &str,
+    public_ids: &[String],
+) -> Result<Vec<ExportedActivity>, ContactsError> {
+    let rows: Vec<ExportedActivityRow> = sqlx::query_as(
+        r#"
+        SELECT entity_public_id, event_id, action, entity_version, actor_id, occurred_at
+        FROM p_contacts.activity
+        WHERE tenant_id = $1 AND entity_type = $2 AND entity_public_id = ANY($3)
+        ORDER BY entity_public_id, occurred_at, event_id
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(entity_type)
+    .bind(public_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(entity_public_id, event_id, action, entity_version, actor_id, occurred_at)| {
+                ExportedActivity {
+                    entity_public_id,
+                    entry: ActivityEntry {
+                        event_id,
+                        action,
+                        entity_version,
+                        actor_id,
+                        occurred_at,
+                    },
+                }
+            },
+        )
+        .collect())
+}
+
+pub(crate) async fn public_id_counter(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    construct: &str,
+) -> Result<i64, ContactsError> {
+    let next: Option<i64> = sqlx::query_scalar(
+        "SELECT next_value FROM p_contacts.public_id_counters WHERE tenant_id = $1 AND construct = $2",
+    )
+    .bind(tenant_id)
+    .bind(construct)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(next.unwrap_or(0))
+}
+
+type EngineMigrationRow = (
+    String,
+    Value,
+    Value,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    i64,
+    DateTime<Utc>,
+);
+
+fn engine_migration_from_row(row: EngineMigrationRow) -> Result<EngineMigration, ContactsError> {
+    let (phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at) = row;
+    Ok(EngineMigration {
+        phase: EngineMigrationPhase::parse(&phase).ok_or(ContactsError::Invariant)?,
+        checkpoint,
+        checksums,
+        cutover_at,
+        rollback_deadline,
+        version,
+        updated_at,
+    })
+}
+
+pub(crate) async fn engine_migration(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+) -> Result<Option<EngineMigration>, ContactsError> {
+    let row: Option<EngineMigrationRow> = sqlx::query_as(
+        "SELECT phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at \
+         FROM p_contacts.engine_migration WHERE tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(engine_migration_from_row).transpose()
+}
+
+pub(crate) async fn save_engine_migration(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    state: &EngineMigration,
+    expected_version: Option<i64>,
+) -> Result<EngineMigration, ContactsError> {
+    let row: Option<EngineMigrationRow> = match expected_version {
+        None => {
+            sqlx::query_as(
+                "INSERT INTO p_contacts.engine_migration \
+                   (tenant_id, phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, 1, now()) \
+                 ON CONFLICT (tenant_id) DO NOTHING \
+                 RETURNING phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at",
+            )
+            .bind(tenant_id)
+            .bind(state.phase.as_str())
+            .bind(&state.checkpoint)
+            .bind(&state.checksums)
+            .bind(state.cutover_at)
+            .bind(state.rollback_deadline)
+            .fetch_optional(&mut **tx)
+            .await?
+        }
+        Some(expected) => {
+            sqlx::query_as(
+                "UPDATE p_contacts.engine_migration SET phase = $2, checkpoint = $3, checksums = $4, \
+                   cutover_at = $5, rollback_deadline = $6, version = version + 1, updated_at = now() \
+                 WHERE tenant_id = $1 AND version = $7 \
+                 RETURNING phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at",
+            )
+            .bind(tenant_id)
+            .bind(state.phase.as_str())
+            .bind(&state.checkpoint)
+            .bind(&state.checksums)
+            .bind(state.cutover_at)
+            .bind(state.rollback_deadline)
+            .bind(expected)
+            .fetch_optional(&mut **tx)
+            .await?
+        }
+    };
+    row.map(engine_migration_from_row)
+        .transpose()?
+        .ok_or(ContactsError::VersionConflict)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
