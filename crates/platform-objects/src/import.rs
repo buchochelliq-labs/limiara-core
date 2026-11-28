@@ -101,24 +101,7 @@ impl ObjectService {
             ));
         }
         let mut tx = self.begin().await?;
-        tx.lock_metadata().await?;
-        // Suspended and dormant objects take imports: that is when a
-        // plugin's records move in. Deleted ones do not.
-        let object = tx
-            .object_by_api_name(api_name)
-            .await?
-            .filter(|object| object.status == crate::DefinitionStatus::Active)
-            .ok_or(ObjectError::NotFound)?;
-        let guarded = object.fields.iter().any(|field| {
-            matches!(
-                field.field_type,
-                FieldType::MasterDetail | FieldType::Rollup
-            )
-        });
-        if guarded {
-            return Err(ObjectError::Conflict(IMPORT_UNSUPPORTED));
-        }
-        tx.lock_object(object.id, true).await?;
+        let object = import_target(tx.as_mut(), api_name).await?;
         let mut highest = source_sequence;
         let mut ids = Vec::with_capacity(records.len());
         for (position, imported) in records.into_iter().enumerate() {
@@ -150,6 +133,39 @@ impl ObjectService {
         Ok(ImportReport {
             imported: ids.len(),
             record_sequence: highest,
+        })
+    }
+
+    /// The ids among `ids` that are already records, in any state, so a
+    /// restarted import knows what an interrupted batch wrote. Only the
+    /// kernel's migrator may ask.
+    pub async fn imported_ids(&self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>, ObjectError> {
+        if !self.caller().is_migrator() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        let mut tx = self.begin().await?;
+        let mut found = BTreeSet::new();
+        for id in ids {
+            if tx.record_by_id(*id).await?.is_some() {
+                found.insert(*id);
+            }
+        }
+        tx.commit().await?;
+        Ok(found)
+    }
+
+    /// Starts checking an import without writing it (a migration's dry
+    /// run): batches given to [`ImportCheck::check`] are imported in one
+    /// transaction, so later batches may point at earlier ones, and that
+    /// transaction is rolled back when the check is dropped. Only the
+    /// kernel's migrator may check.
+    pub async fn check_import(&self) -> Result<ImportCheck<'_>, ObjectError> {
+        if !self.caller().is_migrator() {
+            return Err(ObjectError::PermissionDenied);
+        }
+        Ok(ImportCheck {
+            service: self,
+            tx: self.begin().await?,
         })
     }
 
@@ -302,6 +318,94 @@ impl ObjectService {
 /// The records an imported record's lookups and related-to fields point
 /// at: an existing record of an object the field allows, whatever its
 /// state, as the source had it. Targets are imported first.
+/// The object an import writes to, locked for it: active, which takes in
+/// suspended and dormant objects (that is when a plugin's records move in),
+/// and without master-detail or roll-up fields.
+async fn import_target(
+    tx: &mut dyn ObjectTx,
+    api_name: &str,
+) -> Result<ObjectDefinition, ObjectError> {
+    tx.lock_metadata().await?;
+    let object = tx
+        .object_by_api_name(api_name)
+        .await?
+        .filter(|object| object.status == crate::DefinitionStatus::Active)
+        .ok_or(ObjectError::NotFound)?;
+    let guarded = object.fields.iter().any(|field| {
+        matches!(
+            field.field_type,
+            FieldType::MasterDetail | FieldType::Rollup
+        )
+    });
+    if guarded {
+        return Err(ObjectError::Conflict(IMPORT_UNSUPPORTED));
+    }
+    tx.lock_object(object.id, true).await?;
+    Ok(object)
+}
+
+/// A record an import check refused, with why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportRefusal {
+    pub public_id: String,
+    /// Each problem, with fields named `records/{position}/{field}` as an
+    /// import names them, or one entry carrying the conflict's code.
+    pub issues: Vec<ValidationIssue>,
+}
+
+/// An import checked without being written (see
+/// [`ObjectService::check_import`]); dropping it rolls everything back.
+pub struct ImportCheck<'a> {
+    service: &'a ObjectService,
+    tx: Box<dyn ObjectTx>,
+}
+
+impl ImportCheck<'_> {
+    /// Imports `records` into the check's transaction as
+    /// [`ObjectService::import_records`] would, and answers the records it
+    /// would refuse. Unlike an import, a refused record does not stop the
+    /// batch: the others are still checked and kept for later batches.
+    /// A store failure ends the check.
+    pub async fn check(
+        &mut self,
+        api_name: &str,
+        records: Vec<ImportedRecord>,
+    ) -> Result<Vec<ImportRefusal>, ObjectError> {
+        let object = import_target(self.tx.as_mut(), api_name).await?;
+        let mut refused = Vec::new();
+        let mut ids = Vec::new();
+        let context = MutationContext::new(Uuid::now_v7());
+        for (position, imported) in records.into_iter().enumerate() {
+            let public_id = imported.public_id.clone();
+            let outcome = self
+                .service
+                .import_one(
+                    self.tx.as_mut(),
+                    &object,
+                    position,
+                    imported,
+                    context,
+                    &mut ids,
+                )
+                .await;
+            let issues = match outcome {
+                Ok(_) => continue,
+                Err(ObjectError::Validation(issues)) | Err(ObjectError::Refused(_, issues)) => {
+                    issues
+                }
+                Err(ObjectError::Conflict(code)) => vec![ValidationIssue::new(
+                    format!("records/{position}"),
+                    code,
+                    "the record conflicts with one already there",
+                )],
+                Err(other) => return Err(other),
+            };
+            refused.push(ImportRefusal { public_id, issues });
+        }
+        Ok(refused)
+    }
+}
+
 async fn imported_references(
     tx: &mut dyn ObjectTx,
     object: &ObjectDefinition,

@@ -366,6 +366,57 @@ impl ContactsTx for PostgresContactsTx {
         Ok(())
     }
 
+    async fn export_people(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Person>, ContactsError> {
+        repository::export_people(&mut self.tx, tenant_id, after, limit).await
+    }
+
+    async fn export_organisations(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Organisation>, ContactsError> {
+        repository::export_organisations(&mut self.tx, tenant_id, after, limit).await
+    }
+
+    async fn export_activity(
+        &mut self,
+        tenant_id: Uuid,
+        entity_type: &str,
+        public_ids: &[String],
+    ) -> Result<Vec<ExportedActivity>, ContactsError> {
+        repository::export_activity(&mut self.tx, tenant_id, entity_type, public_ids).await
+    }
+
+    async fn public_id_counter(
+        &mut self,
+        tenant_id: Uuid,
+        construct: &str,
+    ) -> Result<i64, ContactsError> {
+        repository::public_id_counter(&mut self.tx, tenant_id, construct).await
+    }
+
+    async fn engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+    ) -> Result<Option<EngineMigration>, ContactsError> {
+        repository::engine_migration(&mut self.tx, tenant_id).await
+    }
+
+    async fn save_engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+        state: &EngineMigration,
+        expected_version: Option<i64>,
+    ) -> Result<EngineMigration, ContactsError> {
+        repository::save_engine_migration(&mut self.tx, tenant_id, state, expected_version).await
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), ContactsError> {
         self.tx.commit().await?;
         Ok(())

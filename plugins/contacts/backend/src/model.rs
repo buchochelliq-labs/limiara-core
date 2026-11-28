@@ -400,3 +400,64 @@ impl ValidationIssue {
         }
     }
 }
+
+/// How far a workspace has moved to the object engine (ADR 0035 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineMigrationPhase {
+    /// Contacts' own store serves the workspace; nothing is copied, or a
+    /// rollback brought it back.
+    Legacy,
+    /// The first copy is running or was interrupted.
+    Copying,
+    /// Every record was copied once; catch-up passes keep the copy current.
+    Copied,
+    /// Contacts writes pause for the final pass and verification.
+    Frozen,
+    /// The engine objects serve the workspace.
+    Engine,
+}
+
+impl EngineMigrationPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Copying => "copying",
+            Self::Copied => "copied",
+            Self::Frozen => "frozen",
+            Self::Engine => "engine",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "legacy" => Self::Legacy,
+            "copying" => Self::Copying,
+            "copied" => Self::Copied,
+            "frozen" => Self::Frozen,
+            "engine" => Self::Engine,
+            _ => return None,
+        })
+    }
+}
+
+/// A workspace's migration state row (ADR 0035 §2), kept by the migration
+/// tool. `checkpoint` and `checksums` are the tool's own documents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineMigration {
+    pub phase: EngineMigrationPhase,
+    pub checkpoint: serde_json::Value,
+    pub checksums: serde_json::Value,
+    pub cutover_at: Option<DateTime<Utc>>,
+    pub rollback_deadline: Option<DateTime<Utc>>,
+    /// Starts at 1; each save expects the version it read.
+    pub version: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One activity entry with the record it belongs to, for the export.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportedActivity {
+    pub entity_public_id: String,
+    pub entry: ActivityEntry,
+}

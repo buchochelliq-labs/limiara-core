@@ -12,6 +12,7 @@ use platform_id::PublicId;
 use platform_objects::import::{ImportedHistory, ImportedRecord, IMPORT_EXISTS};
 use platform_objects::*;
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -392,6 +393,95 @@ pub async fn run(store: Arc<dyn ObjectStore>, tenant: Uuid) -> Report {
             .name,
         "Imported ticket"
     );
+
+    // --- What an interrupted batch wrote ----------------------------------
+    let unknown = Uuid::now_v7();
+    assert_eq!(
+        migrator
+            .imported_ids(&[acme.id, binned.id, unknown])
+            .await
+            .expect("imported ids"),
+        BTreeSet::from([acme.id, binned.id]),
+        "any state counts; an id never imported does not"
+    );
+    assert!(matches!(
+        admin.imported_ids(&[acme.id]).await,
+        Err(ObjectError::PermissionDenied)
+    ));
+
+    // --- A check imports nothing, and reports every refusal ---------------
+    assert!(matches!(
+        admin.check_import().await.err(),
+        Some(ObjectError::PermissionDenied)
+    ));
+    let globex = record(&org.key_prefix, 700, json!({"name": "Globex"}), earlier);
+    let dee = record(
+        &person.key_prefix,
+        700,
+        // Points at an organisation the same check brought in.
+        json!({"name": "Dee", "custom:employer": globex.public_id}),
+        earlier,
+    );
+    let mut wrong = record(&person.key_prefix, 701, json!({"name": "Wrong"}), earlier);
+    wrong
+        .values
+        .insert("custom:email".into(), json!("not an email"));
+    let again = record(
+        &person.key_prefix,
+        702,
+        json!({"name": "Ada again"}),
+        earlier,
+    );
+    let again = ImportedRecord {
+        id: ada.id,
+        ..again
+    };
+    let fine = record(&person.key_prefix, 703, json!({"name": "Fine"}), earlier);
+    {
+        let mut check = migrator.check_import().await.expect("check");
+        assert!(check
+            .check(ORG, vec![globex.clone()])
+            .await
+            .expect("organisations")
+            .is_empty());
+        let refused = check
+            .check(
+                PERSON,
+                vec![dee.clone(), wrong.clone(), again.clone(), fine.clone()],
+            )
+            .await
+            .expect("people");
+        let refused: Vec<_> = refused
+            .iter()
+            .map(|refusal| {
+                (
+                    refusal.public_id.clone(),
+                    refusal
+                        .issues
+                        .iter()
+                        .map(|issue| issue.code)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            refused,
+            vec![
+                (wrong.public_id.clone(), vec!["records.email_invalid"]),
+                (again.public_id.clone(), vec![IMPORT_EXISTS]),
+            ],
+            "the others pass, and the check goes on after a refusal"
+        );
+    }
+    for (object, public_id) in [(ORG, &globex.public_id), (PERSON, &fine.public_id)] {
+        assert!(
+            matches!(
+                admin.get_record(object, public_id, true).await,
+                Err(ObjectError::NotFound)
+            ),
+            "a check writes nothing"
+        );
+    }
 
     Report {
         imported: vec![

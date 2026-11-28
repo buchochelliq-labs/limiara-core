@@ -170,6 +170,23 @@ CREATE INDEX p_contacts_people_deleted_idx ON p_contacts_people (tenant_id, dele
 CREATE INDEX p_contacts_organisations_deleted_idx ON p_contacts_organisations (tenant_id, deleted_at, id) WHERE deleted_at IS NOT NULL;
 "#,
     },
+    // Moving a workspace to the object engine (ADR 0035 §2).
+    TenantMigration {
+        owner: "platform.contacts",
+        id: "0004_engine_migration",
+        sql: r#"
+CREATE TABLE p_contacts_engine_migration (
+  tenant_id TEXT PRIMARY KEY,
+  phase TEXT NOT NULL CHECK (phase IN ('legacy', 'copying', 'copied', 'frozen', 'engine')),
+  checkpoint TEXT NOT NULL DEFAULT '{}',
+  checksums TEXT NOT NULL DEFAULT '{}',
+  cutover_at TEXT,
+  rollback_deadline TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 #[derive(Clone)]
@@ -299,6 +316,19 @@ fn organisation_from_row(row: &SqliteRow) -> Result<Organisation, ContactsError>
         updated_by: optional_uuid(row, "updated_by")?,
         touched_at: time(row, "touched_at")?,
         deleted_at: optional_time(row, "deleted_at")?,
+    })
+}
+
+fn engine_migration_from_row(row: &SqliteRow) -> Result<EngineMigration, ContactsError> {
+    Ok(EngineMigration {
+        phase: EngineMigrationPhase::parse(&row.try_get::<String, _>("phase")?)
+            .ok_or(ContactsError::Invariant)?,
+        checkpoint: json(row, "checkpoint")?,
+        checksums: json(row, "checksums")?,
+        cutover_at: optional_time(row, "cutover_at")?,
+        rollback_deadline: optional_time(row, "rollback_deadline")?,
+        version: row.try_get("version")?,
+        updated_at: time(row, "updated_at")?,
     })
 }
 
@@ -1286,6 +1316,164 @@ impl ContactsTx for SqliteContactsTx {
         append_audit(&mut self.tx, audit).await?;
         append_outbox(&mut self.tx, event).await?;
         Ok(())
+    }
+
+    async fn export_people(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Person>, ContactsError> {
+        // Hyphenated lower-case text sorts as the UUID's bytes, as on
+        // PostgreSQL, so both stores page in the same order.
+        let sql = format!(
+            "SELECT {PERSON_COLUMNS} {PERSON_FROM} \
+             WHERE p.tenant_id = ?1 AND (?2 IS NULL OR p.id > ?2) ORDER BY p.id LIMIT ?3"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(after.map(|id| id.to_string()))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *self.tx)
+            .await?;
+        rows.iter().map(person_from_row).collect()
+    }
+
+    async fn export_organisations(
+        &mut self,
+        tenant_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<Organisation>, ContactsError> {
+        let sql = format!(
+            "SELECT {ORGANISATION_COLUMNS} FROM p_contacts_organisations o \
+             WHERE o.tenant_id = ?1 AND (?2 IS NULL OR o.id > ?2) ORDER BY o.id LIMIT ?3"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(after.map(|id| id.to_string()))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *self.tx)
+            .await?;
+        rows.iter().map(organisation_from_row).collect()
+    }
+
+    async fn export_activity(
+        &mut self,
+        tenant_id: Uuid,
+        entity_type: &str,
+        public_ids: &[String],
+    ) -> Result<Vec<ExportedActivity>, ContactsError> {
+        if public_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..public_ids.len())
+            .map(|index| format!("?{}", index + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT entity_public_id, event_id, action, entity_version, actor_id, occurred_at \
+             FROM p_contacts_activity WHERE tenant_id = ?1 AND entity_type = ?2 \
+             AND entity_public_id IN ({placeholders}) \
+             ORDER BY entity_public_id, occurred_at, event_id"
+        );
+        let mut query = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(entity_type);
+        for public_id in public_ids {
+            query = query.bind(public_id);
+        }
+        let rows = query.fetch_all(&mut *self.tx).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(ExportedActivity {
+                    entity_public_id: row.try_get("entity_public_id")?,
+                    entry: ActivityEntry {
+                        event_id: uuid(row, "event_id")?,
+                        action: row.try_get("action")?,
+                        entity_version: row.try_get("entity_version")?,
+                        actor_id: optional_uuid(row, "actor_id")?,
+                        occurred_at: time(row, "occurred_at")?,
+                    },
+                })
+            })
+            .collect()
+    }
+
+    async fn public_id_counter(
+        &mut self,
+        tenant_id: Uuid,
+        construct: &str,
+    ) -> Result<i64, ContactsError> {
+        let next: Option<i64> = sqlx::query_scalar(
+            "SELECT next_value FROM p_contacts_public_id_counters \
+             WHERE tenant_id = ?1 AND construct = ?2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(construct)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        Ok(next.unwrap_or(0))
+    }
+
+    async fn engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+    ) -> Result<Option<EngineMigration>, ContactsError> {
+        let row = sqlx::query(
+            "SELECT phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at \
+             FROM p_contacts_engine_migration WHERE tenant_id = ?1",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.as_ref().map(engine_migration_from_row).transpose()
+    }
+
+    async fn save_engine_migration(
+        &mut self,
+        tenant_id: Uuid,
+        state: &EngineMigration,
+        expected_version: Option<i64>,
+    ) -> Result<EngineMigration, ContactsError> {
+        let now = timestamp(Utc::now());
+        let written = match expected_version {
+            None => sqlx::query(
+                "INSERT INTO p_contacts_engine_migration \
+                   (tenant_id, phase, checkpoint, checksums, cutover_at, rollback_deadline, version, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7) ON CONFLICT (tenant_id) DO NOTHING",
+            )
+            .bind(tenant_id.to_string())
+            .bind(state.phase.as_str())
+            .bind(encode(&state.checkpoint)?)
+            .bind(encode(&state.checksums)?)
+            .bind(state.cutover_at.map(timestamp))
+            .bind(state.rollback_deadline.map(timestamp))
+            .bind(&now)
+            .execute(&mut *self.tx)
+            .await?,
+            Some(expected) => sqlx::query(
+                "UPDATE p_contacts_engine_migration SET phase = ?2, checkpoint = ?3, checksums = ?4, \
+                   cutover_at = ?5, rollback_deadline = ?6, version = version + 1, updated_at = ?7 \
+                 WHERE tenant_id = ?1 AND version = ?8",
+            )
+            .bind(tenant_id.to_string())
+            .bind(state.phase.as_str())
+            .bind(encode(&state.checkpoint)?)
+            .bind(encode(&state.checksums)?)
+            .bind(state.cutover_at.map(timestamp))
+            .bind(state.rollback_deadline.map(timestamp))
+            .bind(&now)
+            .bind(expected)
+            .execute(&mut *self.tx)
+            .await?,
+        };
+        if written.rows_affected() == 0 {
+            return Err(ContactsError::VersionConflict);
+        }
+        self.engine_migration(tenant_id)
+            .await?
+            .ok_or(ContactsError::Invariant)
     }
 
     async fn commit(self: Box<Self>) -> Result<(), ContactsError> {

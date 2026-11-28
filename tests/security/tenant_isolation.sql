@@ -73,6 +73,7 @@ BEGIN
     'p_contacts.custom_field_definitions'::regclass,
     'p_contacts.list_cursors'::regclass,
     'p_contacts.activity'::regclass,
+    'p_contacts.engine_migration'::regclass,
     'tenant_plugin_installations'::regclass,
     'audit_log'::regclass,
     'inbox'::regclass,
