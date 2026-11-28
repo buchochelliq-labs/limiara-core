@@ -19,8 +19,8 @@ Archive action on the generic record page. Archived records stay readable
 and editable, and are left out of default lists, queries, global search,
 lookup pickers and related lists (see `docs/api/objects.md`, "Archiving").
 Archiving on a synced device offline is not part of it: the bridge answers
-`sync.server_only`. G2 to G11, G17 and G18 are delivered too (below), which completes slice 1's engine gaps;
-every other gap and slice is still to do.
+`sync.server_only`. G2 to G11, G17 and G18 are delivered too (below), which completes slice 1's engine gaps,
+and so is slice 2 (below); slices 3 to 7 are still to do.
 
 Decided in review (2026-11-10):
 
@@ -32,8 +32,12 @@ Decided in review (2026-11-10):
 - A manifest may name an optional plugin's objects in a starting
   allowlist, so Activities includes Person and Organisation itself (§7,
   gap G18).
-- The 30-day rollback window and the six-month deprecation are accepted
-  provisionally, to be confirmed before slice 5 ships.
+- The 30-day rollback window and the six-month deprecation (§2, §3) are
+  confirmed (2026-11-27).
+- `customise` (G10) covers automations that write only to the object they
+  run on; automations that create or update records of other objects stay
+  with `objects.manage` (2026-11-27). Letting a customiser manage
+  cross-object automations, within limits still to design, may follow.
 
 Delivered:
 
@@ -118,6 +122,20 @@ Delivered:
   step), and objects with master-detail or roll-up summary fields, which
   imports refuse (`records.import_unsupported`) because masters' roll-ups
   would not be kept up to date.
+- Slice 2, dual definitions (2026-11-27). Contacts' manifest declares
+  `platform.contacts:person` and `platform.contacts:organisation` with the
+  §1 fields, prefixes `per` and `org`, `read_write` sharing and tracked
+  history, dormant (G11) and out of navigation, with `resource` mapping
+  `platform.contacts.person` and `platform.contacts.organisation` (G6).
+  Installing or enabling Contacts creates them out of service and empty in
+  every workspace, while the typed store keeps serving people and
+  organisations; fields other plugins add to those resources become
+  fields of the objects, out of service with them. Person's name is
+  composed from `first_name` and `last_name` (G17); its name parts, email
+  and telephone are classified `personal`, an organisation's email and
+  telephone `internal`, each with a purpose (G9). Reverting the manifest
+  leaves the definitions suspended and empty. Navigation for them comes
+  with the UI slice (6).
 - G6, fields one plugin adds to another plugin's object (2026-11-22). A
   plugin object may declare the `resource` it serves; the engine installer
   turns other plugins' ADR 0012 `[[extensions.fields]]` for that resource
@@ -131,7 +149,7 @@ Delivered:
   the fields then. Follow-ups: retiring a removed plugin's fields after the
   ADR 0012 retention window (they stay out of service until then), and
   carrying the declaration's classification once ADR 0012 declares a
-  purpose. Contacts' resource mapping itself is slice 2.
+  purpose. Contacts' resource mapping came with slice 2.
 - G7, text lists (2026-11-21). A `text_list` field type holds up to 50
   distinct values of up to 80 characters as a JSON array: values are
   trimmed, and those that differ only in case keep the first spelling. It
@@ -696,8 +714,5 @@ by earlier slices.
 
 ## Open questions
 
-The review settled the first four questions (see Status). One stays open:
-
-- Are a 30-day rollback window and a deprecation of at least six months
-  (and not before the 0.3 contract) right? They are accepted provisionally
-  and must be confirmed before the cutover slice (5) ships.
+None. The review settled the first four questions and the product owner
+confirmed the rollback window and deprecation on 2026-11-27 (see Status).
